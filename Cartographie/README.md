@@ -4,6 +4,7 @@
 
 | Fichier | Rôle |
 |---|---|
+| `ESP32_LD06_WiFi.ino` | Firmware WiFi + USB : partie WiFi reprise du firmware du cours `ESP32RobotControl.ino` (réseau RobotESP32, mêmes routes), plus les commandes USB de capture |
 | `ESP32_LD06_Capture.ino` | Firmware ESP32 : envoie un scan 360° en CSV **sur demande** par USB |
 | `lidar_core.js` | Bibliothèque de calcul : grid map (Bresenham, mise à jour, export), segments (extraction, angle, proximité, fusion, intersection, découpe) et carte vectorielle |
 | `test_lidar_core.js` | 74 tests automatiques (`node test_lidar_core.js`), dont les cas limites de la découpe |
@@ -31,6 +32,35 @@ angle_deg,distance_mm,intensite      (une ligne par point, distances nulles excl
 #END
 ```
 Autres commandes : `1`…`9` (N tours), `c` (flux continu), `t` (Teleplot temps réel), `x` (stop).
+
+### Connexion WiFi (méthode du cours, RobotControl)
+Deux firmwares possibles, avec les mêmes routes WiFi :
+- `ESP32_LD06_WiFi.ino` (ce projet) : la partie WiFi du firmware du cours, plus les commandes USB de capture.
+- `ESP32RobotControl.ino` (ressources du module, `Tools/RobotControl/ESP32RobotControl/`).
+
+Bibliothèques : LD06, MecanumCar_v2 (archives .ZIP du module), AsyncTCP et ESPAsyncWebServer (projet ESP32Async).
+
+1. Téléverser le firmware (carte *ESP32 Dev Module*), puis ouvrir le moniteur série à 115200 bauds pour lire l'adresse.
+2. Connecter le PC au WiFi **RobotESP32** (mot de passe `12345678`).
+3. Dans l'outil, choisir **WiFi (RobotControl)**, garder l'adresse `192.168.4.1` (ou celle affichée), puis **Connecter le robot**.
+   Si Chrome bloque l'accès au réseau local, l'autoriser pour la page dans les paramètres du site.
+4. Capturer comme en USB. Chaque tour est lu sur `GET /scan` (format binaire du cours : pose + N points), une requête à
+   la fois, 5 par seconde au maximum. Plusieurs tours sont fusionnés dans un même scan.
+5. *Utiliser la pose envoyée par le robot* : le scan est placé à la pose saisie dans RobotControl (`/pose`). Ce n'est
+   pas une localisation calculée ; si elle n'a pas été saisie, elle vaut (0, 0, 0).
+
+**Pilotage depuis l'outil** (panneau affiché une fois connecté en WiFi) : boutons ou touches
+`I`/`K` avant/arrière, `J`/`L` translation gauche/droite, `U`/`O` rotation, `Espace` arrêt immédiat
+(routes `/forward`, `/backward`, `/left`, `/right`, `/rotateleft`, `/rotateright` avec `?time=ms`, max 2000 ms ;
+les rotations durent la moitié côté robot). La déconnexion envoie `/stop`.
+*Envoyer la pose au robot* appelle `/pose?x=mm&y=mm&z=centièmes de degré` : cette pose revient avec chaque scan.
+*Pose du scan sélectionné* reprend la pose d'un scan déjà superposé. Le robot n'a pas d'odométrie :
+après un déplacement, sa pose n'est pas mise à jour automatiquement.
+
+Fichiers des outils du cours acceptés par *Charger fichiers* :
+- scans RobotControl `angle_deg,distance_m,intensity` (distances en mètres, pose lue dans le commentaire `#`) ;
+- scans MapTool `angle_deg,r_m,x_rel_m,y_rel_m` (`r_m = 0` : pas d'impact, ignoré) ;
+- cartes vectorielles `x1,y1,x2,y2` (onglets Segments et Vectorielle).
 
 ### Procédure de capture (directement dans `lidar_viewer.html`)
 1. Téléverser `ESP32_LD06_Capture.ino` (avec `ld06.h`/`ld06.cpp` de la librairie).
