@@ -5,9 +5,10 @@
 | Fichier | Rôle |
 |---|---|
 | `ESP32_LD06_Capture.ino` | Firmware ESP32 : envoie un scan 360° en CSV **sur demande** par USB |
-| `lidar_core.js` | Bibliothèque de calcul : grid map (Bresenham, mise à jour, export) et segments (extraction, angle, proximité, fusion, intersection, découpe) |
-| `test_lidar_core.js` | 60 tests automatiques (`node test_lidar_core.js`), dont les cas limites de la découpe |
+| `lidar_core.js` | Bibliothèque de calcul : grid map (Bresenham, mise à jour, export), segments (extraction, angle, proximité, fusion, intersection, découpe) et carte vectorielle |
+| `test_lidar_core.js` | 74 tests automatiques (`node test_lidar_core.js`), dont les cas limites de la découpe |
 | `DEMARCHE_parties_3_4.md` | Démarche des parties 3 et 4 : choix techniques, hypothèses, difficultés, limites |
+| `DEMARCHE_partie_5.md` | Démarche de la partie 5 (carte vectorielle) |
 | `capture_lidar.py` | (Optionnel) capture en ligne de commande, 1 fichier CSV par position |
 | `lidar_viewer.html` | Capture des scans + visualisation et recalage (Chrome/Edge, rien à installer) |
 
@@ -152,8 +153,17 @@ une pose finale à moins de 1 cm et 0,2° près.
 - *Extraire* transforme le nuage de points en segments (split-and-merge), puis fusionne les segments proches de tous les scans.
 - Clic = segment A, Shift + clic = segment B. L'outil affiche leur angle, s'ils sont « proches » et leur intersection.
   Boutons : *Fusionner*, *Couper A par B*, *Couper B par A*.
-- *Tracer un segment* sert à dessiner ses propres cas de test. *Lancer les tests* exécute les 60 tests dans la page.
+- *Tracer un segment* sert à dessiner ses propres cas de test. *Lancer les tests* exécute les 74 tests dans la page.
 - Export au format du cours : `x1,y1,x2,y2` par ligne.
+
+## 5. Carte vectorielle (onglet *Vectorielle*)
+- *Intégrer tous les scans visibles*, ou *Pas à pas* (un scan à la fois, changements surlignés).
+- À chaque scan : extraction des segments → gestion des absences (un faisceau qui traverse un segment le raccourcit,
+  le scinde ou baisse sa confiance) → association / fusion avec la carte → nettoyage → coins.
+- Propriétés de chaque segment : confiance, nombre d'observations, premier et dernier scan (durée de vie réglable).
+- Affichage par confiance (rouge → vert), filtre « confiance minimum », coins (carré jaune + bissectrice).
+- Fichiers : export `.txt` (`x1,y1,x2,y2,confiance,observations,premier,dernier` + coins), chargement d'une carte
+  initiale (murs connus), copie vers l'onglet Segments.
 
 ## Développement
 `lidar_viewer.html` est autonome : il contient une copie de `lidar_core.js`, `test_lidar_core.js` et `src/maps_ui.js`.

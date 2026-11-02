@@ -254,15 +254,17 @@
   /**
    * Deux segments sont « proches » si :
    *  - angle entre leurs droites <= angTol (°)
-   *  - écart latéral (distance du milieu de chacun à la droite de l'autre, max des deux) <= distTol (m)
+   *  - écart latéral : distance des extrémités du segment le plus court à la droite du plus long
+   *    (la droite du plus long est la plus fiable ; prolonger celle d'un petit segment bruité amplifie
+   *    son erreur d'orientation) <= distTol (m)
    *  - trou longitudinal entre leurs projections sur la direction moyenne <= gapTol (m)
    *    (0 s'ils se chevauchent)
    */
   function areClose(s1, s2, opt = {}) {
     const { angTol = 5, distTol = 0.08, gapTol = 0.15 } = opt;
     const angle = angleBetween(s1, s2).lines;
-    const m1 = [(s1.x1 + s1.x2) / 2, (s1.y1 + s1.y2) / 2], m2 = [(s2.x1 + s2.x2) / 2, (s2.y1 + s2.y2) / 2];
-    const lateral = Math.max(pointLineDist(m2[0], m2[1], s1), pointLineDist(m1[0], m1[1], s2));
+    const [lg, sh] = segLen(s1) >= segLen(s2) ? [s1, s2] : [s2, s1];
+    const lateral = Math.max(pointLineDist(sh.x1, sh.y1, lg), pointLineDist(sh.x2, sh.y2, lg));
     const u = meanDirection(s1, s2);
     const pr = (x, y) => x * u[0] + y * u[1];
     const a = [pr(s1.x1, s1.y1), pr(s1.x2, s1.y2)].sort((p, q) => p - q);
@@ -273,8 +275,8 @@
   }
 
   // Direction moyenne pondérée par la longueur (moyenne sur l'angle doublé : indépendante du sens)
-  function meanDirection(s1, s2) {
-    const w1 = segLen(s1), w2 = segLen(s2), t1 = segAngle(s1), t2 = segAngle(s2);
+  function meanDirection(s1, s2, w1 = segLen(s1), w2 = segLen(s2)) {
+    const t1 = segAngle(s1), t2 = segAngle(s2);
     const phi = 0.5 * Math.atan2(w1 * Math.sin(2 * t1) + w2 * Math.sin(2 * t2), w1 * Math.cos(2 * t1) + w2 * Math.cos(2 * t2));
     let u = [Math.cos(phi), Math.sin(phi)];
     if (u[0] * Math.cos(t1) + u[1] * Math.sin(t1) < 0) u = [-u[0], -u[1]];   // garder le sens de s1
@@ -285,10 +287,11 @@
    * Fusion de deux segments : droite de direction moyenne (pondérée par la longueur)
    * passant par le barycentre des milieux (pondéré), extrémités = projections extrêmes
    * des 4 extrémités. Le résultat garde le sens de s1.
+   * w1, w2 : poids optionnels (par défaut les longueurs ; la carte vectorielle utilise longueur × confiance).
    */
-  function mergeSegments(s1, s2) {
-    const w1 = segLen(s1), w2 = segLen(s2), W = w1 + w2 || 1;
-    const u = meanDirection(s1, s2);
+  function mergeSegments(s1, s2, w1 = segLen(s1), w2 = segLen(s2)) {
+    const W = w1 + w2 || 1;
+    const u = meanDirection(s1, s2, w1, w2);
     const cx = (w1 * (s1.x1 + s1.x2) / 2 + w2 * (s2.x1 + s2.x2) / 2) / W;
     const cy = (w1 * (s1.y1 + s1.y2) / 2 + w2 * (s2.y1 + s2.y2) / 2) / W;
     const ts = [[s1.x1, s1.y1], [s1.x2, s1.y2], [s2.x1, s2.y1], [s2.x2, s2.y2]].map(([x, y]) => (x - cx) * u[0] + (y - cy) * u[1]);
@@ -464,12 +467,207 @@
     return out;
   }
 
+
+  // ==========================================================================
+  //  4. Carte vectorielle (liste de features : segments + coins)
+  // ==========================================================================
+  // Feature segment : { id, x1, y1, x2, y2, conf, nObs, firstSeen, lastSeen, n }
+  //   conf      : compteur de confiance (augmente quand le segment est revu, diminue quand il est traversé)
+  //   nObs      : nombre de scans où il a été observé ; firstSeen / lastSeen : numéros de scan (horodatage)
+  // Coin : { x, y, th (deg, bissectrice), a, b (ids des segments), conf }
+  const VM_DEFAULTS = {
+    angTol: 5, distTol: 0.10, gapTol: 0.20,                 // association : même tolérances que « proches »
+    confInit: 1, confHit: 1, confMiss: 1, confMax: 10,      // confiance
+    absence: true, absMinRays: 2, absMargin: 0.15, absMinAngle: 10, absClusterGap: 0.30,
+    maxAge: 0,                                              // durée de vie en scans (0 = infinie)
+    minLen: 0.30, mergeRedundant: true,                     // nettoyage
+    cornerAngle: 60, cornerDist: 0.30,                      // coins
+    extract: {}                                             // paramètres de extractSegments
+  };
+  function createVectorMap() { return { features: [], corners: [], scans: 0, nextId: 1 }; }
+  const cloneFeature = (f, geom, id) => Object.assign({}, f, { x1: geom.x1, y1: geom.y1, x2: geom.x2, y2: geom.y2 }, id ? { id } : {});
+  const pointAt = (f, u) => [f.x1 + (f.x2 - f.x1) * u, f.y1 + (f.y2 - f.y1) * u];
+
+  /**
+   * Intègre un scan (déjà dans le repère de la carte) à la carte vectorielle.
+   * Étapes (document « Construction d'une carte vectorielle 2D ») :
+   *  3. extraction des segments du scan ;
+   *  5. gestion des absences : features existantes traversées par les faisceaux -> raccourcies,
+   *     scindées, ou confiance diminuée (et supprimées à 0) ;
+   *  4. association : chaque segment extrait est fusionné avec les features « proches », sinon ajouté ;
+   *  6. nettoyage : fusion des features redondantes, suppression des trop courtes et des trop anciennes ;
+   *     puis calcul des coins (points d'intérêt).
+   * Renvoie un compte rendu (ids concernés, parties supprimées pour l'affichage).
+   */
+  function updateVectorMap(map, robot, pts, opt = {}) {
+    const o = Object.assign({}, VM_DEFAULTS, opt);
+    const t = ++map.scans;
+    const st = { scan: t, extracted: 0, added: [], merged: [], shortened: [], split: [], weakened: [], removed: [], expired: [], fused: 0, ghosts: [] };
+
+    const segs = extractSegments(pts, robot, o.extract);
+    st.extracted = segs.length;
+
+    if (o.absence && map.features.length) absenceCheck(map, robot, pts, o, st);
+
+    // association / fusion
+    for (const s of segs) {
+      const cands = map.features.filter(f => areClose(f, s, o).close);
+      if (!cands.length) {
+        const f = Object.assign(seg(s.x1, s.y1, s.x2, s.y2), { id: map.nextId++, conf: o.confInit, nObs: 1, firstSeen: t, lastSeen: t, n: s.n || 0 });
+        map.features.push(f); st.added.push(f.id); continue;
+      }
+      // on part de la feature la plus sûre, on y fusionne les autres candidates puis l'observation
+      cands.sort((a, b) => b.conf * segLen(b) - a.conf * segLen(a));
+      let g = cands[0], w = segLen(g) * g.conf;
+      const keep = cands[0];
+      for (const f of cands.slice(1)) {
+        const wf = segLen(f) * f.conf;
+        g = mergeSegments(g, f, w, wf); w += wf;
+        keep.nObs += f.nObs; keep.firstSeen = Math.min(keep.firstSeen, f.firstSeen); keep.conf = Math.max(keep.conf, f.conf);
+        map.features.splice(map.features.indexOf(f), 1); st.removed.push(f.id);
+      }
+      g = mergeSegments(g, s, w, segLen(s));           // l'observation pèse sa longueur × 1
+      Object.assign(keep, { x1: g.x1, y1: g.y1, x2: g.x2, y2: g.y2 });
+      if (keep.lastSeen !== t) { keep.nObs++; keep.conf = Math.min(o.confMax, keep.conf + o.confHit); }
+      keep.lastSeen = t; keep.n = (keep.n || 0) + (s.n || 0);
+      if (!st.merged.includes(keep.id) && !st.added.includes(keep.id)) st.merged.push(keep.id);
+    }
+
+    cleanVectorMap(map, o, st);
+    map.corners = computeCorners(map.features, o);
+    st.removed = st.removed.filter(id => !map.features.some(f => f.id === id));
+    return st;
+  }
+
+  // Gestion des absences : un faisceau robot -> impact qui traverse une feature (loin de l'impact)
+  // prouve que la feature n'est plus là, au moins à cet endroit.
+  function absenceCheck(map, robot, pts, o, st) {
+    const step = Math.max(1, Math.ceil(pts.length / 900)), hits = new Map();
+    for (let k = 0; k < pts.length; k += step) {
+      const p = pts[k], ray = seg(robot.x, robot.y, p.x, p.y), L = segLen(ray);
+      if (L < 2 * o.absMargin) continue;
+      for (const f of map.features) {
+        const r = intersect(ray, f);
+        if (r.type !== 'point') continue;
+        if ((1 - r.t) * L < o.absMargin) continue;                   // le faisceau s'arrête sur la feature : elle est vue
+        if (angleBetween(ray, f).lines < o.absMinAngle) continue;    // faisceau rasant : intersection peu fiable
+        let h = hits.get(f.id); if (!h) hits.set(f.id, h = []); h.push(r.u);
+      }
+    }
+    for (const [id, us] of hits) {
+      const f = map.features.find(x => x.id === id); if (!f) continue;
+      const L = segLen(f);
+      us.sort((a, b) => a - b);
+      // regrouper les traversées voisines en intervalles ; un intervalle compte s'il a assez de faisceaux
+      const iv = []; let cur = [us[0], us[0], 1];
+      for (let k = 1; k < us.length; k++) {
+        if ((us[k] - cur[1]) * L <= o.absClusterGap) { cur[1] = us[k]; cur[2]++; }
+        else { iv.push(cur); cur = [us[k], us[k], 1]; }
+      }
+      iv.push(cur);
+      const holes = iv.filter(v => v[2] >= o.absMinRays);
+      if (!holes.length) continue;
+      // morceaux restants = complément des trous, gardés s'ils sont assez longs
+      const pieces = []; let start = 0;
+      for (const [a, b] of holes) { if ((a - start) * L >= o.minLen) pieces.push([start, a]); start = b; }
+      if ((1 - start) * L >= o.minLen) pieces.push([start, 1]);
+      for (const [a, b] of holes) { const [x1, y1] = pointAt(f, a), [x2, y2] = pointAt(f, b); st.ghosts.push(seg(x1, y1, x2, y2)); }
+      if (!pieces.length) {
+        f.conf -= o.confMiss; st.weakened.push(f.id);
+        if (f.conf <= 0) { map.features.splice(map.features.indexOf(f), 1); st.removed.push(f.id); st.ghosts.push(seg(f.x1, f.y1, f.x2, f.y2)); }
+        continue;
+      }
+      const geom = pieces.map(([a, b]) => { const [x1, y1] = pointAt(f, a), [x2, y2] = pointAt(f, b); return seg(x1, y1, x2, y2); });
+      if (pieces.length === 1 && pieces[0][0] === 0 && pieces[0][1] === 1) continue;
+      Object.assign(f, { x1: geom[0].x1, y1: geom[0].y1, x2: geom[0].x2, y2: geom[0].y2 });
+      if (geom.length === 1) st.shortened.push(f.id);
+      else {
+        st.split.push(f.id);
+        for (const g of geom.slice(1)) { const nf = cloneFeature(f, g, map.nextId++); map.features.push(nf); st.split.push(nf.id); }
+      }
+    }
+  }
+
+  // Nettoyage : fusion des redondants, durée de vie, longueur minimale
+  function cleanVectorMap(map, o, st = {}) {
+    if (o.mergeRedundant) {
+      let changed = true;
+      while (changed) {
+        changed = false;
+        outer: for (let i = 0; i < map.features.length; i++) for (let j = i + 1; j < map.features.length; j++) {
+          const a = map.features[i], b = map.features[j];
+          if (!areClose(a, b, o).close) continue;
+          const [k, d] = a.conf * segLen(a) >= b.conf * segLen(b) ? [a, b] : [b, a];
+          const g = mergeSegments(k, d, segLen(k) * k.conf, segLen(d) * d.conf);
+          Object.assign(k, { x1: g.x1, y1: g.y1, x2: g.x2, y2: g.y2, conf: Math.max(k.conf, d.conf), nObs: Math.max(k.nObs, d.nObs),
+                             firstSeen: Math.min(k.firstSeen, d.firstSeen), lastSeen: Math.max(k.lastSeen, d.lastSeen), n: (k.n || 0) + (d.n || 0) });
+          map.features.splice(map.features.indexOf(d), 1);
+          if (st.removed) st.removed.push(d.id); st.fused = (st.fused || 0) + 1;
+          changed = true; break outer;
+        }
+      }
+    }
+    map.features = map.features.filter(f => {
+      if (o.maxAge > 0 && map.scans - f.lastSeen > o.maxAge) { if (st.expired) st.expired.push(f.id); return false; }
+      if (segLen(f) < o.minLen) { if (st.removed) st.removed.push(f.id); return false; }
+      return true;
+    });
+  }
+
+  // Coins : deux segments presque perpendiculaires (angle >= cornerAngle) dont les droites se coupent
+  // à moins de cornerDist d'une extrémité de chacun. th = bissectrice orientée vers l'intérieur des segments.
+  function computeCorners(features, o = VM_DEFAULTS) {
+    const out = [];
+    for (let i = 0; i < features.length; i++) for (let j = i + 1; j < features.length; j++) {
+      const a = features[i], b = features[j];
+      if (angleBetween(a, b).lines < o.cornerAngle) continue;
+      const r = intersect(a, b);
+      if (r.type !== 'point' && r.type !== 'lines') continue;
+      const far = (f) => {                               // extrémité la plus éloignée du coin, si l'autre est proche
+        const d1 = Math.hypot(f.x1 - r.x, f.y1 - r.y), d2 = Math.hypot(f.x2 - r.x, f.y2 - r.y);
+        if (Math.min(d1, d2) > o.cornerDist) return null;
+        return d1 > d2 ? [f.x1, f.y1] : [f.x2, f.y2];
+      };
+      const fa = far(a), fb = far(b); if (!fa || !fb) continue;
+      const ua = [fa[0] - r.x, fa[1] - r.y], ub = [fb[0] - r.x, fb[1] - r.y];
+      const la = Math.hypot(...ua), lb = Math.hypot(...ub);
+      const th = Math.atan2(ua[1] / la + ub[1] / lb, ua[0] / la + ub[0] / lb) * R2D;
+      if (out.some(c => Math.hypot(c.x - r.x, c.y - r.y) < 0.05)) continue;
+      out.push({ x: r.x, y: r.y, th, a: a.id, b: b.id, conf: Math.min(a.conf ?? 1, b.conf ?? 1), angle: angleBetween(a, b).lines });
+    }
+    return out;
+  }
+
+  function vectorMapToText(map) {
+    let s = '# Carte vectorielle (segments) : x1,y1,x2,y2,confiance,observations,premier_scan,dernier_scan\n';
+    for (const f of map.features) s += [f.x1, f.y1, f.x2, f.y2].map(v => v.toFixed(4)).join(',') + `,${f.conf},${f.nObs},${f.firstSeen},${f.lastSeen}\n`;
+    s += '# Coins : C,x,y,theta_deg\n';
+    for (const c of map.corners) s += `C,${c.x.toFixed(4)},${c.y.toFixed(4)},${c.th.toFixed(2)}\n`;
+    return s;
+  }
+  // Lecture : accepte aussi le format simple x1,y1,x2,y2 (carte initiale connue, ex. murs de la pièce)
+  function vectorMapFromText(txt, opt = {}) {
+    const o = Object.assign({}, VM_DEFAULTS, opt), map = createVectorMap();
+    for (const line of txt.split(/\r?\n/)) {
+      const l = line.trim(); if (!l || l.startsWith('#') || l.startsWith('C')) continue;
+      const v = l.split(/[,;\s]+/).map(Number);
+      if (v.length < 4 || !v.slice(0, 4).every(isFinite)) continue;
+      map.features.push(Object.assign(seg(v[0], v[1], v[2], v[3]), {
+        id: map.nextId++, conf: isFinite(v[4]) ? v[4] : o.confMax, nObs: isFinite(v[5]) ? v[5] : 1,
+        firstSeen: isFinite(v[6]) ? v[6] : 0, lastSeen: isFinite(v[7]) ? v[7] : 0, n: 0 }));
+    }
+    map.scans = Math.max(0, ...map.features.map(f => f.lastSeen));
+    map.corners = computeCorners(map.features, o);
+    return map;
+  }
+
   return {
     EPS, EPS_SIN, UNKNOWN, FREE_T, OCC_T,
     polarToGlobal,
     createGrid, worldToCell, cellCenter, inGrid, getCell, bresenham, fillTriangle, updateGrid, scanToGrid, ensureCovers,
     gridStats, gridToJSON, gridFromJSON, gridToPGM,
     seg, segLen, segAngle, angleBetween, pointLineDist, pointSegDist, areClose, meanDirection, mergeSegments,
-    intersect, cutSegment, fitLine, fitSegment, extractSegments, mergeAll, segmentsToText, segmentsFromText
+    intersect, cutSegment, fitLine, fitSegment, extractSegments, mergeAll, segmentsToText, segmentsFromText,
+    VM_DEFAULTS, createVectorMap, updateVectorMap, cleanVectorMap, computeCorners, vectorMapToText, vectorMapFromText
   };
 });

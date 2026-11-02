@@ -2,7 +2,7 @@
 
 **Outils :** `lidar_viewer.html`, onglets **Grid map** et **Segments**.
 **Calculs :** `lidar_core.js` (fonctions pures, sans dépendance).
-**Tests :** `node test_lidar_core.js`, ou bouton *Lancer les tests* dans l'onglet Segments : 60 tests, tous réussis.
+**Tests :** `node test_lidar_core.js`, ou bouton *Lancer les tests* dans l'onglet Segments : 74 tests au total (parties 3 à 5), tous réussis.
 
 Les deux outils prennent en entrée les scans de la partie 1 avec leur pose, fixée dans la partie 2 (superposition).
 
@@ -160,10 +160,11 @@ Trois critères, tous réglables :
 | Critère | Défaut | Mesure |
 |---|---|---|
 | Angulaire | ≤ 5° | angle entre les droites |
-| Latéral | ≤ 8 cm | distance du milieu de chaque segment à la droite de l'autre (on garde le plus grand des deux) |
+| Latéral | ≤ 8 cm | distance des extrémités du segment le plus court à la droite du plus long (on garde la plus grande des deux) |
 | Longitudinal | ≤ 15 cm | trou entre les projections des deux segments sur leur direction moyenne (0 s'ils se chevauchent) |
 
 - **Pourquoi le critère longitudinal ?** Sans lui, deux murs alignés de part et d'autre d'une porte seraient fusionnés à travers la porte.
+- **Pourquoi la droite du plus long ?** Elle est la plus fiable. Une première version prolongeait aussi la droite du segment court : pour un petit morceau bruité incliné de 2°, l'écart atteignait 16 cm au milieu d'un mur de 8 m, et les deux morceaux d'un même mur n'étaient pas fusionnés (corrigé et testé, voir `DEMARCHE_partie_5.md`).
 - **Explication du résultat.** L'outil affiche la valeur de chaque critère, pour comprendre pourquoi deux segments sont, ou ne sont pas, proches.
 
 ### 4.4 Fusion de deux segments

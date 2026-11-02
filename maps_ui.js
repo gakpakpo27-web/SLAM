@@ -365,3 +365,154 @@ $('sTests').onclick = () => {
   box.innerHTML = html; box.hidden = false;
 };
 renderGridInfo(); segRefresh();
+
+// ---------------------------------------------------------------- CARTE VECTORIELLE
+const VEC = { map: LC.createVectorMap(), last: null, history: [], queue: [], qi: 0, sel: -1 };
+function vecOpt(){
+  return {
+    angTol: numVal('vAng'), distTol: numVal('vLat'), gapTol: numVal('vGap'),
+    confInit: 1, confHit: numVal('vHit'), confMiss: numVal('vMiss'), confMax: numVal('vMax'),
+    absence: $('vAbs').checked, absMinRays: Math.round(numVal('vAbsRays')), absMargin: numVal('vAbsMargin'),
+    maxAge: Math.round(numVal('vMaxAge')), minLen: numVal('vMinLen'), mergeRedundant: $('vMergeRed').checked,
+    cornerAngle: numVal('vCornerAng'), cornerDist: 0.30,
+    extract: segExtractOpt()                              // mêmes paramètres d'extraction que l'onglet Segments
+  };
+}
+const vecSnapshot = () => JSON.stringify(VEC.map);
+function vecPush(){ VEC.history.push({ map: vecSnapshot(), last: VEC.last, qi: VEC.qi }); if (VEC.history.length > 50) VEC.history.shift(); }
+function vecUndo(){
+  const h = VEC.history.pop(); if (!h) return toast('Rien à annuler');
+  VEC.map = JSON.parse(h.map); VEC.last = h.last; VEC.qi = h.qi; VEC.sel = -1; vecRefresh();
+}
+function vecIntegrate(s){
+  const [X, Y] = toWorldPts(s), pts = [];
+  for (let k = 0; k < X.length; k++) pts.push({ x: X[k], y: Y[k] });
+  const t0 = performance.now(), st = LC.updateVectorMap(VEC.map, { x: s.pose.x, y: s.pose.y }, pts, vecOpt());
+  st.name = s.name; st.ms = performance.now() - t0;
+  VEC.last = st; VEC.sel = -1;
+  return st;
+}
+function vecRefresh(){
+  const M = VEC.map, F = M.features, st = VEC.last;
+  const meanConf = F.length ? F.reduce((a, f) => a + f.conf, 0) / F.length : 0;
+  const total = F.reduce((a, f) => a + LC.segLen(f), 0);
+  const mc = numVal('vMinConf'), shown = F.filter(f => f.conf >= mc).length;
+  let html = `<b>${F.length} segments</b> (${total.toFixed(1)} m au total)${mc > 1 ? ` dont ${shown} de confiance ≥ ${mc}` : ''} · <b>${M.corners.length} coins</b> · ${M.scans} scan(s) intégré(s)` +
+             (F.length ? `<br>confiance moyenne ${meanConf.toFixed(1)} / ${numVal('vMax')}` : '');
+  if (st){
+    const L = (lbl, a, col) => a && a.length !== undefined ? (a.length ? `<span style="color:${col}">${lbl} ${a.length}</span>` : '') : '';
+    html += `<div class="res"><b>Scan ${st.scan}${st.name ? ' · « ' + st.name + ' »' : ''}</b> (${(st.ms || 0).toFixed(0)} ms)<br>` +
+      `${st.extracted} segments extraits → ` + [
+        L('ajoutés', st.added, '#4cd97b'), L('fusionnés', st.merged, '#4da3ff'),
+        L('raccourcis', st.shortened, '#ffb347'), L('scindés', st.split, '#ffb347'),
+        L('confiance −', st.weakened, '#ff8a65'), L('supprimés', st.removed, '#ff6b6b'), L('expirés', st.expired, '#ff6b6b'),
+        st.fused ? `redondants fusionnés ${st.fused}` : ''].filter(Boolean).join(' · ') + '</div>';
+  }
+  const f = F[VEC.sel];
+  if (f){
+    html += `<div class="res"><b>Segment n°${f.id}</b> · L = ${LC.segLen(f).toFixed(3)} m · orientation ${(LC.segAngle(f) * 180 / Math.PI).toFixed(1)}°<br>` +
+      `<span class="mono">(${f.x1.toFixed(3)} ; ${f.y1.toFixed(3)}) → (${f.x2.toFixed(3)} ; ${f.y2.toFixed(3)})</span><br>` +
+      `confiance ${f.conf} · vu ${f.nObs} fois · scans ${f.firstSeen} → ${f.lastSeen} · ${f.n || 0} points</div>`;
+  }
+  $('vInfo').innerHTML = html;
+  const n = VEC.queue.length;
+  $('vStep').textContent = n ? (VEC.qi < n ? `Intégrer le scan suivant ▶ (${VEC.qi + 1}/${n} : ${VEC.queue[VEC.qi].name})` : `Terminé (${n}/${n})`) : 'Intégrer le scan suivant ▶';
+  $('vStep').disabled = !n || VEC.qi >= n;
+  draw();
+}
+function vecConfColor(c){
+  const t = Math.max(0, Math.min(1, (c - 1) / Math.max(1, numVal('vMax') - 1)));
+  const lerp = (a, b, u) => Math.round(a + (b - a) * u);
+  // rouge-orangé (peu sûr) -> jaune -> vert (sûr)
+  const [r, g, b] = t < 0.5 ? [lerp(255, 255, t * 2), lerp(122, 214, t * 2), lerp(77, 77, t * 2)]
+                            : [lerp(255, 76, (t - 0.5) * 2), lerp(214, 217, (t - 0.5) * 2), lerp(77, 123, (t - 0.5) * 2)];
+  return `rgb(${r},${g},${b})`;
+}
+function drawVectorMap(){
+  if (TAB !== 'vec') return;
+  const M = VEC.map, st = VEC.last, hl = $('vHl').checked && st;
+  ctx.save(); ctx.lineCap = 'round';
+  if (hl && st.ghosts) for (const g of st.ghosts){
+    const [x1, y1] = w2s(g.x1, g.y1), [x2, y2] = w2s(g.x2, g.y2);
+    ctx.strokeStyle = '#ff5c5c'; ctx.lineWidth = 2.5; ctx.setLineDash([6, 5]);
+    ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke(); ctx.setLineDash([]);
+  }
+  const maxC = numVal('vMax');
+  const minC = numVal('vMinConf');
+  M.features.forEach((f, k) => {
+    if (f.conf < minC && k !== VEC.sel) return;          // filtre d'affichage (la carte garde tout)
+    const [x1, y1] = w2s(f.x1, f.y1), [x2, y2] = w2s(f.x2, f.y2);
+    if (hl){
+      const glow = st.added.includes(f.id) ? 'rgba(76,217,123,.45)' : st.merged.includes(f.id) ? 'rgba(77,163,255,.40)'
+                 : (st.shortened.includes(f.id) || st.split.includes(f.id)) ? 'rgba(255,179,71,.55)' : null;
+      if (glow){ ctx.strokeStyle = glow; ctx.lineWidth = 10; ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke(); }
+    }
+    ctx.strokeStyle = k === VEC.sel ? '#4da3ff' : $('vConfCol').checked ? vecConfColor(f.conf) : '#e3e7ec';
+    ctx.lineWidth = k === VEC.sel ? 4.5 : 1.8 + 2 * Math.min(1, f.conf / maxC);
+    ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke();
+    if ($('vLabels').checked){
+      ctx.fillStyle = ctx.strokeStyle; ctx.font = '11px system-ui';
+      ctx.fillText(`${f.conf}`, (x1 + x2) / 2 + 4, (y1 + y2) / 2 - 4);
+    }
+  });
+  if ($('vCorners').checked) for (const c of M.corners){
+    if (c.conf < minC) continue;
+    const [x, y] = w2s(c.x, c.y), th = c.th * Math.PI / 180;
+    ctx.strokeStyle = '#ffe14d'; ctx.fillStyle = 'rgba(255,225,77,.25)'; ctx.lineWidth = 1.8;
+    ctx.beginPath(); ctx.rect(x - 5, y - 5, 10, 10); ctx.fill(); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(x + 16 * Math.cos(th), y - 16 * Math.sin(th)); ctx.stroke();
+  }
+  ctx.restore();
+}
+function vecPointerDown(e, mx, my){
+  if (e.button !== 0) return false;
+  let best = -1, bd = 8;
+  VEC.map.features.forEach((f, k) => {
+    const [x1, y1] = w2s(f.x1, f.y1), [x2, y2] = w2s(f.x2, f.y2);
+    const d = LC.pointSegDist(mx, my, { x1, y1, x2, y2 }); if (d < bd){ bd = d; best = k; }
+  });
+  if (best < 0) return false;
+  VEC.sel = best; vecRefresh(); return true;
+}
+$('vNew').onclick = () => { vecPush(); VEC.map = LC.createVectorMap(); VEC.last = null; VEC.queue = []; VEC.qi = 0; VEC.sel = -1; vecRefresh(); toast('Carte vectorielle vide'); };
+$('vOne').onclick = () => {
+  const s = needSel(); if (!s) return;
+  vecPush(); const st = vecIntegrate(s); vecRefresh();
+  toast(`« ${s.name} » intégré : ${st.added.length} ajoutés, ${st.merged.length} fusionnés`);
+};
+$('vStepStart').onclick = () => {
+  const vis = S.scans.filter(s => s.visible); if (!vis.length) return toast('Aucun scan visible');
+  vecPush(); VEC.map = LC.createVectorMap(); VEC.last = null; VEC.sel = -1;
+  VEC.queue = vis; VEC.qi = 0; vecRefresh();
+  toast(`Pas à pas : ${vis.length} scans à intégrer, dans l’ordre de la liste`);
+};
+$('vStep').onclick = () => {
+  if (VEC.qi >= VEC.queue.length) return;
+  vecPush(); const s = VEC.queue[VEC.qi++]; vecIntegrate(s); vecRefresh();
+};
+$('vAll').onclick = () => {
+  const vis = S.scans.filter(s => s.visible); if (!vis.length) return toast('Aucun scan visible');
+  vecPush(); VEC.map = LC.createVectorMap(); VEC.queue = []; VEC.qi = 0;
+  const t0 = performance.now(); let added = 0;
+  vis.forEach(s => { added += vecIntegrate(s).added.length; });
+  vecRefresh();
+  toast(`${vis.length} scans intégrés en ${(performance.now() - t0).toFixed(0)} ms : ${VEC.map.features.length} segments, ${VEC.map.corners.length} coins`);
+};
+$('vUndo').onclick = vecUndo;
+$('vExp').onclick = () => { if (!VEC.map.features.length) return toast('Carte vide'); download('carte_vectorielle_proprietes.txt', LC.vectorMapToText(VEC.map), 'text/plain'); };
+$('vFile').onchange = async e => {
+  const f = e.target.files[0]; e.target.value = ''; if (!f) return;
+  const M = LC.vectorMapFromText(await f.text(), vecOpt());
+  if (!M.features.length) return toast('Aucun segment lu');
+  vecPush(); VEC.map = M; VEC.last = null; VEC.sel = -1; VEC.queue = []; VEC.qi = 0; vecRefresh();
+  toast(`Carte chargée : ${M.features.length} segments (servira de carte initiale)`);
+};
+$('vToSeg').onclick = () => {
+  if (!VEC.map.features.length) return toast('Carte vide');
+  segPush();
+  SEG.list = VEC.map.features.map(f => segAdd(LC.seg(f.x1, f.y1, f.x2, f.y2), 'carte n°' + f.id, '#e3e7ec'));
+  SEG.A = SEG.B = -1; segRefresh(); setTab('seg'); toast(`${SEG.list.length} segments copiés dans l’onglet Segments`);
+};
+['vConfCol', 'vCorners', 'vHl', 'vLabels', 'vHidePts'].forEach(id => $(id).onchange = draw);
+$('vMinConf').oninput = () => { $('vMinConfV').textContent = $('vMinConf').value; vecRefresh(); };
+vecRefresh();

@@ -155,6 +155,10 @@
     test('parallèles à 30 cm : pas proches (écart latéral)', () => { const r = LC.areClose(seg(0, 0, 3, 0), seg(0, 0.3, 3, 0.3), opt); return expect(!r.close && !r.latOk); });
     test('alignés mais trou de 1 m : pas proches (écart longitudinal)', () => { const r = LC.areClose(seg(0, 0, 3, 0), seg(4, 0, 6, 0), opt); return expect(!r.close && !r.gapOk && near(r.gap, 1, 1e-9), JSON.stringify(r)); });
     test('alignés, trou de 10 cm : proches', () => expect(LC.areClose(seg(0, 0, 3, 0), seg(3.1, 0, 6, 0), opt).close));
+    test('petit morceau bruité (2° d’inclinaison) au bout d’un long mur : proches', () => {
+      const r = LC.areClose(seg(0.5, 5, 8, 5), seg(0.48, 5.01, -0.01, 4.99), opt);
+      return expect(r.close, JSON.stringify(r));
+    });
     test('fusion de deux morceaux alignés -> un seul segment couvrant les deux', () => {
       const m = LC.mergeSegments(seg(0, 0, 3, 0), seg(2, 0, 6, 0));
       return expect(sameSeg(m, 0, 0, 6, 0, 1e-12), fmt(m));
@@ -175,9 +179,9 @@
     // ------------------------------------------------------------------ extraction
     group = 'Extraction de segments';
     // scan simulé : robot en (2, 1.5) dans une pièce 6 x 4 m, un poteau 20 x 20 cm
-    function simScan(robot, noise) {
-      const walls = [seg(0, 0, 6, 0), seg(6, 0, 6, 4), seg(6, 4, 0, 4), seg(0, 4, 0, 0),
-                     seg(4, 2, 4.2, 2), seg(4.2, 2, 4.2, 2.2), seg(4.2, 2.2, 4, 2.2), seg(4, 2.2, 4, 2)];
+    const ROOM = [seg(0, 0, 6, 0), seg(6, 0, 6, 4), seg(6, 4, 0, 4), seg(0, 4, 0, 0),
+                  seg(4, 2, 4.2, 2), seg(4.2, 2, 4.2, 2.2), seg(4.2, 2.2, 4, 2.2), seg(4, 2.2, 4, 2)];
+    function simScan(robot, noise, walls = ROOM) {
       let rnd = 12345; const rand = () => ((rnd = (rnd * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff);
       const pts = [];
       for (let a = 0; a < 360; a += 0.8) {
@@ -289,6 +293,117 @@
       const { grid: g } = LC.scanToGrid({ x: 2, y: 1.5 }, simScan({ x: 2, y: 1.5 }, 0.01), { res: 0.1 });
       const h = LC.gridFromJSON(JSON.parse(JSON.stringify(LC.gridToJSON(g))));
       return expect(h.W === g.W && h.data.every((v, k) => v === g.data[k]));
+    });
+
+    // ------------------------------------------------------------------ carte vectorielle
+    group = 'Carte vectorielle';
+    // salle 8 x 5 m ; mur du haut en deux parties autour d'une porte (x de 3 à 4) éventuellement fermée
+    const hall = (doorClosed, box) => {
+      // mur de couloir en y = 7 : visible seulement par la porte ouverte
+      const w = [seg(0, 0, 8, 0), seg(8, 0, 8, 5), seg(8, 5, 4, 5), seg(3, 5, 0, 5), seg(0, 5, 0, 0), seg(-2, 7, 10, 7)];
+      if (doorClosed) w.push(seg(4, 5, 3, 5));
+      if (box) w.push(seg(box[0], box[1], box[0] + 1.5, box[1]), seg(box[0] + 1.5, box[1], box[0] + 1.5, box[1] + 0.6),
+                      seg(box[0] + 1.5, box[1] + 0.6, box[0], box[1] + 0.6), seg(box[0], box[1] + 0.6, box[0], box[1]));
+      return w;
+    };
+    const R1 = { x: 2, y: 2 }, R2 = { x: 6, y: 3 };
+    const longF = M => M.features.filter(f => LC.segLen(f) > 1);
+    const findF = (M, pred) => M.features.filter(pred);
+    const onTop = f => Math.abs(f.y1 - 5) < 0.1 && Math.abs(f.y2 - 5) < 0.1;
+
+    test('carte vide + 1 scan : les murs deviennent des features (confiance 1, 1 observation)', () => {
+      const M = LC.createVectorMap(), st = LC.updateVectorMap(M, R1, simScan(R1, 0.01, hall(true)));
+      const ok = longF(M).length >= 4 && M.features.every(f => f.conf === 1 && f.nObs === 1 && f.firstSeen === 1);
+      return expect(ok && st.added.length === M.features.length, `${M.features.length} features, ${st.added.length} ajoutées`);
+    });
+    test('même scan intégré deux fois : aucune nouvelle feature, confiance 2', () => {
+      const M = LC.createVectorMap(), pts = simScan(R1, 0.01, hall(true));
+      LC.updateVectorMap(M, R1, pts); const n = M.features.length;
+      const st = LC.updateVectorMap(M, R1, pts);
+      return expect(M.features.length === n && st.added.length === 0 && M.features.every(f => f.conf === 2 && f.nObs === 2 && f.lastSeen === 2),
+                    `${n} -> ${M.features.length}, ajoutées ${st.added.length}`);
+    });
+    test('deux poses différentes : les murs vus deux fois sont fusionnés, pas dupliqués', () => {
+      const M = LC.createVectorMap();
+      LC.updateVectorMap(M, R1, simScan(R1, 0.01, hall(true)));
+      LC.updateVectorMap(M, R2, simScan(R2, 0.01, hall(true)));
+      const bottom = findF(M, f => Math.abs(f.y1) < 0.1 && Math.abs(f.y2) < 0.1 && LC.segLen(f) > 1);
+      return expect(bottom.length === 1 && bottom[0].nObs === 2 && LC.segLen(bottom[0]) > 7.5, `${bottom.length} murs du bas, L = ${bottom[0] && LC.segLen(bottom[0]).toFixed(2)}`);
+    });
+    test('porte ouverte : le mur du haut est scindé en deux, l’ouverture correspond à la porte', () => {
+      const M = LC.createVectorMap();
+      LC.updateVectorMap(M, R1, simScan(R1, 0.01, hall(true)));
+      const top0 = findF(M, onTop);
+      const st = LC.updateVectorMap(M, R1, simScan(R1, 0.01, hall(false)), { mergeRedundant: false });
+      const top = findF(M, onTop).sort((a, b) => Math.min(a.x1, a.x2) - Math.min(b.x1, b.x2));
+      const gapL = top.length === 2 ? Math.max(top[0].x1, top[0].x2) : NaN, gapR = top.length === 2 ? Math.min(top[1].x1, top[1].x2) : NaN;
+      return expect(top0.length === 1 && st.split.length >= 2 && top.length === 2 && Math.abs(gapL - 3) < 0.15 && Math.abs(gapR - 4) < 0.15,
+                    `avant ${top0.length}, après ${top.length} morceaux, ouverture ${gapL.toFixed(2)} -> ${gapR.toFixed(2)}`);
+    });
+    test('obstacle déplacé : le segment devenu traversé est raccourci ou supprimé', () => {
+      const M = LC.createVectorMap();
+      LC.updateVectorMap(M, R1, simScan(R1, 0.01, hall(true, [4.5, 1.5])));       // caisse en (4.5..6, 1.5..2.1)
+      const face = findF(M, f => Math.abs(f.x1 - 4.5) < 0.1 && Math.abs(f.x2 - 4.5) < 0.1);
+      // la caisse disparaît : les faisceaux traversent son ancienne face
+      let st; for (let k = 0; k < 3; k++) st = LC.updateVectorMap(M, R1, simScan(R1, 0.01, hall(true)));
+      const after = findF(M, f => Math.abs(f.x1 - 4.5) < 0.1 && Math.abs(f.x2 - 4.5) < 0.1);
+      return expect(face.length === 1 && after.length === 0, `face avant ${face.length}, après ${after.length}`);
+    });
+    test('feature entièrement traversée : confiance diminuée, puis supprimée à 0', () => {
+      const M = LC.createVectorMap();
+      LC.updateVectorMap(M, R1, simScan(R1, 0.01, hall(true, [4.5, 1.5])));
+      const id = findF(M, f => Math.abs(f.x1 - 4.5) < 0.1 && Math.abs(f.x2 - 4.5) < 0.1)[0].id;
+      const st = LC.updateVectorMap(M, R1, simScan(R1, 0.01, hall(true)));
+      return expect(st.weakened.includes(id) && st.removed.includes(id) && !M.features.some(f => f.id === id), JSON.stringify({ w: st.weakened, r: st.removed }));
+    });
+    test('confiance élevée : une seule absence ne supprime pas la feature', () => {
+      const M = LC.createVectorMap(), withBox = simScan(R1, 0.01, hall(true, [4.5, 1.5]));
+      for (let k = 0; k < 3; k++) LC.updateVectorMap(M, R1, withBox);             // vue 3 fois : confiance 3
+      const f = findF(M, f => Math.abs(f.x1 - 4.5) < 0.1 && Math.abs(f.x2 - 4.5) < 0.1)[0];
+      LC.updateVectorMap(M, R1, simScan(R1, 0.01, hall(true)));
+      return expect(f && M.features.includes(f) && f.conf === 2, f ? 'conf ' + f.conf : 'face absente');
+    });
+    test('mur hors du champ de vision : ni traversé ni modifié', () => {
+      const M = LC.createVectorMap();
+      LC.updateVectorMap(M, R1, simScan(R1, 0.01, hall(true)));
+      const before = JSON.stringify(findF(M, f => Math.abs(f.y1) < 0.1 && Math.abs(f.y2) < 0.1));
+      // nouveau scan ne contenant que les points de la moitié haute (le mur du bas n'est pas vu)
+      LC.updateVectorMap(M, R1, simScan(R1, 0.01, hall(true)).filter(p => p.y > 2));
+      const bottom = findF(M, f => Math.abs(f.y1) < 0.1 && Math.abs(f.y2) < 0.1);
+      return expect(bottom.length === 1 && bottom[0].conf === 1 && before.includes(`"x1":${bottom[0].x1}`), JSON.stringify(bottom.map(f => f.conf)));
+    });
+    test('durée de vie : feature non revue depuis plus de maxAge scans supprimée', () => {
+      const M = LC.createVectorMap();
+      LC.updateVectorMap(M, R1, simScan(R1, 0.01, hall(true)));
+      const n0 = M.features.length;
+      let st; for (let k = 0; k < 3; k++) st = LC.updateVectorMap(M, R1, [], { maxAge: 2 });   // scans vides
+      return expect(n0 > 0 && M.features.length === 0 && st.expired.length === n0, `${n0} -> ${M.features.length}`);
+    });
+    test('coins : les 4 coins de la salle trouvés à 2 cm près, angle ≈ 90°', () => {
+      const M = LC.createVectorMap();
+      LC.updateVectorMap(M, R1, simScan(R1, 0.01, hall(true)));
+      LC.updateVectorMap(M, R2, simScan(R2, 0.01, hall(true)));
+      const want = [[0, 0], [8, 0], [8, 5], [0, 5]];
+      const found = want.map(([x, y]) => M.corners.find(c => Math.hypot(c.x - x, c.y - y) < 0.02));
+      return expect(found.every(Boolean) && found.every(c => Math.abs(c.angle - 90) < 2), `${M.corners.length} coins, trouvés ${found.filter(Boolean).length}/4`);
+    });
+    test('orientation d’un coin : bissectrice vers l’intérieur (coin (0,0) -> 45°)', () => {
+      const C = LC.computeCorners([Object.assign(seg(0, 0, 3, 0), { id: 1 }), Object.assign(seg(0, 2, 0, 0), { id: 2 })]);
+      return expect(C.length === 1 && near(C[0].th, 45, 1e-9) && near(C[0].x, 0) && near(C[0].y, 0), JSON.stringify(C));
+    });
+    test('fichier texte : aller-retour avec propriétés, et lecture du format simple x1,y1,x2,y2', () => {
+      const M = LC.createVectorMap();
+      LC.updateVectorMap(M, R1, simScan(R1, 0.01, hall(true))); LC.updateVectorMap(M, R1, simScan(R1, 0.01, hall(true)));
+      const N = LC.vectorMapFromText(LC.vectorMapToText(M));
+      const same = N.features.length === M.features.length && N.features.every((f, k) => near(f.x1, M.features[k].x1, 1e-4) && f.conf === M.features[k].conf && f.nObs === M.features[k].nObs);
+      const S2 = LC.vectorMapFromText('# murs connus\n0,0,8,0\n8,0,8,5\n');
+      return expect(same && S2.features.length === 2 && S2.features[0].conf === LC.VM_DEFAULTS.confMax && S2.corners.length === 1, `${N.features.length}/${M.features.length}, simple ${S2.features.length}`);
+    });
+    test('carte initiale connue + scan : les murs connus sont renforcés, pas dupliqués', () => {
+      const M = LC.vectorMapFromText('0,0,8,0\n8,0,8,5\n0,5,0,0\n');
+      const st = LC.updateVectorMap(M, R1, simScan(R1, 0.01, hall(true)));
+      const left = findF(M, f => Math.abs(f.x1) < 0.1 && Math.abs(f.x2) < 0.1);
+      return expect(left.length === 1 && left[0].nObs === 2 && st.merged.length >= 3, `${left.length} murs gauches, fusions ${st.merged.length}`);
     });
 
     const passed = results.filter(r => r.ok).length;
