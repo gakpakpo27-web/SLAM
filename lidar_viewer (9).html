@@ -1,0 +1,1386 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LD06 – Visualisation et recalage de scans</title>
+<style>
+  :root{
+    --bg:#0f1216; --panel:#171b21; --line:#262c35; --text:#e3e7ec; --muted:#8b95a3;
+    --accent:#4da3ff; --danger:#ff6b6b;
+    font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;height:100%;background:var(--bg);color:var(--text);font-size:13px}
+  body{display:flex;overflow:hidden}
+  aside{width:340px;min-width:340px;height:100%;overflow-y:auto;background:var(--panel);border-right:1px solid var(--line);padding:14px 14px 30px}
+  h1{font-size:15px;margin:0 0 2px;font-weight:650}
+  .sub{color:var(--muted);font-size:12px;margin-bottom:12px}
+  h2{font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);margin:16px 0 8px;font-weight:600}
+  button,.btn{background:#222833;color:var(--text);border:1px solid #303846;border-radius:6px;padding:6px 10px;font:inherit;cursor:pointer;display:inline-flex;align-items:center;gap:6px}
+  button:hover,.btn:hover{border-color:var(--accent)}
+  button.primary,.btn.primary{background:var(--accent);border-color:var(--accent);color:#06121f;font-weight:600}
+  .row{display:flex;gap:6px;flex-wrap:wrap;align-items:center}
+  .scan{border:1px solid var(--line);border-radius:8px;padding:8px;margin-bottom:6px;background:#1a1f26;cursor:pointer}
+  .scan.sel{border-color:var(--accent);box-shadow:0 0 0 1px var(--accent) inset}
+  .scan .top{display:flex;align-items:center;gap:6px}
+  .scan .name{flex:1;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .scan .meta{color:var(--muted);font-size:11px}
+  .scan input[type=color]{width:22px;height:22px;border:none;padding:0;background:none;cursor:pointer}
+  .icon{background:none;border:none;padding:2px 4px;color:var(--muted)}
+  .icon:hover{color:var(--text)}
+  .icon.on{color:var(--accent)}
+  .pose{display:grid;grid-template-columns:repeat(3,1fr);gap:4px;margin-top:6px}
+  .pose label{display:flex;flex-direction:column;font-size:10px;color:var(--muted)}
+  input[type=number]{width:100%;background:#0f1318;color:var(--text);border:1px solid #2b323d;border-radius:5px;padding:4px 5px;font:inherit;font-variant-numeric:tabular-nums}
+  input[type=range]{width:100%}
+  .opt{display:grid;grid-template-columns:120px 1fr 48px;gap:6px;align-items:center;margin-bottom:6px}
+  .opt span:last-child{color:var(--muted);text-align:right;font-variant-numeric:tabular-nums}
+  .chk{display:flex;align-items:center;gap:6px;margin-bottom:5px}
+  .help{color:var(--muted);font-size:12px;line-height:1.55}
+  .help kbd{background:#222833;border:1px solid #303846;border-radius:4px;padding:0 4px;font-size:11px;color:var(--text)}
+  main{flex:1;position:relative}
+  canvas{display:block;width:100%;height:100%;cursor:crosshair}
+  #hud{position:absolute;left:10px;bottom:8px;color:var(--muted);font-size:12px;font-variant-numeric:tabular-nums;pointer-events:none}
+  #toast{position:absolute;right:12px;top:12px;background:#222833;border:1px solid #303846;border-radius:8px;padding:8px 12px;opacity:0;transition:opacity .25s;pointer-events:none;max-width:360px}
+  #drop{position:absolute;inset:0;border:2px dashed var(--accent);background:rgba(77,163,255,.08);display:none;align-items:center;justify-content:center;font-size:16px}
+  input[type=text],select{background:#0f1318;color:var(--text);border:1px solid #2b323d;border-radius:5px;padding:5px 6px;font:inherit}
+  input[type=text]{flex:1;min-width:0}
+  .acq{border:1px solid var(--line);border-radius:8px;padding:10px;background:#1a1f26}
+  .status{font-size:12px;color:var(--muted);display:inline-flex;align-items:center;gap:5px}
+  .status::before{content:"";width:8px;height:8px;border-radius:50%;background:#555e6b}
+  .status.on::before{background:#4cd97b}
+  .status.busy::before{background:#ffb347}
+  button:disabled{opacity:.45;cursor:not-allowed}
+  .modal{position:fixed;inset:0;background:rgba(5,7,10,.72);display:none;align-items:center;justify-content:center;z-index:10}
+  .modal .box{background:var(--panel);border:1px solid #303846;border-radius:12px;padding:16px 18px;width:min(980px,94vw);max-height:94vh;overflow:auto}
+  .modal h3{margin:0 0 4px;font-size:15px}
+  .modal canvas{width:100%;display:block;border:1px solid var(--line);border-radius:8px;background:#0f1216}
+  .chips{display:flex;flex-wrap:wrap;gap:6px;margin:10px 0}
+  .chip{font-size:12px;padding:4px 9px;border-radius:999px}
+  .chip.on{border-color:var(--accent);color:var(--accent)}
+  .rot{display:grid;grid-template-columns:auto auto 1fr auto auto;gap:4px;align-items:center;margin-top:6px}
+  .rot button{padding:3px 6px;font-size:11px}
+  #tools{position:absolute;left:50%;top:10px;transform:translateX(-50%);display:flex;gap:4px;background:rgba(23,27,33,.92);border:1px solid #303846;border-radius:9px;padding:4px}
+  #tools button{border:none;background:none;padding:6px 12px}
+  #tools button.on{background:var(--accent);color:#06121f;font-weight:600;border-radius:6px}
+  .scl{display:grid;grid-template-columns:auto auto auto auto 58px auto auto auto auto;gap:3px;align-items:center;margin-top:5px}
+  .scl button{padding:3px 5px;font-size:11px;white-space:nowrap;justify-content:center}
+  .scl .lbl{font-size:10px;color:var(--muted);margin-right:2px;white-space:nowrap}
+  .scl input{padding:3px 4px;font-size:11px;text-align:right}
+  .scl.changed .lbl,.scl.changed input{color:#ffb347}
+  .empty{color:var(--muted);font-size:12px;padding:10px;border:1px dashed var(--line);border-radius:8px;text-align:center}
+</style>
+</head>
+<body>
+<aside>
+  <h1>Scans LD06 — cartographie</h1>
+  <div class="sub">Capture directe, affichage cartésien, recalage manuel (+ ICP)</div>
+
+  <h2 style="margin-top:4px">1 · Acquisition depuis le robot</h2>
+  <div class="acq">
+    <div class="row">
+      <select id="baud" title="Vitesse du port série (doit correspondre à PC_BAUD du firmware)">
+        <option value="115200">115200</option><option value="921600">921600</option>
+      </select>
+    </div>
+    <div class="row" style="margin-top:8px">
+      <button id="connect" class="primary">Connecter le robot</button>
+      <span id="status" class="status">non connecté</span>
+    </div>
+    <div class="row" style="margin-top:8px">
+      <input type="text" id="capName" placeholder="nom du scan" title="Nom du scan (Entrée = capturer)">
+      <select id="capTours" title="Nombre de tours fusionnés dans le scan (densifie le nuage)">
+        <option value="1">1 tour</option><option value="2">2 tours</option><option value="3" selected>3 tours</option><option value="5">5 tours</option>
+      </select>
+      <button id="capture" class="primary" disabled>Capturer</button>
+    </div>
+    <label class="chk" style="margin-top:8px"><input type="checkbox" id="live" disabled> Aperçu en direct (blanc, non enregistré)</label>
+  </div>
+
+  <h2>2 · Superposition</h2>
+  <div class="row">
+    <label class="btn">Charger fichiers<input type="file" id="file" multiple accept=".csv,.txt,.log,.json" hidden></label>
+    <button id="demo">Données démo</button>
+    <button id="fit" title="Recadrer (F)">Recadrer</button>
+  </div>
+
+  <h2>Scans</h2>
+  <div id="list"></div>
+
+  <h2>Superposition automatique</h2>
+  <div class="help" style="margin-bottom:6px">Le scan verrouillé 🔒 sert de référence (sinon le scan sélectionné). Les autres sont cherchés à toutes les orientations et positions, puis affinés par ICP.</div>
+  <div class="opt"><span>Seuil d'acceptation</span><input type="range" id="autoThr" min="15" max="70" step="5" value="35"><span id="autoThrV">35 %</span></div>
+  <div class="row">
+    <button id="autoAll" class="primary">Tout superposer automatiquement</button>
+  </div>
+  <div class="help" id="autoStatus" style="margin-top:6px;color:var(--accent)"></div>
+  <div class="help" id="autoReport" style="margin-top:4px"></div>
+
+  <h2>Scan sélectionné</h2>
+  <div class="row">
+    <button id="autoOne" title="Cherche la meilleure pose du scan sélectionné sur les scans verrouillés, quelle que soit sa position actuelle">Placer automatiquement</button>
+    <button id="icp" title="Affine la pose du scan sélectionné sur les scans verrouillés (ou, à défaut, sur tous les scans visibles)">Affiner (ICP)</button>
+    <button id="reset">Pose à 0</button>
+    <button id="undo" title="Ctrl+Z">Annuler</button>
+  </div>
+
+  <h2>Affichage et filtrage</h2>
+  <div class="opt"><span>Taille des points</span><input type="range" id="ptSize" min="1" max="6" step="0.5" value="2"><span id="ptSizeV"></span></div>
+  <div class="opt"><span>Intensité min</span><input type="range" id="iMin" min="0" max="255" step="1" value="0"><span id="iMinV"></span></div>
+  <div class="opt"><span>Distance min (m)</span><input type="range" id="dMin" min="0" max="1" step="0.01" value="0.05"><span id="dMinV"></span></div>
+  <div class="opt"><span>Distance max (m)</span><input type="range" id="dMax" min="0.5" max="12" step="0.1" value="12"><span id="dMaxV"></span></div>
+  <div class="opt"><span>Décalage angle (°)</span><input type="range" id="aOff" min="-180" max="180" step="1" value="0"><span id="aOffV"></span></div>
+  <label class="chk"><input type="checkbox" id="mirror"> Inverser le sens des angles (miroir)</label>
+  <label class="chk"><input type="checkbox" id="grid" checked> Grille (m)</label>
+  <label class="chk"><input type="checkbox" id="origins" checked> Origines et orientation des scans</label>
+  <label class="chk"><input type="checkbox" id="dim" checked> Atténuer les scans non sélectionnés</label>
+  <label class="chk"><input type="checkbox" id="lines" checked> Relier les points voisins (murs en traits)</label>
+  <label class="chk"><input type="checkbox" id="denoise" checked> Retirer les points isolés (bruit)</label>
+  <label class="chk"><input type="checkbox" id="fill"> Colorer la zone vue par chaque scan</label>
+  <label class="chk"><input type="checkbox" id="legend" checked> Légende</label>
+
+  <h2>Export</h2>
+  <div class="row">
+    <button id="expMap">Carte fusionnée (CSV)</button>
+    <button id="expPoses">Poses (JSON)</button>
+    <button id="expPng">Image (PNG)</button>
+    <button id="expRaw">Scans bruts (CSV)</button>
+    <button id="expSession">Session complète (JSON)</button>
+  </div>
+
+  <h2>Commandes</h2>
+  <div class="help">
+    <b>Clic sur un scan</b> : sélection · <b>glisser</b> : translation<br>
+    <b>Rotation</b> : tirer le bouton ⟳ sur le cercle du scan sélectionné, ou mode <i>Tourner</i> (<kbd>R</kbd>) puis glisser le scan,
+    ou curseur / boutons ⟲ ⟳ dans la carte du scan, ou <kbd>Shift</kbd> + glisser<br>
+    <kbd>Shift</kbd> + molette : rotation fine (±1°, <kbd>Alt</kbd> ±0,1°)<br>
+    <kbd>←↑↓→</kbd> : 1 cm (<kbd>Shift</kbd> 10 cm) · <kbd>A</kbd>/<kbd>E</kbd> : ±0,5° (<kbd>Shift</kbd> 5°)<br>
+    Glisser le fond / clic droit : déplacer la vue · molette : zoom<br>
+    <kbd>Tab</kbd> : scan suivant · <kbd>F</kbd> : recadrer · <kbd>Ctrl</kbd>+<kbd>Z</kbd> : annuler<br>
+    <b>Taille</b> d'un scan : boutons −/+ de sa carte, ou <kbd>-</kbd>/<kbd>+</kbd> (±0,5 %, <kbd>Shift</kbd>+<kbd>-</kbd> 5 %)<br>
+    Un scan <b>verrouillé</b> 🔒 sert de référence : il ne bouge pas, et l'ICP se cale dessus.<br>
+    <b>Méthode</b> : verrouiller le 1er scan → placer le 2e à la main → <i>Affiner (ICP)</i> → le verrouiller → scan suivant…
+  </div>
+</aside>
+
+<main>
+  <canvas id="cv"></canvas>
+  <div id="tools">
+    <button id="toolMove" class="on" title="Glisser un scan pour le déplacer (touche M)">✥ Déplacer</button>
+    <button id="toolRot" title="Glisser un scan pour le tourner autour de son origine (touche R)">⟳ Tourner</button>
+  </div>
+  <div id="hud"></div>
+  <div id="toast"></div>
+  <div id="drop">Déposer les fichiers de scans ici</div>
+</main>
+
+<div class="modal" id="tpModal"><div class="box">
+  <h3 id="tpTitle">Import Teleplot</h3>
+  <div class="help" id="tpSummary"></div>
+  <h2>Chronologie : nombre de points par trame (cliquer-glisser pour choisir une période)</h2>
+  <canvas id="tpTimeline" style="height:70px"></canvas>
+  <div class="chips" id="tpSegs"></div>
+  <div class="row" style="justify-content:space-between">
+    <span class="help" id="tpInfo"></span>
+    <span class="help">blanc = période choisie · gris = tout l'enregistrement</span>
+  </div>
+  <canvas id="tpPreview" style="height:min(340px,38vh);margin-top:6px"></canvas>
+  <div class="row" style="margin-top:12px">
+    <input type="text" id="tpName" placeholder="nom du scan" style="max-width:220px">
+    <button class="primary" id="tpAdd">Ajouter la période comme scan</button>
+    <button id="tpAddAll">Ajouter toutes les périodes détectées</button>
+    <span style="flex:1"></span>
+    <button id="tpClose">Fermer</button>
+  </div>
+</div></div>
+
+<script>
+"use strict";
+// ---------------------------------------------------------------- état
+const PALETTE = ['#ff5c5c','#4cd97b','#4da3ff','#ffb347','#c77dff','#3ee6e6','#ff6ec7','#d4e157','#ff8a65','#a1887f'];
+const S = {
+  scans: [], sel: -1, undo: [],
+  view: { x: 0, y: 0, s: 80 },                     // centre (m) et échelle (px/m)
+  opt: { ptSize: 2, iMin: 0, dMin: 0.05, dMax: 12, aOff: 0, mirror: false, grid: true, origins: true, dim: true, lines: true, denoise: true, fill: false, legend: true }
+};
+let nextId = 1;
+const cv = document.getElementById('cv'), ctx = cv.getContext('2d');
+const $ = id => document.getElementById(id);
+const D2R = Math.PI / 180;
+
+function colorFor(k){ return k < PALETTE.length ? PALETTE[k] : `hsl(${(k*137.5)%360} 80% 62%)`; }
+
+// ---------------------------------------------------------------- scans
+function addScan(name, a, d, i, pose, color){
+  const s = { id: nextId++, name, a: Float32Array.from(a), d: Float32Array.from(d), i: Float32Array.from(i),
+              color: color || colorFor(S.scans.length), visible: true, locked: false,
+              pose: pose ? { x: pose.x, y: pose.y, th: pose.th } : { x: 0, y: 0, th: 0 }, scale: 1 };
+  computeLocal(s);
+  S.scans.push(s);
+  return s;
+}
+
+// coordonnées cartésiennes dans le repère du capteur (m)
+function computeLocal(s){
+  const o = S.opt, sg = o.mirror ? -1 : 1, P = [], kS = s.scale || 1;   // kS : échelle propre au scan
+  for (let k = 0; k < s.a.length; k++){
+    const d = s.d[k] / 1000;
+    if (d < o.dMin || d > o.dMax || s.i[k] < o.iMin) continue;
+    let ang = ((sg * s.a[k] + o.aOff) % 360 + 360) % 360;
+    P.push([ang, d * kS]);
+  }
+  P.sort((p, q) => p[0] - q[0]);                     // ordre angulaire (fusionne proprement plusieurs tours)
+  let X = P.map(p => p[1] * Math.cos(p[0] * D2R)), Y = P.map(p => p[1] * Math.sin(p[0] * D2R)), Dd = P.map(p => p[1]), Ag = P.map(p => p[0]);
+  const n0 = X.length, near = (i, j) => (X[i]-X[j])**2 + (Y[i]-Y[j])**2;
+  // points isolés : aucun voisin proche parmi les 3 points angulairement voisins de chaque côté
+  if (o.denoise && n0 > 10){
+    const keep = [];
+    for (let k = 0; k < n0; k++){
+      const r = 0.06 + 0.025 * Dd[k];
+      let ok = false;
+      for (let m = 1; m <= 3 && !ok; m++) ok = near(k, (k+m) % n0) < r*r || near(k, (k-m+n0) % n0) < r*r;
+      if (ok) keep.push(k);
+    }
+    X = keep.map(k => X[k]); Y = keep.map(k => Y[k]); Dd = keep.map(k => Dd[k]); Ag = keep.map(k => Ag[k]);
+  }
+  const n = X.length, link = new Uint8Array(n);
+  // relier deux points consécutifs s'ils sont assez proches (même mur)
+  for (let k = 0; k < n; k++){
+    const j = (k + 1) % n, r = 0.08 + 0.035 * Math.max(Dd[k], Dd[j]);
+    link[k] = n > 1 && near(k, j) < r*r ? 1 : 0;
+  }
+  s.lx = Float32Array.from(X); s.ly = Float32Array.from(Y); s.link = link;
+  // tracé des murs : distance médiane par tranche de 0,6° (lisse le bruit quand plusieurs tours sont fusionnés)
+  const BW = 0.6, nb = Math.round(360 / BW), bins = new Map();
+  for (let k = 0; k < n; k++){ const b = Math.min(nb - 1, Math.floor(Ag[k] / BW)); (bins.get(b) || bins.set(b, []).get(b)).push(Dd[k]); }
+  const keys = [...bins.keys()].sort((a, b) => a - b), PX = [], PY = [], PB = [], PDd = [];
+  for (const b of keys){
+    const v = bins.get(b).sort((a, c) => a - c), d = v[v.length >> 1], ang = (b + 0.5) * BW * D2R;
+    PX.push(d * Math.cos(ang)); PY.push(d * Math.sin(ang)); PB.push(b); PDd.push(d);
+  }
+  const m = PX.length, plink = new Uint8Array(m);
+  for (let k = 0; k < m; k++){
+    const j = (k + 1) % m, db = (PB[j] - PB[k] + nb) % nb, r = 0.05 + 0.03 * Math.max(PDd[k], PDd[j]);
+    plink[k] = m > 1 && db <= 3 && (PX[k]-PX[j])**2 + (PY[k]-PY[j])**2 < r*r ? 1 : 0;
+  }
+  s.plx = Float32Array.from(PX); s.ply = Float32Array.from(PY); s.plink = plink;
+}
+function recomputeAll(){ S.scans.forEach(computeLocal); renderList(); draw(); }
+
+// repère capteur -> repère carte
+function toWorldPts(s){
+  const c = Math.cos(s.pose.th * D2R), sn = Math.sin(s.pose.th * D2R), n = s.lx.length;
+  const X = new Float32Array(n), Y = new Float32Array(n);
+  for (let k = 0; k < n; k++){
+    X[k] = s.pose.x + c * s.lx[k] - sn * s.ly[k];
+    Y[k] = s.pose.y + sn * s.lx[k] + c * s.ly[k];
+  }
+  return [X, Y];
+}
+
+// ---------------------------------------------------------------- lecture fichiers
+function parseText(text, fname){
+  const base = fname.replace(/\.[^.]+$/, '');
+  const lines = text.split(/\r?\n/);
+  const blocks = []; let cur = null, cols = [0, 1, 2], hasMarkers = /^#SCAN/m.test(text);
+  if (!hasMarkers) cur = { a: [], d: [], i: [] };
+  for (const raw of lines){
+    const line = raw.trim();
+    if (!line) continue;
+    if (line.startsWith('#SCAN')){ const f = (line.split(',')[1] || '').trim(); cur = { a: [], d: [], i: [], name: f && isNaN(+f) ? f : null }; continue; }
+    if (line.startsWith('#END')){ if (cur && cur.a.length) blocks.push(cur); cur = hasMarkers ? null : cur; continue; }
+    if (line.startsWith('#') || !cur) continue;
+    const parts = line.split(/[,;\t ]+/);
+    if (isNaN(parseFloat(parts[0]))){             // ligne d'en-tête : repérer les colonnes
+      const low = parts.map(p => p.toLowerCase());
+      const fa = low.findIndex(p => p.includes('ang')), fd = low.findIndex(p => p.includes('dist')),
+            fi = low.findIndex(p => p.includes('int') || p.includes('qual'));
+      cols = [fa >= 0 ? fa : 0, fd >= 0 ? fd : 1, fi];
+      continue;
+    }
+    const a = parseFloat(parts[cols[0]]), d = parseFloat(parts[cols[1]]);
+    const i = cols[2] >= 0 && cols[2] !== undefined ? parseFloat(parts[cols[2]]) : 255;
+    if (!isFinite(a) || !isFinite(d) || d <= 0) continue;
+    cur.a.push(a); cur.d.push(d); cur.i.push(isFinite(i) ? i : 255);
+  }
+  if (!hasMarkers && cur && cur.a.length) blocks.push(cur);
+  blocks.forEach((b, k) => addScan(b.name || (blocks.length > 1 ? `${base} #${k+1}` : base), b.a, b.d, b.i));
+  return blocks.length;
+}
+
+function loadJSON(obj){
+  if (obj.scans && obj.scans.length && obj.scans[0].a){       // session complète
+    if (obj.opt){ const { cw, ...o } = obj.opt; Object.assign(S.opt, o); syncOptUI(); }
+    obj.scans.forEach(sc => {
+      const s = addScan(sc.name, sc.a, sc.d, sc.i, sc.pose, sc.color);
+      s.locked = !!sc.locked; s.visible = sc.visible !== false;
+      if (sc.scale && sc.scale !== 1){ s.scale = +sc.scale; computeLocal(s); }
+    });
+    return `${obj.scans.length} scans chargés (session)`;
+  }
+  if (obj.widgets) return 'Layout Teleplot ignoré : les points sont dans le fichier .csv';
+  if (obj.scans){                                            // fichier de poses
+    let n = 0;
+    obj.scans.forEach(p => {
+      const s = S.scans.find(s => s.name === p.name);
+      if (s){ s.pose = { x: +p.x || 0, y: +p.y || 0, th: +(p.theta_deg ?? p.th ?? 0) }; if (p.scale){ s.scale = +p.scale; computeLocal(s); } n++; }
+    });
+    return `${n} pose(s) appliquée(s)`;
+  }
+  return 'JSON non reconnu';
+}
+
+async function loadFiles(files){
+  const msgs = []; const before = S.scans.length;
+  // CSV d'abord, puis JSON (les poses s'appliquent aux scans déjà chargés)
+  const sorted = [...files].sort((a, b) => a.name.endsWith('.json') - b.name.endsWith('.json'));
+  for (const f of sorted){
+    const txt = await f.text();
+    try {
+      if (f.name.toLowerCase().endsWith('.json')) msgs.push(loadJSON(JSON.parse(txt)));
+      else if (isTeleplot(txt)) openTeleplot(parseTeleplot(txt), f.name);
+      else { const n = parseText(txt, f.name); if (!n) msgs.push(`${f.name} : aucun point lu`); }
+    } catch (e){ msgs.push(`${f.name} : ${e.message}`); }
+  }
+  const added = S.scans.length - before;
+  if (added) msgs.unshift(`${added} scan(s) ajouté(s)`);
+  if (S.sel < 0 && S.scans.length) S.sel = 0;
+  renderList(); fitView(); if (msgs.length) toast(msgs.join(' · '));
+}
+
+// ---------------------------------------------------------------- démo (salle simulée)
+function makeDemo(){
+  const segs = [];
+  const box = (x0, y0, x1, y1) => { segs.push([x0,y0,x1,y0],[x1,y0,x1,y1],[x1,y1,x0,y1],[x0,y1,x0,y0]); };
+  // murs d'une salle 9 x 6 m avec une porte et un renfoncement
+  segs.push([0,0,9,0],[9,0,9,4.2],[9,4.2,7.6,4.2],[7.6,4.2,7.6,6],[7.6,6,1.2,6],[0.3,6,0,6],[0,6,0,0]);
+  box(2,1.6,3.6,2.3); box(5,1.6,6.6,2.3); box(2,3.6,3.6,4.3); box(5,3.6,6.6,4.3);  // tables
+  box(4.2,0,4.6,0.4); box(8.4,0.5,8.9,2.5);                                          // pilier, armoire
+  const truth = [ {x:1.2,y:1.0,th:20}, {x:4.3,y:3.0,th:-35}, {x:7.0,y:1.2,th:95}, {x:3.0,y:5.2,th:-150} ];
+  const gauss = () => Math.sqrt(-2*Math.log(Math.random()+1e-12)) * Math.cos(2*Math.PI*Math.random());
+  truth.forEach((p, k) => {
+    const A = [], Dd = [], I = [];
+    for (let a = 0; a < 360; a += 0.8){
+      const ang = (p.th + a) * D2R, dx = Math.cos(ang), dy = Math.sin(ang);   // angles trigo (comme getPoints())
+      let best = Infinity;
+      for (const [x0,y0,x1,y1] of segs){
+        const ex = x1-x0, ey = y1-y0, den = dx*ey - dy*ex;
+        if (Math.abs(den) < 1e-9) continue;
+        const t = ((x0-p.x)*ey - (y0-p.y)*ex) / den, u = ((x0-p.x)*dy - (y0-p.y)*dx) / den;
+        if (t > 0.02 && u >= 0 && u <= 1 && t < best) best = t;
+      }
+      if (best > 12) continue;
+      A.push(+(a + gauss()*0.1).toFixed(2)); Dd.push(Math.round(best*1000 + gauss()*10)); I.push(Math.round(150 + Math.random()*100));
+    }
+    addScan(`demo_pos${k+1}`, A, Dd, I);
+  });
+  S.scans[S.scans.length - 4].locked = false;
+  S.sel = S.scans.length - 4;
+  renderList(); fitView();
+  toast('4 scans simulés chargés à la pose (0,0,0) : à toi de les superposer !');
+}
+
+// ---------------------------------------------------------------- liste latérale
+function renderList(){
+  const L = $('list'); L.innerHTML = '';
+  if (!S.scans.length){
+    const saved = savedSession();
+    L.innerHTML = '<div class="empty">Aucun scan. Connecte le robot et capture, charge des fichiers, ou essaie les données démo.' +
+      (saved ? `<br><br><button id="restore" class="primary">Restaurer la dernière session (${saved.scans.length} scans)</button>` : '') + '</div>';
+    if (saved) $('restore').onclick = () => { loadJSON(saved); S.sel = 0; renderList(); fitView(); toast('Session restaurée'); };
+    return;
+  }
+  S.scans.forEach((s, k) => {
+    const el = document.createElement('div');
+    el.className = 'scan' + (k === S.sel ? ' sel' : '');
+    el.innerHTML = `
+      <div class="top">
+        <input type="color" value="${toHex(s.color)}" title="Couleur">
+        <span class="name" title="${s.name}">${s.name}</span>
+        <span class="meta">${s.lx.length} pts</span>
+        <button class="icon ${s.visible ? 'on' : ''}" data-act="vis" title="Afficher / masquer">${s.visible ? '◉' : '○'}</button>
+        <button class="icon ${s.locked ? 'on' : ''}" data-act="lock" title="Verrouiller (référence)">${s.locked ? '🔒' : '🔓'}</button>
+        <button class="icon" data-act="del" title="Supprimer">✕</button>
+      </div>
+      <div class="pose">
+        <label>x (m)<input type="number" step="0.01" data-k="x"></label>
+        <label>y (m)<input type="number" step="0.01" data-k="y"></label>
+        <label>θ (°)<input type="number" step="0.5" data-k="th"></label>
+      </div>
+      <div class="rot" title="Rotation du scan autour de son origine (+ = sens anti-horaire)">
+        <button data-r="5">⟲ 5°</button><button data-r="1">⟲ 1°</button>
+        <input type="range" min="-180" max="180" step="0.1" class="thr">
+        <button data-r="-1">1° ⟳</button><button data-r="-5">5° ⟳</button>
+      </div>
+      <div class="scl" title="Taille du scan (échelle des distances autour de son origine)">
+        <span class="lbl">Taille %</span>
+        <button data-k="-0.05" title="−5 %">−5</button><button data-k="-0.01" title="−1 %">−1</button><button data-k="-0.001" title="−0,1 %">−.1</button>
+        <input type="number" step="0.1" min="20" max="500" class="sclv" title="Taille en % (100 = taille mesurée)">
+        <button data-k="0.001" title="+0,1 %">+.1</button><button data-k="0.01" title="+1 %">+1</button><button data-k="0.05" title="+5 %">+5</button>
+        <button data-k="reset" title="Revenir à 100 %">1:1</button>
+      </div>`;
+    el.addEventListener('mousedown', e => { if (e.target.tagName !== 'INPUT' && e.target.tagName !== 'BUTTON') select(k); });
+    el.querySelector('input[type=color]').addEventListener('input', e => { s.color = e.target.value; draw(); });
+    el.querySelectorAll('button[data-act]').forEach(b => b.addEventListener('click', () => {
+      const act = b.dataset.act;
+      if (act === 'vis') s.visible = !s.visible;
+      if (act === 'lock') s.locked = !s.locked;
+      if (act === 'del'){ S.scans.splice(k, 1); if (S.sel >= S.scans.length) S.sel = S.scans.length - 1; }
+      renderList(); draw();
+    }));
+    el.querySelectorAll('.pose input').forEach(inp => {
+      inp.addEventListener('focus', () => { select(k, false); pushUndo(s); });
+      inp.addEventListener('input', () => {
+        const v = parseFloat(inp.value); if (!isFinite(v)) return;
+        if (s.locked){ toast('Scan verrouillé'); updateInputs(s); return; }
+        s.pose[inp.dataset.k] = v; draw();
+      });
+    });
+    el.querySelectorAll('.rot button').forEach(b => b.addEventListener('click', () => {
+      select(k, false); if (!canMove(s)) return;
+      pushUndo(s); s.pose.th = normDeg(s.pose.th + +b.dataset.r); updateInputs(s); draw();
+    }));
+    el.querySelectorAll('.scl button').forEach(b => b.addEventListener('click', () => {
+      select(k, false); if (!canMove(s)) return;
+      pushUndo(s);
+      setScale(s, b.dataset.k === 'reset' ? 1 : (s.scale || 1) * (1 + +b.dataset.k));
+    }));
+    const sv = el.querySelector('.sclv');
+    sv.addEventListener('focus', () => { select(k, false); pushUndo(s); });
+    sv.addEventListener('input', () => {
+      const v = parseFloat(sv.value); if (!(v >= 20 && v <= 500)) return;
+      if (s.locked){ toast(`« ${s.name} » est verrouillé`); updateInputs(s); return; }
+      setScale(s, v / 100, true);
+    });
+    const thr = el.querySelector('.thr');
+    thr.addEventListener('pointerdown', () => { select(k, false); pushUndo(s); });
+    thr.addEventListener('input', () => {
+      if (s.locked){ toast(`« ${s.name} » est verrouillé`); updateInputs(s); return; }
+      s.pose.th = +thr.value; updateInputs(s); draw();
+    });
+    s.el = el; L.appendChild(el); updateInputs(s);
+  });
+}
+function updateInputs(s){
+  if (!s.el) return;
+  s.el.querySelectorAll('.pose input').forEach(inp => {
+    if (document.activeElement === inp) return;
+    const v = s.pose[inp.dataset.k];
+    inp.value = inp.dataset.k === 'th' ? v.toFixed(1) : v.toFixed(3);
+  });
+  const sv = s.el.querySelector('.sclv'); if (sv && document.activeElement !== sv) sv.value = ((s.scale || 1) * 100).toFixed(1);
+  if (sv) sv.parentElement.classList.toggle('changed', Math.abs((s.scale || 1) - 1) > 1e-6);
+  const thr = s.el.querySelector('.thr'); if (thr && document.activeElement !== thr) thr.value = s.pose.th;
+  else if (thr) thr.value = s.pose.th;
+}
+function setScale(s, k, fromInput){
+  s.scale = Math.min(5, Math.max(0.2, k));
+  computeLocal(s);
+  const m = s.el && s.el.querySelector('.meta'); if (m) m.textContent = s.lx.length + ' pts';
+  updateInputs(s);
+  draw();
+}
+function select(k, rerender = true){
+  if (k === S.sel) return;
+  S.sel = k;
+  document.querySelectorAll('.scan').forEach((el, j) => el.classList.toggle('sel', j === k));
+  draw();
+}
+function toHex(c){ if (c.startsWith('#')) return c; const t = document.createElement('canvas').getContext('2d'); t.fillStyle = c; return t.fillStyle; }
+
+// ---------------------------------------------------------------- dessin
+let dpr = 1, W = 0, H = 0, pending = false;
+function resize(){
+  dpr = window.devicePixelRatio || 1;
+  const r = cv.getBoundingClientRect(); W = r.width; H = r.height;
+  cv.width = Math.round(W * dpr); cv.height = Math.round(H * dpr); draw();
+}
+const w2s = (x, y) => [W/2 + (x - S.view.x) * S.view.s, H/2 - (y - S.view.y) * S.view.s];
+const s2w = (px, py) => [S.view.x + (px - W/2) / S.view.s, S.view.y - (py - H/2) / S.view.s];
+
+function draw(){ scheduleSave(); if (!pending){ pending = true; requestAnimationFrame(render); } }
+function render(){
+  pending = false;
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.fillStyle = '#0f1216'; ctx.fillRect(0, 0, W, H);
+  if (S.opt.grid) drawGrid();
+  const order = S.scans.map((s, k) => k).filter(k => k !== S.sel);
+  if (S.sel >= 0) order.push(S.sel);
+  const r = S.opt.ptSize;
+  for (const k of order){
+    const s = S.scans[k]; if (!s.visible) continue;
+    const c = Math.cos(s.pose.th*D2R), sn = Math.sin(s.pose.th*D2R);
+    let alpha = (S.opt.dim && S.sel >= 0 && k !== S.sel) ? 0.55 : 1;
+    if (SER.live && SER.liveScan) alpha *= 0.35;           // l'aperçu direct passe au premier plan
+    ctx.globalAlpha = alpha;
+    drawCloud(s, c, sn, s.pose.x, s.pose.y, s.color, r, S.opt.fill ? 0.07 : 0);
+    ctx.globalAlpha = 1;
+    if (S.opt.origins) drawOrigin(s, k === S.sel);
+  }
+  const ss = selScan(); if (ss && ss.visible && !ss.locked) drawRotHandle(ss);
+  if (SER.live && SER.liveScan) drawLive(SER.liveScan, r);
+  // axes de la carte
+  const [ox, oy] = w2s(0, 0);
+  ctx.lineWidth = 2;
+  ctx.strokeStyle = '#ff5c5c'; ctx.beginPath(); ctx.moveTo(ox, oy); ctx.lineTo(ox + 30, oy); ctx.stroke();
+  ctx.strokeStyle = '#4cd97b'; ctx.beginPath(); ctx.moveTo(ox, oy); ctx.lineTo(ox, oy - 30); ctx.stroke();
+  if (S.opt.legend) drawLegend();
+}
+
+// nuage d'un scan : zone vue (option), murs reliés, points
+function drawCloud(s, c, sn, tx, ty, color, r, fillAlpha){
+  const n = s.lx.length; if (!n) return;
+  const PX = new Float32Array(n), PY = new Float32Array(n);
+  for (let j = 0; j < n; j++){
+    const X = tx + c*s.lx[j] - sn*s.ly[j], Y = ty + sn*s.lx[j] + c*s.ly[j];
+    PX[j] = W/2 + (X - S.view.x) * S.view.s; PY[j] = H/2 - (Y - S.view.y) * S.view.s;
+  }
+  const a0 = ctx.globalAlpha;
+  const m = s.plx ? s.plx.length : 0, QX = new Float32Array(m), QY = new Float32Array(m);
+  for (let j = 0; j < m; j++){
+    const X = tx + c*s.plx[j] - sn*s.ply[j], Y = ty + sn*s.plx[j] + c*s.ply[j];
+    QX[j] = W/2 + (X - S.view.x) * S.view.s; QY[j] = H/2 - (Y - S.view.y) * S.view.s;
+  }
+  if (fillAlpha > 0 && m > 2){                                  // polygone de l'espace libre vu par le lidar
+    ctx.fillStyle = color; ctx.globalAlpha = fillAlpha * (a0 < 1 ? 0.6 : 1);
+    ctx.beginPath(); ctx.moveTo(QX[0], QY[0]);
+    for (let j = 1; j < m; j++) ctx.lineTo(QX[j], QY[j]);
+    ctx.closePath(); ctx.fill();
+    ctx.globalAlpha = a0;
+  }
+  if (S.opt.lines && m > 1){
+    ctx.strokeStyle = color; ctx.lineWidth = Math.max(1.2, r * 0.75); ctx.lineJoin = 'round';
+    ctx.beginPath();
+    for (let j = 0; j < m; j++){
+      if (j > 0 && s.plink[j-1]) ctx.lineTo(QX[j], QY[j]); else ctx.moveTo(QX[j], QY[j]);
+    }
+    if (s.plink[m-1]) ctx.lineTo(QX[0], QY[0]);
+    ctx.stroke();
+  }
+  ctx.fillStyle = color;
+  for (let j = 0; j < n; j++) ctx.fillRect(PX[j] - r/2, PY[j] - r/2, r, r);
+}
+
+// aperçu direct façon radar : cercles de distance, zone vue, robot
+function drawLive(L, r){
+  const [ox, oy] = w2s(0, 0);
+  let maxD = 0; for (let j = 0; j < L.lx.length; j++) maxD = Math.max(maxD, Math.hypot(L.lx[j], L.ly[j]));
+  ctx.save();
+  ctx.setLineDash([4, 5]); ctx.lineWidth = 1; ctx.strokeStyle = 'rgba(255,255,255,.22)';
+  ctx.font = '11px system-ui'; ctx.fillStyle = 'rgba(255,255,255,.55)';
+  const ringStep = maxD > 8 ? 2 : 1;
+  for (let m = ringStep; m <= Math.ceil(maxD); m += ringStep){
+    ctx.beginPath(); ctx.arc(ox, oy, m * S.view.s, 0, 2*Math.PI); ctx.stroke();
+    ctx.fillText(m + ' m', ox + m * S.view.s * 0.707 + 3, oy - m * S.view.s * 0.707 - 3);
+  }
+  ctx.restore();
+  drawCloud(L, 1, 0, 0, 0, '#ffffff', r + 0.5, 0.09);
+  // robot : triangle orienté vers l'avant du lidar (0°)
+  ctx.fillStyle = '#ffffff'; ctx.strokeStyle = '#0f1216'; ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.moveTo(ox + 16, oy); ctx.lineTo(ox - 9, oy - 9); ctx.lineTo(ox - 5, oy); ctx.lineTo(ox - 9, oy + 9); ctx.closePath();
+  ctx.stroke(); ctx.fill();
+  ctx.font = '600 12px system-ui'; ctx.fillText('robot (avant →)', ox + 12, oy + 22);
+}
+
+function drawLegend(){
+  const items = S.scans.filter(s => s.visible).map(s => [s.color, s.name + (s.locked ? ' 🔒' : '')]);
+  if (SER.live && SER.liveScan) items.unshift(['#ffffff', 'aperçu direct']);
+  if (!items.length) return;
+  ctx.font = '12px system-ui';
+  const w = Math.max(...items.map(i => ctx.measureText(i[1]).width)) + 34, h = items.length * 18 + 10;
+  ctx.fillStyle = 'rgba(15,18,22,.82)'; ctx.strokeStyle = '#262c35'; ctx.lineWidth = 1;
+  ctx.fillRect(10, 10, w, h); ctx.strokeRect(10.5, 10.5, w, h);
+  items.forEach(([col, name], k) => {
+    ctx.fillStyle = col; ctx.fillRect(20, 20 + k*18, 12, 4);
+    ctx.fillStyle = '#e3e7ec'; ctx.fillText(name, 40, 25 + k*18);
+  });
+}
+function drawGrid(){
+  const steps = [0.05, 0.1, 0.2, 0.5, 1, 2, 5, 10];
+  const step = steps.find(st => st * S.view.s >= 40) || 10;
+  const [x0, y1] = s2w(0, 0), [x1, y0] = s2w(W, H);
+  ctx.lineWidth = 1; ctx.font = '11px system-ui'; ctx.fillStyle = '#566070';
+  for (let x = Math.floor(x0/step)*step; x <= x1; x += step){
+    const [px] = w2s(x, 0), major = Math.abs(x/(step*5) - Math.round(x/(step*5))) < 1e-6;
+    ctx.strokeStyle = Math.abs(x) < 1e-9 ? '#3b4452' : major ? '#232a33' : '#1a1f26';
+    ctx.beginPath(); ctx.moveTo(px + .5, 0); ctx.lineTo(px + .5, H); ctx.stroke();
+    if (major) ctx.fillText(+x.toFixed(2) + ' m', px + 3, H - 24);
+  }
+  for (let y = Math.floor(y0/step)*step; y <= y1; y += step){
+    const [, py] = w2s(0, y), major = Math.abs(y/(step*5) - Math.round(y/(step*5))) < 1e-6;
+    ctx.strokeStyle = Math.abs(y) < 1e-9 ? '#3b4452' : major ? '#232a33' : '#1a1f26';
+    ctx.beginPath(); ctx.moveTo(0, py + .5); ctx.lineTo(W, py + .5); ctx.stroke();
+    if (major) ctx.fillText(+y.toFixed(2) + ' m', 4, py - 3);
+  }
+}
+// poignée de rotation : cercle autour de l'origine du scan sélectionné, bouton sur la direction θ
+const ROT_R = 70;
+function rotHandlePos(s){ const [px, py] = w2s(s.pose.x, s.pose.y), th = s.pose.th * D2R; return [px, py, px + ROT_R*Math.cos(th), py - ROT_R*Math.sin(th)]; }
+function drawRotHandle(s){
+  const [px, py, kx, ky] = rotHandlePos(s);
+  ctx.save();
+  ctx.strokeStyle = s.color; ctx.globalAlpha = 0.55; ctx.lineWidth = 1.5; ctx.setLineDash([5, 5]);
+  ctx.beginPath(); ctx.arc(px, py, ROT_R, 0, 2*Math.PI); ctx.stroke();
+  ctx.setLineDash([]); ctx.globalAlpha = 1;
+  ctx.beginPath(); ctx.moveTo(px, py); ctx.lineTo(kx, ky); ctx.stroke();
+  ctx.fillStyle = s.color; ctx.strokeStyle = '#0f1216'; ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.arc(kx, ky, 8, 0, 2*Math.PI); ctx.fill(); ctx.stroke();
+  ctx.fillStyle = '#0f1216'; ctx.font = '700 11px system-ui'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.fillText('⟳', kx, ky + 0.5);
+  ctx.textAlign = 'left'; ctx.textBaseline = 'alphabetic'; ctx.fillStyle = s.color; ctx.font = '600 12px system-ui';
+  ctx.fillText(`θ = ${s.pose.th.toFixed(1)}°`, kx + 12, ky - 10);
+  ctx.restore();
+}
+function onRotHandle(mx, my){
+  const s = selScan(); if (!s || !s.visible || s.locked) return false;
+  const [px, py, kx, ky] = rotHandlePos(s);
+  const dk = Math.hypot(mx - kx, my - ky), dr = Math.abs(Math.hypot(mx - px, my - py) - ROT_R);
+  return dk < 12 || dr < 6;
+}
+function drawOrigin(s, selected){
+  const [px, py] = w2s(s.pose.x, s.pose.y), th = s.pose.th * D2R, L = selected ? 26 : 18;
+  ctx.strokeStyle = s.color; ctx.fillStyle = s.color; ctx.lineWidth = selected ? 2.5 : 1.5;
+  ctx.beginPath(); ctx.arc(px, py, selected ? 7 : 5, 0, 2*Math.PI); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(px, py); ctx.lineTo(px + L*Math.cos(th), py - L*Math.sin(th)); ctx.stroke();
+  ctx.font = (selected ? '600 ' : '') + '12px system-ui';
+  const sc = s.scale || 1;
+  ctx.fillText(s.name + (Math.abs(sc - 1) > 1e-6 ? ` ×${sc.toFixed(3)}` : '') + (s.locked ? ' 🔒' : ''), px + 10, py + 16);
+}
+
+function fitView(){
+  let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+  for (const s of S.scans){ if (!s.visible) continue;
+    const [X, Y] = toWorldPts(s);
+    for (let k = 0; k < X.length; k++){ if (X[k]<x0) x0=X[k]; if (X[k]>x1) x1=X[k]; if (Y[k]<y0) y0=Y[k]; if (Y[k]>y1) y1=Y[k]; }
+  }
+  if (!isFinite(x0)){ S.view = { x: 0, y: 0, s: 80 }; draw(); return; }
+  S.view.x = (x0 + x1) / 2; S.view.y = (y0 + y1) / 2;
+  S.view.s = Math.min(W / Math.max(x1 - x0, 0.5), H / Math.max(y1 - y0, 0.5)) * 0.88;
+  draw();
+}
+
+// ---------------------------------------------------------------- interactions
+function pushUndo(s){ S.undo.push({ id: s.id, pose: { ...s.pose }, scale: s.scale || 1 }); if (S.undo.length > 300) S.undo.shift(); }
+function undo(){
+  const u = S.undo.pop(); if (!u) return toast('Rien à annuler');
+  if (u.multi){
+    u.multi.forEach(m => { const s = S.scans.find(s => s.id === m.id); if (s){ s.pose = m.pose; s.locked = m.locked; } });
+    renderList(); draw(); toast('Superposition automatique annulée'); return;
+  }
+  const s = S.scans.find(s => s.id === u.id); if (!s) return undo();
+  s.pose = u.pose;
+  if (u.scale !== undefined && u.scale !== s.scale){ s.scale = u.scale; computeLocal(s); }
+  updateInputs(s); draw();
+}
+function selScan(){ return S.sel >= 0 ? S.scans[S.sel] : null; }
+function canMove(s){ if (!s) return false; if (s.locked){ toast(`« ${s.name} » est verrouillé`); return false; } return true; }
+
+function hitTest(mx, my){
+  let best = -1, bd = 10*10;
+  S.scans.forEach((s, k) => {
+    if (!s.visible) return;
+    const [ox, oy] = w2s(s.pose.x, s.pose.y);
+    let d = (ox-mx)**2 + (oy-my)**2; if (d < bd){ bd = d; best = k; }
+    const c = Math.cos(s.pose.th*D2R), sn = Math.sin(s.pose.th*D2R);
+    for (let j = 0; j < s.lx.length; j++){
+      const [px, py] = w2s(s.pose.x + c*s.lx[j] - sn*s.ly[j], s.pose.y + sn*s.lx[j] + c*s.ly[j]);
+      d = (px-mx)**2 + (py-my)**2; if (d < bd){ bd = d; best = k; }
+    }
+  });
+  return best;
+}
+
+let drag = null, TOOL = 'move';
+function setTool(t){ TOOL = t; $('toolMove').classList.toggle('on', t === 'move'); $('toolRot').classList.toggle('on', t === 'rot'); }
+$('toolMove').onclick = () => setTool('move');
+$('toolRot').onclick = () => setTool('rot');
+cv.addEventListener('contextmenu', e => e.preventDefault());
+cv.addEventListener('pointerdown', e => {
+  const r = cv.getBoundingClientRect(), mx = e.clientX - r.left, my = e.clientY - r.top;
+  cv.setPointerCapture(e.pointerId);
+  if (e.button === 0 && onRotHandle(mx, my)){
+    const s = selScan(); pushUndo(s);
+    drag = { mode: 'rot', s, p0: { ...s.pose }, w0: s2w(mx, my) };
+    cv.style.cursor = 'grabbing';
+    return;
+  }
+  if (e.button === 0){
+    const h = hitTest(mx, my);
+    if (h >= 0){
+      select(h);
+      const s = S.scans[h];
+      if (!s.locked){
+        pushUndo(s);
+        const rot = e.shiftKey || TOOL === 'rot';
+        drag = { mode: rot ? 'rot' : 'move', s, p0: { ...s.pose }, w0: s2w(mx, my) };
+        cv.style.cursor = 'grabbing';
+        return;
+      }
+    }
+  }
+  drag = { mode: 'pan', m0: [mx, my], v0: { ...S.view } };
+  cv.style.cursor = 'grabbing';
+});
+cv.addEventListener('pointermove', e => {
+  const r = cv.getBoundingClientRect(), mx = e.clientX - r.left, my = e.clientY - r.top;
+  const [wx, wy] = s2w(mx, my);
+  $('hud').textContent = `x ${wx.toFixed(3)} m   y ${wy.toFixed(3)} m   ·   ${(100/S.view.s*100).toFixed(1)} cm / 100 px`;
+  if (!drag){ cv.style.cursor = onRotHandle(mx, my) ? 'grab' : 'crosshair'; return; }
+  if (drag.mode === 'pan'){
+    S.view.x = drag.v0.x - (mx - drag.m0[0]) / S.view.s;
+    S.view.y = drag.v0.y + (my - drag.m0[1]) / S.view.s;
+  } else if (drag.mode === 'move'){
+    drag.s.pose.x = drag.p0.x + wx - drag.w0[0];
+    drag.s.pose.y = drag.p0.y + wy - drag.w0[1];
+    updateInputs(drag.s);
+  } else {
+    const a0 = Math.atan2(drag.w0[1] - drag.p0.y, drag.w0[0] - drag.p0.x);
+    const a1 = Math.atan2(wy - drag.p0.y, wx - drag.p0.x);
+    drag.s.pose.th = normDeg(drag.p0.th + (a1 - a0) / D2R);
+    updateInputs(drag.s);
+  }
+  draw();
+});
+cv.addEventListener('pointerup', () => { drag = null; cv.style.cursor = 'crosshair'; });
+
+cv.addEventListener('wheel', e => {
+  e.preventDefault();
+  const s = selScan();
+  if (e.shiftKey && s){
+    if (!canMove(s)) return;
+    const dir = Math.sign(e.deltaY || e.deltaX);
+    pushUndo(s); s.pose.th = normDeg(s.pose.th - dir * (e.altKey ? 0.1 : 1)); updateInputs(s); draw();
+    return;
+  }
+  const r = cv.getBoundingClientRect(), mx = e.clientX - r.left, my = e.clientY - r.top;
+  const [wx, wy] = s2w(mx, my);
+  S.view.s = Math.min(5000, Math.max(5, S.view.s * Math.exp(-e.deltaY * 0.0015)));
+  const [nx, ny] = s2w(mx, my);
+  S.view.x += wx - nx; S.view.y += wy - ny;
+  draw();
+}, { passive: false });
+
+window.addEventListener('keydown', e => {
+  if (e.target.tagName === 'INPUT' && e.target.type !== 'checkbox' && e.target.type !== 'range') return;
+  const s = selScan();
+  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z'){ e.preventDefault(); undo(); return; }
+  if (e.key === 'Tab' && S.scans.length){ e.preventDefault(); select((S.sel + (e.shiftKey ? -1 : 1) + S.scans.length) % S.scans.length); return; }
+  if (e.key.toLowerCase() === 'f'){ fitView(); return; }
+  if (e.key.toLowerCase() === 'r' && !e.ctrlKey && !e.metaKey){ setTool('rot'); return; }
+  if (e.key.toLowerCase() === 'm'){ setTool('move'); return; }
+  if ((e.key === '-' || e.key === '+' || e.key === '=') && s){
+    e.preventDefault(); if (!canMove(s)) return;
+    pushUndo(s); setScale(s, (s.scale || 1) * (1 + (e.key === '-' ? -1 : 1) * (e.shiftKey && e.key !== '+' ? 0.05 : 0.005)));
+    return;
+  }
+  const st = e.shiftKey ? 0.1 : 0.01, rt = e.shiftKey ? 5 : 0.5;
+  const moves = { ArrowLeft: [-st,0,0], ArrowRight: [st,0,0], ArrowUp: [0,st,0], ArrowDown: [0,-st,0], a: [0,0,rt], A: [0,0,rt], e: [0,0,-rt], E: [0,0,-rt] };
+  const m = moves[e.key];
+  if (m && s){
+    e.preventDefault();
+    if (!canMove(s)) return;
+    pushUndo(s); s.pose.x += m[0]; s.pose.y += m[1]; s.pose.th = normDeg(s.pose.th + m[2]);
+    updateInputs(s); draw();
+  }
+});
+const normDeg = a => ((a + 180) % 360 + 360) % 360 - 180;
+
+// ---------------------------------------------------------------- ICP point-à-ligne (affinage automatique)
+// Recale le scan sélectionné sur les scans verrouillés (sinon sur tous les autres scans visibles).
+// Minimise la distance de chaque point à la ligne locale (mur) du scan de référence.
+// Prépare les scans de référence : points monde, grille de recherche, normales locales (murs)
+function buildRef(refScans){
+  const TX = [], TY = [];
+  refScans.forEach(o => { const [X, Y] = toWorldPts(o); for (let k = 0; k < X.length; k++){ TX.push(X[k]); TY.push(Y[k]); } });
+  const cell = 0.5, grid = new Map(), key = (ix, iy) => ix * 73856093 ^ iy * 19349663;
+  TX.forEach((x, k) => { const kk = key(Math.floor(x/cell), Math.floor(TY[k]/cell)); (grid.get(kk) || grid.set(kk, []).get(kk)).push(k); });
+  const nearest = (wx, wy, maxD) => {
+    const ix = Math.floor(wx/cell), iy = Math.floor(wy/cell); let bd = maxD*maxD, bj = -1;
+    for (let dx = -1; dx <= 1; dx++) for (let dy = -1; dy <= 1; dy++){
+      const g = grid.get(key(ix+dx, iy+dy)); if (!g) continue;
+      for (const j of g){ const d = (TX[j]-wx)**2 + (TY[j]-wy)**2; if (d < bd){ bd = d; bj = j; } }
+    }
+    return bj;
+  };
+  const NX = new Float32Array(TX.length), NY = new Float32Array(TX.length), OK = new Uint8Array(TX.length);
+  const R2 = 0.2*0.2;
+  for (let k = 0; k < TX.length; k++){
+    const ix = Math.floor(TX[k]/cell), iy = Math.floor(TY[k]/cell);
+    let n = 0, mx = 0, my = 0; const nb = [];
+    for (let dx = -1; dx <= 1; dx++) for (let dy = -1; dy <= 1; dy++){
+      const g = grid.get(key(ix+dx, iy+dy)); if (!g) continue;
+      for (const j of g) if ((TX[j]-TX[k])**2 + (TY[j]-TY[k])**2 < R2){ nb.push(j); mx += TX[j]; my += TY[j]; n++; }
+    }
+    if (n < 4) continue;
+    mx /= n; my /= n; let cxx = 0, cxy = 0, cyy = 0;
+    for (const j of nb){ const ax = TX[j]-mx, ay = TY[j]-my; cxx += ax*ax; cxy += ax*ay; cyy += ay*ay; }
+    const ang = 0.5 * Math.atan2(2*cxy, cxx - cyy);          // direction principale (le mur)
+    const l1 = (cxx+cyy)/2 + Math.hypot((cxx-cyy)/2, cxy), l2 = (cxx+cyy)/2 - Math.hypot((cxx-cyy)/2, cxy);
+    if (l2 > 0.3 * l1) continue;                               // zone non linéaire (coin, bruit)
+    NX[k] = -Math.sin(ang); NY[k] = Math.cos(ang); OK[k] = 1;
+  }
+  return { TX, TY, NX, NY, OK, nearest };
+}
+// ICP point-à-ligne : pose = {x, y, th (rad)} -> pose affinée
+function icpCore(ref, s, pose, maxD0 = 0.6){
+  const stepS = Math.max(1, Math.ceil(s.lx.length / 1200)), SX = [], SY = [];
+  for (let k = 0; k < s.lx.length; k += stepS){ SX.push(s.lx[k]); SY.push(s.ly[k]); }
+  let { x, y, th } = pose, maxD = maxD0, err = 0, used = 0;
+  for (let it = 0; it < 80; it++){
+    const c = Math.cos(th), sn = Math.sin(th), P = [];
+    for (let k = 0; k < SX.length; k++){
+      const rx = c*SX[k] - sn*SY[k], ry = sn*SX[k] + c*SY[k];     // point relatif à l'origine du scan
+      const wx = x + rx, wy = y + ry, j = ref.nearest(wx, wy, maxD);
+      if (j < 0 || !ref.OK[j]) continue;
+      const e = ref.NX[j]*(wx - ref.TX[j]) + ref.NY[j]*(wy - ref.TY[j]);   // distance signée à la ligne
+      P.push([rx, ry, ref.NX[j], ref.NY[j], e]);
+    }
+    if (P.length < 15) break;
+    P.sort((a, b) => Math.abs(a[4]) - Math.abs(b[4]));
+    const Q = P.slice(0, Math.ceil(P.length * 0.85));
+    // moindres carrés linéarisés : J = [nx, ny, nx*(-ry) + ny*rx], inconnues (tx, ty, dθ)
+    const A = [[0,0,0],[0,0,0],[0,0,0]], bv = [0,0,0];
+    for (const [rx, ry, nx, ny, e] of Q){
+      const J = [nx, ny, -nx*ry + ny*rx];
+      for (let i = 0; i < 3; i++){ bv[i] -= J[i]*e; for (let j = 0; j < 3; j++) A[i][j] += J[i]*J[j]; }
+    }
+    for (let i = 0; i < 3; i++) A[i][i] += 1e-6;
+    const sol = solve3(A, bv); if (!sol) break;
+    x += sol[0]; y += sol[1]; th += sol[2];
+    err = Math.sqrt(Q.reduce((a, q) => a + q[4]*q[4], 0) / Q.length); used = Q.length;
+    maxD = Math.max(0.08, maxD * 0.8);
+    if (Math.abs(sol[2]) < 1e-6 && Math.hypot(sol[0], sol[1]) < 1e-5 && maxD <= 0.08) break;
+  }
+  return { x, y, th, err, used };
+}
+function refScansFor(s){
+  // références = scans verrouillés visibles ; à défaut, tous les autres scans visibles
+  let others = S.scans.filter(o => o !== s && o.visible && o.locked);
+  if (!others.length) others = S.scans.filter(o => o !== s && o.visible);
+  return others;
+}
+function runICP(){
+  const s = selScan();
+  if (!canMove(s)) return;
+  const others = refScansFor(s);
+  if (!others.length) return toast('Il faut au moins un autre scan visible comme référence');
+  pushUndo(s);
+  const r = icpCore(buildRef(others), s, { x: s.pose.x, y: s.pose.y, th: s.pose.th * D2R });
+  if (!r.used) return toast('ICP : pas assez de recouvrement. Rapproche d’abord le scan à la main.');
+  s.pose = { x: r.x, y: r.y, th: normDeg(r.th / D2R) };
+  updateInputs(s); draw();
+  toast(`ICP : écart moyen ${(r.err*1000).toFixed(1)} mm aux murs, ${r.used} points appariés (Ctrl+Z pour annuler)`);
+}
+
+// ---------------------------------------------------------------- superposition automatique
+// Carte de "vraisemblance" : 1 sur les points de référence, décroît avec la distance (gaussienne)
+function buildLik(refScans, cell, sigma, margin){
+  let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity; const P = [];
+  refScans.forEach(o => { const [X, Y] = toWorldPts(o); for (let k = 0; k < X.length; k++){ P.push(X[k], Y[k]); if (X[k]<x0) x0=X[k]; if (X[k]>x1) x1=X[k]; if (Y[k]<y0) y0=Y[k]; if (Y[k]>y1) y1=Y[k]; } });
+  x0 -= margin; y0 -= margin; x1 += margin; y1 += margin;
+  const W = Math.ceil((x1 - x0) / cell) + 1, H = Math.ceil((y1 - y0) / cell) + 1, g = new Float32Array(W * H);
+  const R = Math.ceil(2.5 * sigma / cell), ker = [];
+  for (let dy = -R; dy <= R; dy++) for (let dx = -R; dx <= R; dx++) ker.push(dx, dy, Math.exp(-((dx*cell)**2 + (dy*cell)**2) / (2*sigma*sigma)));
+  for (let k = 0; k < P.length; k += 2){
+    const ix = Math.round((P[k] - x0) / cell), iy = Math.round((P[k+1] - y0) / cell);
+    for (let m = 0; m < ker.length; m += 3){
+      const X = ix + ker[m], Y = iy + ker[m+1]; if (X < 0 || Y < 0 || X >= W || Y >= H) continue;
+      const i = Y * W + X; if (ker[m+2] > g[i]) g[i] = ker[m+2];
+    }
+  }
+  return { g, W, H, x0, y0, cell, bx0: x0 + margin, by0: y0 + margin, bx1: x1 - margin, by1: y1 - margin };
+}
+function likScore(L, s, pose, nmax){
+  const step = Math.max(1, Math.floor(s.lx.length / nmax)), c = Math.cos(pose.th), sn = Math.sin(pose.th);
+  let sum = 0, n = 0;
+  for (let k = 0; k < s.lx.length; k += step){
+    const X = Math.round((pose.x + c*s.lx[k] - sn*s.ly[k] - L.x0) / L.cell), Y = Math.round((pose.y + sn*s.lx[k] + c*s.ly[k] - L.y0) / L.cell);
+    n++; if (X >= 0 && Y >= 0 && X < L.W && Y < L.H) sum += L.g[Y * L.W + X];
+  }
+  return n ? sum / n : 0;
+}
+// Recherche globale de la pose d'un scan sur les références (sans tenir compte de sa pose actuelle)
+async function globalMatch(s, refScans, onProgress){
+  const coarse = buildLik(refScans, 0.1, 0.2, 1.0), fine = buildLik(refScans, 0.04, 0.05, 0.5), ref = buildRef(refScans);
+  // points échantillonnés, de préférence répartis (en évitant les zones trop denses)
+  const step = Math.max(1, Math.floor(s.lx.length / 160)), LX = [], LY = [];
+  for (let k = 0; k < s.lx.length; k += step){ LX.push(s.lx[k]); LY.push(s.ly[k]); }
+  const n = LX.length, C = coarse, tStep = 2;                          // translation : 2 cellules = 20 cm
+  const tx0 = Math.floor((C.bx0 - 0.5 - C.x0) / C.cell), tx1 = Math.ceil((C.bx1 + 0.5 - C.x0) / C.cell);
+  const ty0 = Math.floor((C.by0 - 0.5 - C.y0) / C.cell), ty1 = Math.ceil((C.by1 + 0.5 - C.y0) / C.cell);
+  const cands = [], PX = new Int32Array(n), PY = new Int32Array(n);
+  for (let a = 0; a < 360; a += 3){
+    const th = a * D2R, c = Math.cos(th), sn = Math.sin(th);
+    for (let k = 0; k < n; k++){ PX[k] = Math.round((c*LX[k] - sn*LY[k]) / C.cell); PY[k] = Math.round((sn*LX[k] + c*LY[k]) / C.cell); }
+    const best = [];                                                   // 3 meilleures translations pour cet angle
+    for (let ty = ty0; ty <= ty1; ty += tStep) for (let tx = tx0; tx <= tx1; tx += tStep){
+      let sum = 0;
+      for (let k = 0; k < n; k++){
+        const X = tx + PX[k], Y = ty + PY[k];
+        if (X >= 0 && Y >= 0 && X < C.W && Y < C.H) sum += C.g[Y * C.W + X];
+      }
+      if (best.length < 3 || sum > best[best.length-1].sc){
+        best.push({ sc: sum, x: C.x0 + tx * C.cell, y: C.y0 + ty * C.cell, th });
+        best.sort((p, q) => q.sc - p.sc); if (best.length > 3) best.pop();
+      }
+    }
+    cands.push(...best);
+    if (a % 30 === 0){ onProgress && onProgress(a / 360 * 0.7); await sleep(0); }
+  }
+  cands.sort((p, q) => q.sc - p.sc);
+  // garder des candidats différents (plus de 0,5 m ou 8° d'écart)
+  const keep = [];
+  for (const c of cands){
+    if (keep.some(k => Math.hypot(k.x - c.x, k.y - c.y) < 0.5 && Math.abs(normDeg((k.th - c.th) / D2R)) < 8)) continue;
+    keep.push(c); if (keep.length >= 8) break;
+  }
+  let bestR = null;
+  for (let i = 0; i < keep.length; i++){
+    const r = icpCore(ref, s, keep[i], 0.5);
+    const sc = likScore(fine, s, r, 800);
+    if (!bestR || sc > bestR.sc) bestR = { ...r, sc };
+    onProgress && onProgress(0.7 + 0.3 * (i + 1) / keep.length); await sleep(0);
+  }
+  return bestR;   // sc ~ proportion des points qui retombent sur la carte (0..1)
+}
+
+let autoBusy = false;
+async function autoPlaceSelected(){
+  const s = selScan(); if (!canMove(s) || autoBusy) return;
+  const refs = refScansFor(s);
+  if (!refs.length) return toast('Il faut au moins un autre scan visible comme référence (de préférence verrouillé 🔒)');
+  autoBusy = true; setAutoUI(true);
+  try {
+    const r = await globalMatch(s, refs, f => setAutoStatus(`Recherche de « ${s.name} »… ${Math.round(f*100)} %`));
+    pushUndo(s);
+    s.pose = { x: r.x, y: r.y, th: normDeg(r.th / D2R) }; updateInputs(s); draw();
+    toast(`« ${s.name} » placé : ${Math.round(r.sc * 100)} % des points retombent sur la carte` +
+          (r.sc < 0.35 ? '. Recouvrement faible : vérifie visuellement (Ctrl+Z pour annuler).' : ' (Ctrl+Z pour annuler)'));
+  } finally { autoBusy = false; setAutoUI(false); }
+}
+async function autoPlaceAll(){
+  if (autoBusy) return;
+  const vis = S.scans.filter(s => s.visible);
+  if (vis.length < 2) return toast('Il faut au moins 2 scans visibles');
+  if (!vis.some(s => s.locked)){
+    const r = selScan() && selScan().visible ? selScan() : vis.reduce((a, b) => b.lx.length > a.lx.length ? b : a);
+    r.locked = true; renderList();
+    toast(`« ${r.name} » verrouillé comme référence`);
+  }
+  autoBusy = true; setAutoUI(true);
+  S.undo.push({ multi: S.scans.map(s => ({ id: s.id, pose: { ...s.pose }, locked: s.locked })) });
+  const thr = +$('autoThr').value / 100;
+  let todo = vis.filter(s => !s.locked), placed = [], round = 0;
+  try {
+    while (todo.length){
+      round++;
+      const refs = S.scans.filter(o => o.visible && o.locked), res = [];
+      for (let i = 0; i < todo.length; i++){
+        const s = todo[i];
+        const r = await globalMatch(s, refs, f => setAutoStatus(`Passe ${round} · ${s.name} (${i+1}/${todo.length}) · ${Math.round(f*100)} %`));
+        res.push([s, r]);
+      }
+      res.sort((a, b) => b[1].sc - a[1].sc);
+      const ok = res.filter(([, r]) => r.sc >= thr);
+      if (!ok.length) break;
+      // on place le meilleur, puis les autres seulement s'ils sont très sûrs ; ils servent de référence à la passe suivante
+      ok.forEach(([s, r], k) => {
+        if (k > 0 && r.sc < Math.max(thr, 0.6)) return;
+        s.pose = { x: r.x, y: r.y, th: normDeg(r.th / D2R) }; s.locked = true; updateInputs(s);
+        placed.push(`${s.name} ${Math.round(r.sc*100)} %`);
+      });
+      todo = todo.filter(s => !s.locked);
+      renderList(); draw();
+    }
+  } finally { autoBusy = false; setAutoUI(false); }
+  renderList(); fitView();
+  const left = todo.map(s => s.name);
+  $('autoReport').innerHTML = `<b>${placed.length} scan(s) placé(s)</b> et verrouillé(s) : ${placed.join(', ') || '—'}.` +
+    (left.length ? `<br><b>Non placés</b> (recouvrement < ${Math.round(thr*100)} %) : ${left.join(', ')}. Place-les à la main près de leur position, puis <i>Affiner (ICP)</i>.` : '') +
+    '<br>Ctrl+Z annule toute la superposition.';
+  toast(`Superposition terminée : ${placed.length} placé(s), ${left.length} restant(s)`);
+}
+function setAutoUI(on){ ['autoAll', 'autoOne', 'icp'].forEach(id => $(id).disabled = on); if (!on) setAutoStatus(''); }
+function setAutoStatus(t){ $('autoStatus').textContent = t; }
+
+function solve3(A, b){
+  const M = A.map((r, i) => [...r, b[i]]);
+  for (let i = 0; i < 3; i++){
+    let p = i; for (let r = i+1; r < 3; r++) if (Math.abs(M[r][i]) > Math.abs(M[p][i])) p = r;
+    if (Math.abs(M[p][i]) < 1e-12) return null;
+    [M[i], M[p]] = [M[p], M[i]];
+    for (let r = 0; r < 3; r++) if (r !== i){ const f = M[r][i] / M[i][i]; for (let c = i; c < 4; c++) M[r][c] -= f*M[i][c]; }
+  }
+  return [M[0][3]/M[0][0], M[1][3]/M[1][1], M[2][3]/M[2][2]];
+}
+
+// ---------------------------------------------------------------- export
+function download(name, data, type){
+  const url = typeof data === 'string' && data.startsWith('data:') ? data : URL.createObjectURL(new Blob([data], { type }));
+  const a = document.createElement('a'); a.href = url; a.download = name; a.click();
+  if (!url.startsWith('data:')) setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+$('expMap').onclick = () => {
+  let out = 'x_m,y_m,scan\n';
+  S.scans.filter(s => s.visible).forEach(s => { const [X, Y] = toWorldPts(s); for (let k = 0; k < X.length; k++) out += `${X[k].toFixed(4)},${Y[k].toFixed(4)},${s.name}\n`; });
+  download('carte_fusionnee.csv', out, 'text/csv');
+};
+$('expPoses').onclick = () => download('poses.json', JSON.stringify({ scans: S.scans.map(s => ({ name: s.name, x: +s.pose.x.toFixed(4), y: +s.pose.y.toFixed(4), theta_deg: +s.pose.th.toFixed(2), scale: +(s.scale || 1).toFixed(4) })) }, null, 2), 'application/json');
+$('expPng').onclick = () => { render(); download('carte.png', cv.toDataURL('image/png')); };
+function sessionObj(){
+  return { opt: S.opt,
+    scans: S.scans.map(s => ({ name: s.name, color: toHex(s.color), pose: s.pose, scale: s.scale || 1, locked: s.locked, visible: s.visible,
+                               a: Array.from(s.a, v => +v.toFixed(2)), d: Array.from(s.d), i: Array.from(s.i) })) };
+}
+$('expSession').onclick = () => download('session_lidar.json', JSON.stringify(sessionObj()), 'application/json');
+// tous les scans bruts (polaires) dans un seul fichier, relisible par l'outil
+$('expRaw').onclick = () => {
+  if (!S.scans.length) return toast('Aucun scan');
+  let out = '';
+  S.scans.forEach(s => {
+    out += `#SCAN,${s.name}\nangle_deg,distance_mm,intensity\n`;
+    for (let k = 0; k < s.a.length; k++) out += `${s.a[k].toFixed(2)},${s.d[k]},${s.i[k]}\n`;
+    out += '#END\n';
+  });
+  download('scans_bruts.csv', out, 'text/csv');
+};
+
+// ---------------------------------------------------------------- sauvegarde automatique (navigateur)
+const SAVE_KEY = 'ld06_viewer_session';
+let saveT;
+function scheduleSave(){
+  clearTimeout(saveT);
+  saveT = setTimeout(() => { if (!S.scans.length) return; try { localStorage.setItem(SAVE_KEY, JSON.stringify(sessionObj())); } catch (e) {} }, 800);
+}
+function savedSession(){
+  try { const o = JSON.parse(localStorage.getItem(SAVE_KEY)); return o && o.scans && o.scans.length ? o : null; } catch (e) { return null; }
+}
+
+// ---------------------------------------------------------------- import Teleplot
+// Export CSV de teleplot.fr pour la série XY "lidar" : lignes "x","y","timestamp" (mm, mm, s avec virgule décimale).
+// Tous les points d'une même trame (un tour envoyé par printScanTeleplot) partagent le même timestamp.
+// Attention : la librairie LD06 calcule y = -d·sin(angle) -> l'image Teleplot est en miroir ; on la remet à l'endroit.
+const TP = { frames: [], base: '', i0: 0, i1: 0, segs: [], bounds: null, added: 0 };
+function isTeleplot(txt){
+  const head = txt.slice(0, 600);
+  return /^\s*"?timestamp/i.test(head) || /^"-?[\d.]+","-?[\d.]+","[\d.,]+"/m.test(head);
+}
+function parseTeleplot(txt){
+  const map = new Map();
+  for (const line of txt.split(/\r?\n/)){
+    let v;
+    const q = [...line.matchAll(/"([^"]*)"/g)].map(m => m[1]);
+    if (q.length >= 3) v = q.slice(0, 3).map(x => parseFloat(x.replace(',', '.')));
+    else {
+      const p = line.split(/[;,]/).map(x => x.trim()).filter(x => x !== '');
+      if (p.length === 4) v = [+p[0], +p[1], parseFloat(p[2] + '.' + p[3])];   // x,y,sec,ms (virgule décimale)
+      else if (p.length === 3) v = p.map(Number);
+      else continue;
+    }
+    if (!v || v.some(x => !isFinite(x))) continue;
+    const [x, y, t] = v;
+    if (x === 0 && y === 0) continue;
+    let fr = map.get(t); if (!fr){ fr = { t, x: [], y: [] }; map.set(t, fr); }
+    fr.x.push(x / 1000); fr.y.push(-y / 1000);
+  }
+  return [...map.values()].sort((a, b) => a.t - b.t);
+}
+// périodes où le robot est immobile : trames successives qui retombent sur le nuage déjà accumulé
+function segmentFrames(frames){
+  const cell = 0.12, segs = []; let cur = null;
+  const k = (x, y) => Math.floor(x/cell) * 100003 + Math.floor(y/cell);
+  const overlap = (fr) => {
+    let n = 0;
+    for (let j = 0; j < fr.x.length; j++){
+      const ix = Math.floor(fr.x[j]/cell), iy = Math.floor(fr.y[j]/cell); let ok = false;
+      for (let dx = -1; dx <= 1 && !ok; dx++) for (let dy = -1; dy <= 1 && !ok; dy++){
+        const c = cur.cloud.get((ix+dx) * 100003 + iy + dy); if (!c) continue;
+        for (let m = 0; m < c.length && !ok; m += 2) ok = (c[m]-fr.x[j])**2 + (c[m+1]-fr.y[j])**2 < cell*cell;
+      }
+      n += ok;
+    }
+    return n / fr.x.length;
+  };
+  frames.forEach((fr, i) => {
+    if (fr.x.length < 50) return;
+    if (!cur || overlap(fr) < 0.55){ cur = { i0: i, i1: i, n: 0, nf: 0, cloud: new Map() }; segs.push(cur); }
+    cur.i1 = i; cur.n += fr.x.length; cur.nf++;
+    for (let j = 0; j < fr.x.length; j++){ const kk = k(fr.x[j], fr.y[j]); (cur.cloud.get(kk) || cur.cloud.set(kk, []).get(kk)).push(fr.x[j], fr.y[j]); }
+  });
+  return segs.filter(s => s.nf >= 2 && s.n >= 300).map(({ i0, i1, n, nf }) => ({ i0, i1, n, nf }));
+}
+function openTeleplot(frames, fname){
+  if (!frames.length) return toast(`${fname} : aucun point Teleplot lu`);
+  TP.frames = frames; TP.base = /^teleplot/i.test(fname) ? 'tp' : fname.replace(/\.[^.]+$/, ''); TP.added = 0;
+  TP.segs = segmentFrames(frames);
+  let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity, n = 0;
+  frames.forEach(f => { n += f.x.length; f.x.forEach((x, j) => { const y = f.y[j]; if (x<x0) x0=x; if (x>x1) x1=x; if (y<y0) y0=y; if (y>y1) y1=y; }); });
+  TP.bounds = { x0: Math.min(x0, 0), x1: Math.max(x1, 0), y0: Math.min(y0, 0), y1: Math.max(y1, 0) };
+  const dur = frames[frames.length-1].t - frames[0].t;
+  $('tpTitle').textContent = 'Import Teleplot · ' + fname;
+  $('tpSummary').innerHTML = `${n} points, ${frames.length} trames sur ${dur.toFixed(0)} s. ` +
+    (TP.segs.length ? `<b>${TP.segs.length} périodes où le robot semble immobile</b> détectées : chacune peut devenir un scan.`
+                    : `Aucune période immobile détectée automatiquement : choisis une période à la main.`);
+  $('tpModal').style.display = 'flex';
+  renderTpSegs();
+  if (TP.segs.length) tpSelect(TP.segs[0].i0, TP.segs[0].i1, 0); else tpSelect(0, frames.length - 1);
+}
+function renderTpSegs(){
+  const box = $('tpSegs'); box.innerHTML = '';
+  const t0 = TP.frames[0].t;
+  TP.segs.forEach((sg, k) => {
+    const b = document.createElement('button');
+    b.className = 'chip' + (TP.cur === k ? ' on' : '');
+    b.textContent = `Période ${k+1} · ${(TP.frames[sg.i0].t - t0).toFixed(0)}–${(TP.frames[sg.i1].t - t0).toFixed(0)} s · ${sg.n} pts`;
+    b.onclick = () => tpSelect(sg.i0, sg.i1, k);
+    box.appendChild(b);
+  });
+}
+function tpSelect(i0, i1, segIdx){
+  TP.i0 = Math.min(i0, i1); TP.i1 = Math.max(i0, i1); TP.cur = segIdx;
+  renderTpSegs();
+  let n = 0; const bins = new Set();
+  for (let i = TP.i0; i <= TP.i1; i++){ const f = TP.frames[i]; n += f.x.length; f.x.forEach((x, j) => bins.add(Math.floor(((Math.atan2(f.y[j], x) / D2R) + 360) % 360 / 10))); }
+  const t0 = TP.frames[0].t;
+  $('tpInfo').textContent = `Sélection : ${(TP.frames[TP.i0].t - t0).toFixed(1)} → ${(TP.frames[TP.i1].t - t0).toFixed(1)} s · ${TP.i1 - TP.i0 + 1} trames · ${n} points · couverture ${bins.size * 10}°`;
+  if (!$('tpName').value || $('tpName').dataset.auto === '1'){
+    $('tpName').value = segIdx !== undefined ? `${TP.base}_p${segIdx+1}` : `${TP.base}_${(TP.frames[TP.i0].t - t0).toFixed(0)}s`;
+    $('tpName').dataset.auto = '1';
+  }
+  drawTimeline(); drawTpPreview();
+}
+function tpCanvas(cvs){
+  const r = cvs.getBoundingClientRect(), d = window.devicePixelRatio || 1;
+  cvs.width = Math.round(r.width * d); cvs.height = Math.round(r.height * d);
+  const c = cvs.getContext('2d'); c.setTransform(d, 0, 0, d, 0, 0); return [c, r.width, r.height];
+}
+function drawTimeline(){
+  const [c, w, h] = tpCanvas($('tpTimeline')), F = TP.frames, t0 = F[0].t, T = Math.max(F[F.length-1].t - t0, 1e-3);
+  const maxN = Math.max(...F.map(f => f.x.length)), X = t => 8 + (t - t0) / T * (w - 16);
+  c.fillStyle = '#0f1216'; c.fillRect(0, 0, w, h);
+  TP.segs.forEach((sg, k) => { c.fillStyle = k === TP.cur ? 'rgba(77,163,255,.22)' : 'rgba(77,163,255,.09)'; c.fillRect(X(F[sg.i0].t) - 3, 0, X(F[sg.i1].t) - X(F[sg.i0].t) + 6, h); });
+  c.fillStyle = 'rgba(255,255,255,.12)'; c.fillRect(X(F[TP.i0].t) - 3, 0, X(F[TP.i1].t) - X(F[TP.i0].t) + 6, h);
+  F.forEach((f, i) => { const bh = Math.max(1, f.x.length / maxN * (h - 22)); c.fillStyle = i >= TP.i0 && i <= TP.i1 ? '#ffffff' : '#566070'; c.fillRect(X(f.t) - 1, h - 14 - bh, 2, bh); });
+  c.fillStyle = '#8b95a3'; c.font = '10px system-ui';
+  const step = T > 120 ? 30 : T > 40 ? 10 : 5;
+  for (let s = 0; s <= T; s += step) c.fillText(s + ' s', X(t0 + s) - 6, h - 2);
+}
+function drawTpPreview(){
+  const [c, w, h] = tpCanvas($('tpPreview')), B = TP.bounds;
+  const sc = Math.min((w - 30) / (B.x1 - B.x0 || 1), (h - 30) / (B.y1 - B.y0 || 1));
+  const ox = w/2 - (B.x0 + B.x1) / 2 * sc, oy = h/2 + (B.y0 + B.y1) / 2 * sc;
+  c.fillStyle = '#0f1216'; c.fillRect(0, 0, w, h);
+  c.fillStyle = '#2a313b';
+  TP.frames.forEach(f => f.x.forEach((x, j) => c.fillRect(ox + x*sc - .75, oy - f.y[j]*sc - .75, 1.5, 1.5)));
+  c.fillStyle = '#ffffff';
+  for (let i = TP.i0; i <= TP.i1; i++){ const f = TP.frames[i]; f.x.forEach((x, j) => c.fillRect(ox + x*sc - 1, oy - f.y[j]*sc - 1, 2, 2)); }
+  c.fillStyle = '#4da3ff'; c.beginPath(); c.moveTo(ox + 12, oy); c.lineTo(ox - 7, oy - 7); c.lineTo(ox - 7, oy + 7); c.closePath(); c.fill();
+  c.fillStyle = '#8b95a3'; c.font = '11px system-ui'; c.fillText('1 m', 12, h - 16);
+  c.fillRect(12, h - 10, sc, 2);
+}
+function tpRangeToScan(i0, i1, name){
+  const A = [], D = [], I = [];
+  for (let i = i0; i <= i1; i++){ const f = TP.frames[i];
+    for (let j = 0; j < f.x.length; j++){ A.push(+(((Math.atan2(f.y[j], f.x[j]) / D2R) + 360) % 360).toFixed(2)); D.push(Math.round(Math.hypot(f.x[j], f.y[j]) * 1000)); I.push(255); }
+  }
+  let nm = name, k = 2; while (S.scans.some(s => s.name === nm)) nm = `${name}_${k++}`;
+  addScan(nm, A, D, I);
+  S.sel = S.scans.length - 1;
+  TP.added++;
+  return [nm, A.length];
+}
+(() => {
+  let dragI = null;
+  const idxAt = e => {
+    const r = $('tpTimeline').getBoundingClientRect(), F = TP.frames, t0 = F[0].t, T = Math.max(F[F.length-1].t - t0, 1e-3);
+    const t = t0 + (e.clientX - r.left - 8) / (r.width - 16) * T;
+    let best = 0; F.forEach((f, i) => { if (Math.abs(f.t - t) < Math.abs(F[best].t - t)) best = i; }); return best;
+  };
+  $('tpTimeline').addEventListener('pointerdown', e => { dragI = idxAt(e); $('tpTimeline').setPointerCapture(e.pointerId); tpSelect(dragI, dragI); });
+  $('tpTimeline').addEventListener('pointermove', e => { if (dragI !== null) tpSelect(dragI, idxAt(e)); });
+  $('tpTimeline').addEventListener('pointerup', () => dragI = null);
+  $('tpName').addEventListener('input', () => $('tpName').dataset.auto = '0');
+  $('tpAdd').onclick = () => {
+    const [nm, n] = tpRangeToScan(TP.i0, TP.i1, $('tpName').value.trim() || TP.base);
+    renderList(); fitView(); toast(`« ${nm} » ajouté (${n} points). Choisis une autre période ou ferme.`);
+    $('tpName').dataset.auto = '1';
+  };
+  $('tpAddAll').onclick = () => {
+    if (!TP.segs.length) return toast('Aucune période détectée');
+    TP.segs.forEach((sg, k) => tpRangeToScan(sg.i0, sg.i1, `${TP.base}_p${k+1}`));
+    $('tpModal').style.display = 'none';
+    renderList(); fitView(); toast(`${TP.segs.length} scans ajoutés depuis Teleplot. À toi de les superposer !`);
+  };
+  $('tpClose').onclick = () => { $('tpModal').style.display = 'none'; renderList(); fitView(); };
+})();
+
+// ---------------------------------------------------------------- acquisition directe (Web Serial)
+// Protocole du firmware ESP32_LD06_Capture.ino : 's' / '1'..'9' -> N scans, 'c' flux continu, 'x' stop.
+const SER = { port: null, reader: null, writer: null, loop: null, buf: '', block: null, onBlock: null, live: false, liveScan: null, busy: false };
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+function setStatus(txt, cls){ const el = $('status'); el.textContent = txt; el.className = 'status' + (cls ? ' ' + cls : ''); }
+function setConnectedUI(on){
+  $('connect').textContent = on ? 'Déconnecter' : 'Connecter le robot';
+  $('connect').classList.toggle('primary', !on);
+  $('capture').disabled = !on; $('live').disabled = !on;
+  $('baud').disabled = on;
+  if (!on){ $('live').checked = false; SER.live = false; SER.liveScan = null; draw(); }
+  setStatus(on ? 'connecté' : 'non connecté', on ? 'on' : '');
+}
+function defaultName(){ let k = 1; while (S.scans.some(s => s.name === 'pos' + k)) k++; return 'pos' + k; }
+const isConnected = () => !!SER.port;
+async function send(txt){
+  if (SER.writer) await SER.writer.write(new TextEncoder().encode(txt));
+}
+
+async function connect(){
+  if (isConnected()) return disconnect();
+  if (!('serial' in navigator)){
+    toast('Connexion série impossible ici : ouvre lidar_viewer.html dans Chrome ou Edge sur ordinateur.');
+    return;
+  }
+  let port;
+  try { port = await navigator.serial.requestPort(); }
+  catch (e){ return; }                                         // fenêtre de choix annulée
+  try {
+    await port.open({ baudRate: +$('baud').value, bufferSize: 1 << 16 });
+  } catch (e){ toast('Ouverture du port impossible : ' + e.message + ' (moniteur série Arduino encore ouvert ?)'); return; }
+  SER.port = port; SER.writer = port.writable.getWriter(); SER.buf = ''; SER.block = null;
+  SER.loop = readLoop();
+  setConnectedUI(true); setStatus('démarrage…', 'busy');
+  await sleep(1500);                                            // l'ESP32 redémarre à l'ouverture du port
+  await send('x');
+  setStatus('connecté', 'on');
+  if (!$('capName').value) $('capName').value = defaultName();
+  toast('Robot connecté : pose-le, donne un nom au scan et clique sur Capturer.');
+}
+async function readLoop(){
+  const dec = new TextDecoder();
+  try {
+    SER.reader = SER.port.readable.getReader();
+    while (true){
+      const { value, done } = await SER.reader.read();
+      if (done) break;
+      onSerialText(dec.decode(value, { stream: true }));
+    }
+  } catch (e){ /* port perdu (câble débranché…) */ }
+  finally { try { SER.reader.releaseLock(); } catch (e) {} }
+  if (SER.port && !SER.closing){ toast('Connexion avec le robot perdue'); await disconnect(); }
+}
+async function disconnect(){
+  if (!SER.port) return;
+  SER.closing = true;
+  try { if (SER.live) await send('x'); } catch (e) {}
+  try { await SER.reader.cancel(); } catch (e) {}
+  try { await SER.loop; } catch (e) {}
+  try { SER.writer.releaseLock(); } catch (e) {}
+  try { await SER.port.close(); } catch (e) {}
+  SER.port = null; SER.writer = null; SER.reader = null; SER.closing = false;
+  setConnectedUI(false);
+}
+function onSerialText(txt){
+  SER.buf += txt;
+  let nl;
+  while ((nl = SER.buf.indexOf('\n')) >= 0){
+    const line = SER.buf.slice(0, nl).trim(); SER.buf = SER.buf.slice(nl + 1);
+    if (line.startsWith('#SCAN')){ SER.block = { a: [], d: [], i: [] }; continue; }
+    if (line.startsWith('#END')){ if (SER.block && SER.block.a.length) onSerialScan(SER.block); SER.block = null; continue; }
+    if (!SER.block || line.startsWith('#')) continue;
+    const p = line.split(',');
+    const a = parseFloat(p[0]), d = parseFloat(p[1]), i = parseFloat(p[2]);
+    if (isFinite(a) && isFinite(d) && d > 0){ SER.block.a.push(a); SER.block.d.push(d); SER.block.i.push(isFinite(i) ? i : 255); }
+  }
+  if (SER.buf.length > 1e6) SER.buf = '';
+}
+function onSerialScan(b){
+  if (SER.onBlock) return SER.onBlock(b);
+  if (SER.live){ SER.liveScan = b; computeLocal(b); draw(); }
+}
+
+async function capture(){
+  if (!isConnected() || SER.busy) return;
+  const n = +$('capTours').value;
+  let name = $('capName').value.trim() || defaultName();
+  if (S.scans.some(s => s.name === name)){ let k = 2; while (S.scans.some(s => s.name === `${name}_${k}`)) k++; name = `${name}_${k}`; }
+  SER.busy = true; $('capture').disabled = true;
+  const wasLive = SER.live;
+  try {
+    if (wasLive){ await send('x'); await sleep(400); }
+    SER.block = null;
+    const blocks = [];
+    await new Promise((resolve, reject) => {
+      const to = setTimeout(() => { SER.onBlock = null; reject(new Error('Pas de réponse du robot : firmware ESP32_LD06_Capture téléversé ? bon baudrate ? lidar alimenté ?')); }, 4000 + n * 2500);
+      SER.onBlock = b => {
+        blocks.push(b); setStatus(`capture ${blocks.length}/${n}`, 'busy');
+        if (blocks.length >= n){ clearTimeout(to); SER.onBlock = null; resolve(); }
+      };
+      setStatus(`capture 0/${n}`, 'busy');
+      send(n === 1 ? 's' : String(n));
+    });
+    const A = [], D = [], I = [];
+    blocks.forEach(b => { A.push(...b.a); D.push(...b.d); I.push(...b.i); });
+    addScan(name, A, D, I);
+    S.sel = S.scans.length - 1;
+    renderList();
+    if (S.scans.length === 1) fitView(); else draw();
+    $('capName').value = defaultName();
+    toast(`« ${name} » capturé : ${A.length} points (${n} tour${n > 1 ? 's' : ''}). Déplace le robot pour le suivant.`);
+  } catch (e){ toast(e.message); }
+  finally {
+    SER.busy = false;
+    if (isConnected()){
+      $('capture').disabled = false; setStatus('connecté', 'on');
+      if (wasLive && SER.live) await send('c');
+    }
+  }
+}
+$('connect').onclick = connect;
+$('capture').onclick = capture;
+$('capName').addEventListener('keydown', e => { if (e.key === 'Enter') capture(); });
+$('live').onchange = async e => {
+  SER.live = e.target.checked; SER.liveScan = null;
+  await send(SER.live ? 'c' : 'x'); draw();
+};
+
+if (!('serial' in navigator)) setStatus('USB indisponible ici (utiliser Chrome / Edge sur ordinateur)');
+
+// ---------------------------------------------------------------- UI options
+const sliders = { ptSize: v => v, iMin: v => v, dMin: v => v.toFixed(2), dMax: v => v.toFixed(1), aOff: v => v + '°' };
+function syncOptUI(){
+  for (const k in sliders){ $(k).value = S.opt[k]; $(k + 'V').textContent = sliders[k](S.opt[k]); }
+  ['mirror','grid','origins','dim','lines','denoise','fill','legend'].forEach(k => $(k).checked = !!S.opt[k]);
+}
+for (const k in sliders){
+  $(k).addEventListener('input', e => {
+    S.opt[k] = parseFloat(e.target.value); $(k + 'V').textContent = sliders[k](S.opt[k]);
+    if (k === 'ptSize') draw(); else { S.scans.forEach(computeLocal); S.scans.forEach(s => { const m = s.el && s.el.querySelector('.meta'); if (m) m.textContent = s.lx.length + ' pts'; }); draw(); }
+  });
+}
+$('mirror').onchange = e => { S.opt.mirror = e.target.checked; if (SER.liveScan) computeLocal(SER.liveScan); recomputeAll(); };
+['grid','origins','dim','lines','fill','legend'].forEach(k => $(k).onchange = e => { S.opt[k] = e.target.checked; draw(); });
+$('denoise').onchange = e => { S.opt.denoise = e.target.checked; if (SER.liveScan) computeLocal(SER.liveScan); recomputeAll(); };
+
+$('file').onchange = e => { loadFiles(e.target.files); e.target.value = ''; };
+$('demo').onclick = makeDemo;
+$('fit').onclick = fitView;
+$('icp').onclick = runICP;
+$('autoAll').onclick = autoPlaceAll;
+$('autoOne').onclick = autoPlaceSelected;
+$('autoThr').oninput = e => $('autoThrV').textContent = e.target.value + ' %';
+$('undo').onclick = undo;
+$('reset').onclick = () => { const s = selScan(); if (!canMove(s)) return; pushUndo(s); s.pose = { x: 0, y: 0, th: 0 }; updateInputs(s); draw(); };
+
+// glisser-déposer
+const drop = $('drop');
+['dragenter','dragover'].forEach(t => document.addEventListener(t, e => { e.preventDefault(); drop.style.display = 'flex'; }));
+['dragleave','drop'].forEach(t => drop.addEventListener(t, e => { e.preventDefault(); drop.style.display = 'none'; if (t === 'drop') loadFiles(e.dataTransfer.files); }));
+
+let toastT;
+function toast(msg){ const t = $('toast'); t.textContent = msg; t.style.opacity = 1; clearTimeout(toastT); toastT = setTimeout(() => t.style.opacity = 0, 3500); }
+
+window.addEventListener('resize', resize);
+syncOptUI(); renderList(); resize();
+</script>
+</body>
+</html>
