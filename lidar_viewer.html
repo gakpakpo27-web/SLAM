@@ -165,10 +165,12 @@
 
   <h2>Export</h2>
   <div class="row">
-    <button id="expMap">Carte fusionnée (CSV)</button>
+    <button id="expFull" class="primary" title="Tous les points bruts des scans visibles avec la pose de leur scan, leurs coordonnées locales et globales, et s'ils sont gardés dans la carte">Fusion : données complètes (CSV)</button>
+    <button id="expMap" title="Seulement x, y globaux des points gardés et le nom du scan">Carte fusionnée (CSV)</button>
+    <button id="expPosesCsv" title="Pose finale de chaque scan">Poses (CSV)</button>
     <button id="expPoses">Poses (JSON)</button>
     <button id="expPng">Image (PNG)</button>
-    <button id="expRaw">Scans bruts (CSV)</button>
+    <button id="expRaw" title="Mesures polaires d'origine, sans pose">Scans bruts (CSV)</button>
     <button id="expSession">Session complète (JSON)</button>
   </div>
 
@@ -1133,10 +1135,10 @@ function computeLocal(s){
     const d = s.d[k] / 1000;
     if (d < o.dMin || d > o.dMax || s.i[k] < o.iMin) continue;
     let ang = ((sg * s.a[k] + o.aOff) % 360 + 360) % 360;
-    P.push([ang, d * kS]);
+    P.push([ang, d * kS, k]);
   }
   P.sort((p, q) => p[0] - q[0]);                     // ordre angulaire (fusionne proprement plusieurs tours)
-  let X = P.map(p => p[1] * Math.cos(p[0] * D2R)), Y = P.map(p => p[1] * Math.sin(p[0] * D2R)), Dd = P.map(p => p[1]), Ag = P.map(p => p[0]);
+  let X = P.map(p => p[1] * Math.cos(p[0] * D2R)), Y = P.map(p => p[1] * Math.sin(p[0] * D2R)), Dd = P.map(p => p[1]), Ag = P.map(p => p[0]), Kr = P.map(p => p[2]);
   const n0 = X.length, near = (i, j) => (X[i]-X[j])**2 + (Y[i]-Y[j])**2;
   // points isolés : aucun voisin proche parmi les 3 points angulairement voisins de chaque côté
   if (o.denoise && n0 > 10){
@@ -1147,8 +1149,9 @@ function computeLocal(s){
       for (let m = 1; m <= 3 && !ok; m++) ok = near(k, (k+m) % n0) < r*r || near(k, (k-m+n0) % n0) < r*r;
       if (ok) keep.push(k);
     }
-    X = keep.map(k => X[k]); Y = keep.map(k => Y[k]); Dd = keep.map(k => Dd[k]); Ag = keep.map(k => Ag[k]);
+    X = keep.map(k => X[k]); Y = keep.map(k => Y[k]); Dd = keep.map(k => Dd[k]); Ag = keep.map(k => Ag[k]); Kr = keep.map(k => Kr[k]);
   }
+  s.kept = new Uint8Array(s.a.length); for (const k of Kr) s.kept[k] = 1;   // 1 = point brut utilisé dans la carte
   const n = X.length, link = new Uint8Array(n);
   // relier deux points consécutifs s'ils sont assez proches (même mur)
   for (let k = 0; k < n; k++){
@@ -1957,6 +1960,36 @@ $('expMap').onclick = () => {
   let out = 'x_m,y_m,scan\n';
   S.scans.filter(s => s.visible).forEach(s => { const [X, Y] = toWorldPts(s); for (let k = 0; k < X.length; k++) out += `${X[k].toFixed(4)},${Y[k].toFixed(4)},${s.name}\n`; });
   download('carte_fusionnee.csv', out, 'text/csv');
+};
+// Données complètes de la fusion : une ligne par point brut (scans visibles)
+$('expFull').onclick = () => {
+  const vis = S.scans.filter(s => s.visible);
+  if (!vis.length) return toast('Aucun scan visible');
+  const o = S.opt, sg = o.mirror ? -1 : 1, f = (v, n) => (+v).toFixed(n);
+  let out = 'scan,point,angle_deg,distance_mm,intensite,pose_x_m,pose_y_m,pose_theta_deg,taille,x_local_m,y_local_m,x_global_m,y_global_m,garde\n';
+  let n = 0, kept = 0;
+  for (const s of vis){
+    const kS = s.scale || 1, c = Math.cos(s.pose.th * D2R), sn = Math.sin(s.pose.th * D2R);
+    for (let k = 0; k < s.a.length; k++){
+      const ang = (sg * s.a[k] + o.aOff) * D2R, d = s.d[k] / 1000 * kS;
+      const lx = d * Math.cos(ang), ly = d * Math.sin(ang);
+      const gx = s.pose.x + c * lx - sn * ly, gy = s.pose.y + sn * lx + c * ly, g = s.kept ? s.kept[k] : 1;
+      out += `${s.name},${k},${f(s.a[k], 2)},${Math.round(s.d[k])},${Math.round(s.i[k])},${f(s.pose.x, 4)},${f(s.pose.y, 4)},${f(s.pose.th, 3)},${f(kS, 4)},` +
+             `${f(lx, 4)},${f(ly, 4)},${f(gx, 4)},${f(gy, 4)},${g}\n`;
+      n++; kept += g;
+    }
+  }
+  download('fusion_scans_complet.csv', out, 'text/csv');
+  toast(`${n} points exportés (${vis.length} scans), dont ${kept} gardés dans la carte (garde = 1)`);
+};
+$('expPosesCsv').onclick = () => {
+  if (!S.scans.length) return toast('Aucun scan');
+  let out = 'scan,x_m,y_m,theta_deg,taille,verrouille,visible,points_bruts,points_gardes\n';
+  for (const s of S.scans){
+    const kept = s.kept ? s.kept.reduce((a, v) => a + v, 0) : s.lx.length;
+    out += `${s.name},${s.pose.x.toFixed(4)},${s.pose.y.toFixed(4)},${s.pose.th.toFixed(3)},${(s.scale || 1).toFixed(4)},${s.locked ? 1 : 0},${s.visible ? 1 : 0},${s.a.length},${kept}\n`;
+  }
+  download('poses_scans.csv', out, 'text/csv');
 };
 $('expPoses').onclick = () => download('poses.json', JSON.stringify({ scans: S.scans.map(s => ({ name: s.name, x: +s.pose.x.toFixed(4), y: +s.pose.y.toFixed(4), theta_deg: +s.pose.th.toFixed(2), scale: +(s.scale || 1).toFixed(4) })) }, null, 2), 'application/json');
 $('expPng').onclick = () => { render(); download('carte.png', cv.toDataURL('image/png')); };

@@ -95,7 +95,15 @@ Conseil : pendant l'enregistrement Teleplot, laisser le robot **immobile 5 à 10
   En principe les distances du LD06 sont justes (100 %) : une taille différente sert à compenser un écart de mesure.
 - **Clavier** : flèches (1 cm, Shift 10 cm), A/E (±0,5°, Shift 5°), Tab (scan suivant), F (recadrer), Ctrl+Z (annuler).
 - **Filtres** : intensité minimale, plage de distances, sens des angles, décalage angulaire.
-- **Exports** : carte fusionnée (CSV x,y), poses (JSON), image PNG, session complète (JSON, rechargeable).
+- **Exports** :
+  - **Fusion : données complètes (CSV)** → `fusion_scans_complet.csv`, une ligne par point brut des scans visibles :
+    `scan, point, angle_deg, distance_mm, intensite, pose_x_m, pose_y_m, pose_theta_deg, taille,
+    x_local_m, y_local_m, x_global_m, y_global_m, garde`.
+    La colonne `garde` vaut 1 si le point est utilisé dans la carte, et 0 s'il est retiré par les filtres
+    (distance, intensité, points isolés).
+  - **Carte fusionnée (CSV)** : seulement `x_m, y_m, scan` des points gardés.
+  - **Poses (CSV)** → `poses_scans.csv` : `scan, x_m, y_m, theta_deg, taille, verrouille, visible, points_bruts, points_gardes`.
+  - Poses (JSON), image PNG, scans bruts (CSV polaire, sans pose), session complète (JSON, rechargeable).
 
 ### Superposition automatique (le plus rapide)
 1. Verrouiller 🔒 le scan le plus complet : il sert de référence et fixe le repère de la carte.
@@ -120,7 +128,7 @@ Si deux poses très différentes obtiennent presque le même score (pièce symé
 4. Cliquer sur **Affiner (ICP)** : l'outil corrige automatiquement les derniers centimètres et degrés
    en se calant sur les scans verrouillés (ICP point-à-ligne). Vérifier visuellement, puis **verrouiller** `pos2`.
 5. Recommencer pour chaque scan.
-6. Exporter la carte fusionnée et les poses.
+6. Exporter **Fusion : données complètes (CSV)** et **Poses (CSV)**.
 
 Sur données simulées (bruit de 1 cm), partir d'une erreur manuelle d'environ 20 cm et 5° donne
 une pose finale à moins de 1 cm et 0,2° près.
