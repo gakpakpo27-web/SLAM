@@ -1798,3 +1798,95 @@ $('fdBatchCsv').onclick = () => {
 // la liste des scans change souvent : on la remplit quand on ouvre l'onglet
 document.querySelector('.tabs button[data-tab="loc"]').addEventListener('click', fdFillScans);
 fdFillScans();
+
+// ---------------------------------------------------------------- CARTOGRAPHIE AUTOMATIQUE (onglet Scans)
+const AM = { running: false, src: 'robot', mp: null, busy: false, pending: null, motion: null, cur: null, added: 0, prefix: 'auto', sim: null, simIdx: 0, simPrev: null, timer: null, t0: 0, n: 0 };
+function amUndoMirror(a){ const o = S.opt, sg = o.mirror ? -1 : 1; return a.map(v => (((sg * (v - (o.aOff || 0))) % 360) + 360) % 360); }
+function amStart(){
+  if (AM.running) return;
+  AM.src = $('amSrc').value;
+  if (AM.src === 'robot' && !isConnected()) return toast('Connecte d’abord le robot (USB ou WiFi), ou choisis « Robot simulé »');
+  AM.mp = LL.createMapper({ kfDist: numVal('amDist'), kfRot: numVal('amRot'), tours: Math.max(1, Math.round(numVal('amTours'))) });
+  let k = 1; while (S.scans.some(s => s.name.startsWith(`auto${k}_`))) k++;
+  AM.prefix = `auto${k}_`; AM.added = 0; AM.n = 0; AM.t0 = performance.now(); AM.running = true; AM.motion = null; AM.cur = null;
+  if (S.scans.length) toast('Les nouvelles positions ont leur propre repère (la première est à l’origine) : masque les anciens scans pour ne voir que la nouvelle carte');
+  $('amStart').disabled = true; $('amSrc').disabled = true;
+  if (AM.src === 'robot'){ if (!SER.live){ $('live').checked = true; $('live').onchange({ target: $('live') }); } }
+  else { AM.sim = AM.sim || LL.demoScenario(5); AM.simIdx = 0; AM.simPrev = null; amSimTick(); }
+  amInfo();
+}
+function amStop(){
+  if (!AM.running) return;
+  AM.running = false; clearTimeout(AM.timer);
+  if (AM.mp && AM.mp.pending){ const kf = LL.mapperCommit(AM.mp); if (kf) amAddKeyframe(kf); }
+  $('amStart').disabled = false; $('amSrc').disabled = false; AM.cur = null;
+  amInfo(true); draw();
+}
+function amAddKeyframe(kf){
+  AM.added++;
+  const s = addScan(`${AM.prefix}${String(AM.added).padStart(2, '0')}`, amUndoMirror(kf.a), kf.d, kf.i, kf.pose);
+  s.locked = true;
+  if (typeof renderList === 'function') renderList();
+}
+function amFeed(b, truth){
+  if (!AM.running) return;
+  if (AM.busy){ AM.pending = [b, truth]; return; }
+  AM.busy = true;
+  try {
+    const raw = lvRaw(b), motion = AM.motion; AM.motion = null; AM.n++;
+    const r = LL.mapperUpdate(AM.mp, raw, motion);
+    if (r.keyframe) amAddKeyframe(r.keyframe);
+    AM.cur = { local: LL.localPoints(raw), r, truth };
+    if (AM.n % 2 === 0 || r.keyframe) amInfo();
+    draw();
+  } catch (e){ console.error(e); toast('Cartographie : ' + e.message); }
+  finally {
+    AM.busy = false;
+    if (AM.pending){ const [pb, pt] = AM.pending; AM.pending = null; setTimeout(() => amFeed(pb, pt), 0); }
+  }
+}
+function amOnDrive(mv, ms){
+  if (!AM.running) return;
+  const v = numVal('lvV') * ms / 1000, w = numVal('lvW') * ms / 1000;
+  const d = { forward: [v, 0, 0], backward: [-v, 0, 0], left: [0, v, 0], right: [0, -v, 0], rotateleft: [0, 0, w], rotateright: [0, 0, -w] }[mv];
+  if (!d) return; const m = { x: d[0], y: d[1], th: d[2] };
+  AM.motion = AM.motion ? LL.compose(AM.motion, m) : m;
+}
+// robot simulé : trajet dans la salle, arrêt de 3 scans tous les 3 pas, odométrie bruitée de 10 %
+function amSimTick(){
+  if (!AM.running) return;
+  const D = AM.sim, k = AM.simIdx++;
+  const seq = D.seq || (D.seq = (() => { const q = []; D.path.forEach((p, j) => { q.push(p); if (j % 3 === 0) q.push(p, p); }); return q; })());
+  if (k >= seq.length){ amStop(); toast('Robot simulé : trajet terminé'); return; }
+  const truth = seq[k];
+  if (AM.simPrev){ const m = LL.relPose(AM.simPrev, truth), g = () => (D.rng() - 0.5) * 0.2; const mo = { x: m.x * (1 + g()), y: m.y * (1 + g()), th: m.th * (1 + g()) }; AM.motion = AM.motion ? LL.compose(AM.motion, mo) : mo; }
+  AM.simPrev = truth;
+  amFeed(LL.simulateScan(D.scene.walls, truth, { tours: 1 }, D.rng), LL.relPose(seq[0], truth));
+  AM.timer = setTimeout(amSimTick, 70);
+}
+function amInfo(done){
+  const el = $('amInfo'), Mp = AM.mp;
+  if (!Mp){ el.textContent = 'Prêt.'; return; }
+  const r = AM.cur && AM.cur.r, col = r && r.status === 'perdu' ? '#ff6b6b' : '#4cd97b';
+  const dur = (performance.now() - AM.t0) / 1000;
+  let h = `${done ? '<b>Terminé</b>' : `<span style="color:${col};font-weight:700">● ${r ? r.status : 'en attente du premier scan'}</span>`} · <b>${AM.added}</b> positions enregistrées · ${AM.n} scans reçus en ${dur.toFixed(0)} s`;
+  if (r && !done) h += `<br>robot : x ${r.pose.x.toFixed(2)} m · y ${r.pose.y.toFixed(2)} m · cap ${r.pose.th.toFixed(0)}° · ${(r.inliers * 100).toFixed(0)} % des points sur la carte · ${r.ms.toFixed(0)} ms`;
+  if (r && r.status === 'perdu' && !done) h += '<br><span style="color:#ff6b6b">Le scan ne colle plus à la carte : reviens doucement vers une zone déjà cartographiée (aucune position n’est enregistrée tant qu’il est perdu).</span>';
+  if (AM.cur && AM.cur.truth && !done){ const e = LL.poseError(r.pose, AM.cur.truth); h += `<br>écart à la vraie pose (simulation) : ${(e.pos * 100).toFixed(1)} cm, ${e.ang.toFixed(2)}°`; }
+  if (done && AM.added) h += '<br>Ensuite : <b>Construire la grid map</b>, puis l’onglet Traitement (plan, murs nets) et Robot en direct.';
+  el.innerHTML = h;
+}
+function drawAutoMap(){
+  if (!AM.running || !AM.cur) return;
+  const r = AM.cur.r, p = r.pose, c = Math.cos(p.th * D2R), s = Math.sin(p.th * D2R);
+  ctx.save(); ctx.fillStyle = r.status === 'perdu' ? '#ff6b6b' : '#ffffff';
+  for (const q of AM.cur.local){ const [x, y] = w2s(p.x + c * q.x - s * q.y, p.y + s * q.x + c * q.y); ctx.fillRect(x - 1.2, y - 1.2, 2.4, 2.4); }
+  const [x, y] = w2s(p.x, p.y), R = Math.max(7, 0.15 * S.view.s);
+  ctx.strokeStyle = r.status === 'perdu' ? '#ff6b6b' : '#4cd97b'; ctx.fillStyle = ctx.strokeStyle + '44'; ctx.lineWidth = 2.5;
+  ctx.beginPath(); ctx.arc(x, y, R, 0, 2 * Math.PI); ctx.fill(); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(x + c * R * 2, y - s * R * 2); ctx.stroke();
+  ctx.restore();
+}
+$('amStart').onclick = amStart;
+$('amStop').onclick = amStop;
+$('amGrid').onclick = () => { if (!S.scans.some(s => s.visible)) return toast('Aucun scan visible'); setTab('grid'); gridFromAll(); fitGrid(); };

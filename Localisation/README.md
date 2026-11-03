@@ -9,12 +9,15 @@
 | `lidar_core.js` | Bibliothèque de calcul : grid map (Bresenham, mise à jour, export), segments (extraction, angle, proximité, fusion, intersection, découpe) et carte vectorielle |
 | `lidar_loc.js` | Jour 2 : localisation (grid map, carte vectorielle, entre scans), simulateur et banc d'évaluation |
 | `bench_localisation.js` | Banc d'évaluation en ligne de commande (`node bench_localisation.js --real session.json`) |
+| `bench_cartographie.js` | Banc de la cartographie automatique au sol (`node bench_cartographie.js`) |
+| `DEMARCHE_cartographie_auto.md` | Démarche et résultats de la cartographie automatique |
+| `resultats_cartographie.md` | Résultats de `bench_cartographie.js` |
 | `bench_suivi.js` | Banc du robot en direct : localisation globale sur les scans réels, suivi simulé (`node bench_suivi.js --real session.json`) |
 | `resultats_suivi.md` | Résultats de `bench_suivi.js` |
 | `lidar_maptools.js` | Traitement des cartes et des obstacles : prétraitement, clusters, cercles / RANSAC / Douglas-Peucker, grid map enrichie et nettoyée, obstacles, régularisation de la carte vectorielle, carte de coût, trajet A*, recalage global des poses |
 | `DEMARCHE_traitement_cartes.md` | Démarche et résultats du traitement des cartes et des obstacles |
 | `resultats_traitement.md` | Rapport de la chaîne de traitement sur les 14 scans réels (avec recalage) |
-| `test_lidar_core.js` | 116 tests automatiques (`node test_lidar_core.js`), dont les cas limites de la découpe |
+| `test_lidar_core.js` | 117 tests automatiques (`node test_lidar_core.js`), dont les cas limites de la découpe |
 | `DEMARCHE_parties_3_4.md` | Démarche des parties 3 et 4 : choix techniques, hypothèses, difficultés, limites |
 | `DEMARCHE_partie_5.md` | Démarche de la partie 5 (carte vectorielle) |
 | `capture_lidar.py` | (Optionnel) capture en ligne de commande, 1 fichier CSV par position |
@@ -241,6 +244,12 @@ de référence ou à une position mesurée au sol ; *Valider sur les scans visib
 - simulation à poses exactes, et scans réels (carte construite sans le scan testé) avec estimation de l'incertitude
   des poses de référence ;
 - résultats en tableaux et courbes, export CSV et Markdown.
+
+## Cartographie automatique (onglet *Scans*)
+Robot connecté (USB ou WiFi) ou robot simulé : *Cartographier*, puis piloter ou pousser doucement le robot. Chaque scan
+est recalé sur la carte déjà construite ; une position est enregistrée tous les 40 cm ou 25° (3 tours accumulés tant
+que le robot est arrêté) et devient un scan de la session. *Terminer*, puis *Construire la grid map*. À utiliser pour
+refaire la carte au sol avec tous les obstacles (voir `DEMARCHE_cartographie_auto.md`).
 
 ## Robot en direct (onglet *Robot en direct*)
 Le robot se repère sur la carte du Jour 1 et la vue le suit comme un GPS :

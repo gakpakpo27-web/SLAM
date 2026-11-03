@@ -481,6 +481,14 @@
         const e = LL.poseError(r.pose, truth);
         return expect(same && e.pos <= 0.05 && e.ang <= 2 && r.sigma.xy < 0.03, `${same} ${(e.pos * 100).toFixed(1)} cm ${e.ang.toFixed(2)}° σ ${(r.sigma.xy * 100).toFixed(1)} cm`);
       });
+      test('cartographie automatique : 60 scans d’un trajet, positions enregistrées à moins de 5 cm', () => {
+        const D = live.D, Mp = LL.createMapper(); let prev = null, worst = 0;
+        const seq = []; D.path.slice(0, 40).forEach((p, k) => { seq.push(p); if (k % 3 === 0) seq.push(p, p); });
+        for (const truth of seq) { LL.mapperUpdate(Mp, Object.assign(LL.simulateScan(D.scene.walls, truth, { tours: 1 }, D.rng), { meta: truth }), prev ? LL.relPose(prev, truth) : null); prev = truth; }
+        if (Mp.pending) LL.mapperCommit(Mp);
+        for (const kf of Mp.kfs) worst = Math.max(worst, LL.poseError(kf.pose, LL.relPose(seq[0], kf.meta)).pos);
+        return expect(Mp.kfs.length >= 8 && worst <= 0.05, `${Mp.kfs.length} positions, pire ${(worst * 100).toFixed(1)} cm`);
+      });
       test('banc : mêmes poses initiales pour toutes les méthodes, un essai par cas et par niveau', () => {
         // (exécution synchrone d'une mini configuration via la fonction résumé)
         const rows = [{ ref: 'grid', method: 'a', label: 'A', level: 0, dp: 0, da: 0, epos: 0.01, eang: 0.1, ms: 1, ok: true, okCoarse: true },

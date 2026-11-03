@@ -638,6 +638,69 @@
   }
 
 
+
+  // ==========================================================================
+  //  6. Robustesse au sol : pieds, obstacles, carte faite à une autre hauteur
+  // ==========================================================================
+  // Un lidar 2D ne voit qu'une tranche horizontale. Au sol, la tranche passe dans les pieds de chaises et de
+  // tables : beaucoup de petits groupes de points, absents (ou différents) sur la carte, qui masquent les murs.
+  /** Points de structure : on retire du scan les petits groupes de points (pieds, sacs, jambes) dont
+   *  l'étendue est < minExtent ; il reste les murs et les grands meubles. pts : points locaux, ordre angulaire. */
+  function structurePoints(pts, opt = {}) {
+    const o = { minExtent: 0.25, gapBase: 0.08, gapK: 0.02, ...opt }, n = pts.length; if (n < 3) return pts.slice();
+    const r = p => Math.hypot(p.x, p.y), out = [];
+    let start = 0, worst = -1;
+    for (let k = 0; k < n; k++) { const p = pts[k], q = pts[(k + 1) % n], d = Math.hypot(p.x - q.x, p.y - q.y) - (o.gapBase + o.gapK * Math.max(r(p), r(q))); if (d > worst) { worst = d; start = (k + 1) % n; } }
+    let cur = [pts[start]];
+    const flush = () => {
+      let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
+      for (const p of cur) { if (p.x < x0) x0 = p.x; if (p.x > x1) x1 = p.x; if (p.y < y0) y0 = p.y; if (p.y > y1) y1 = p.y; }
+      if (Math.hypot(x1 - x0, y1 - y0) >= o.minExtent) out.push(...cur);
+    };
+    for (let m = 1; m < n; m++) {
+      const p = pts[(start + m - 1) % n], q = pts[(start + m) % n];
+      if (Math.hypot(p.x - q.x, p.y - q.y) > o.gapBase + o.gapK * Math.max(r(p), r(q))) { flush(); cur = []; }
+      cur.push(q);
+    }
+    flush();
+    return out;
+  }
+  /** Carte de structure : les petites taches d'obstacle (étendue < minExtent : pieds, chaises, objets) sont
+   *  retirées de la grid map ; restent les murs et les grands meubles. */
+  function structureGrid(grid, minExtent = 1.0) {
+    const W = grid.W, H = grid.H, out = Object.assign({}, grid, { data: grid.data.slice() }), seen = new Uint8Array(W * H), st = [];
+    for (let k0 = 0; k0 < W * H; k0++) {
+      if (seen[k0] || grid.data[k0] < LC.OCC_T) continue;
+      const cells = []; seen[k0] = 1; st.push(k0); let i0 = W, i1 = 0, j0 = H, j1 = 0;
+      while (st.length) {
+        const k = st.pop(), i = k % W, j = (k - i) / W; cells.push(k);
+        if (i < i0) i0 = i; if (i > i1) i1 = i; if (j < j0) j0 = j; if (j > j1) j1 = j;
+        for (let dj = -1; dj <= 1; dj++) for (let di = -1; di <= 1; di++) {
+          const a = i + di, b = j + dj; if (a < 0 || b < 0 || a >= W || b >= H) continue;
+          const m = b * W + a; if (!seen[m] && grid.data[m] >= LC.OCC_T) { seen[m] = 1; st.push(m); }
+        }
+      }
+      if (Math.hypot(i1 - i0 + 1, j1 - j0 + 1) * grid.res < minExtent) for (const k of cells) out.data[k] = LC.FREE_T - 25;
+    }
+    return out;
+  }
+  /** « Vu à travers » : part des faisceaux qui traversent un obstacle de la carte avant d'atteindre leur
+   *  point (avec une marge). À une mauvaise pose, des points tombent derrière des murs : c'est très
+   *  discriminant, même quand on voit peu de murs (les pieds devant un mur ne gênent pas : ils l'occultent). */
+  function seeThrough(M, pts, pose, opt = {}) {
+    const g = M.sgrid || M.grid, margin = opt.margin ?? 0.2, P = thin(pts, opt.n ?? 120);
+    const c = Math.cos(pose.th * D2R), s = Math.sin(pose.th * D2R), [ri, rj] = LC.worldToCell(g, pose.x, pose.y);
+    let bad = 0, n = 0;
+    for (const p of P) {
+      const L = Math.hypot(p.x, p.y); if (L < margin + 0.1) continue;
+      const k = (L - margin) / L, ex = pose.x + (c * p.x - s * p.y) * k, ey = pose.y + (s * p.x + c * p.y) * k;
+      const [ei, ej] = LC.worldToCell(g, ex, ey); let hit = false; n++;
+      LC.bresenham(ri, rj, ei, ej, (i, j) => { if (!hit && i >= 0 && j >= 0 && i < g.W && j < g.H && g.data[j * g.W + i] >= LC.OCC_T && (i !== ri || j !== rj)) hit = true; });
+      if (hit) bad++;
+    }
+    return n ? bad / n : 0;
+  }
+
   // ==========================================================================
   //  5. Robot en direct : localisation globale (sans pose initiale) et suivi
   // ==========================================================================
@@ -647,15 +710,17 @@
    * (cellules vues libres, tous les candStep mètres, à plus de `clearance` d'un obstacle).
    */
   function prepareMap(grid, segs, opt = {}) {
-    const o = { candStep: 0.2, clearance: 0.04, ...opt };
+    const o = { candStep: 0.2, clearance: 0.04, structure: 0, ...opt };
+    const full = grid;
+    if (o.structure > 0) grid = structureGrid(grid, o.structure);          // carte de structure (petits obstacles retirés)
     const F = distanceField(grid), cands = [], step = Math.max(1, Math.round(o.candStep / grid.res));
     for (let j = Math.floor(step / 2); j < grid.H; j += step) for (let i = Math.floor(step / 2); i < grid.W; i += step) {
       const k = j * grid.W + i;
-      if (grid.data[k] > LC.FREE_T || F.dist[k] < o.clearance) continue;
+      if (full.data[k] > LC.FREE_T && grid.data[k] > LC.FREE_T || F.dist[k] < o.clearance) continue;
       cands.push([grid.x0 + (i + 0.5) * grid.res, grid.y0 + (j + 0.5) * grid.res]);
     }
     const S = segs && segs.length ? segs : null;
-    return { grid, field: F, index: S ? segIndex(S) : null, segs: S || [], cands, candStep: o.candStep };
+    return { grid, full, field: F, index: S ? segIndex(S) : null, segs: S || [], cands, candStep: o.candStep, structure: o.structure };
   }
   /** Part des points du scan à moins de tol d'un obstacle de la carte : « % du scan qui colle à la carte » */
   function inlierRatio(F, pts, pose, tol = 0.10) {
@@ -688,7 +753,7 @@
    * pts : points locaux du scan (sous-échantillonnés). Renvoie { pose, inliers, confidence, hyps, ms }.
    */
   function globalLocalize(M, pts, opt = {}) {
-    const o = { sth: 4, sigma: 0.2, nPts: 80, keep: 24, refineTop: 8, sepXY: 0.5, sepTh: 20, okInl: 0.3, ambRatio: 0.8, ...opt };
+    const o = { sth: 4, sigma: 0.2, nPts: 80, keep: 24, refineTop: 8, sepXY: 0.5, sepTh: 20, okInl: 0.3, ambRatio: 0.8, seeW: 0, ...opt };
     const t0 = now(), F = M.field, L = likTable(F, o.sigma), P = thin(pts, o.nPts), n = P.length;
     const PX = new Float64Array(n), PY = new Float64Array(n), C = M.cands, nA = Math.round(360 / o.sth);
     // meilleur angle et 2e meilleur angle (éloigné) par position
@@ -720,6 +785,8 @@
       try { const d = vecDirect(M.index, pts, { x: 0, y: 0, th: 0 }); if (!d.failed) seeds.push({ ...d, from: 'coins' }); } catch (e) { /* pas de coin */ }
     }
     let hyps = seeds.map(h => Object.assign(refineOn(M, pts, h), { coarse: h.score, from: h.from || 'grille' }));
+    // note finale : points qui collent, moins les faisceaux qui traversent un mur (seeW, 0 = désactivé)
+    for (const h of hyps) { h.see = o.seeW > 0 ? seeThrough(M, pts, h) : 0; h.raw = h.inliers; h.inliers = Math.max(0, h.raw - o.seeW * h.see); }
     hyps.sort((p, q) => q.inliers - p.inliers);
     const uniq = []; for (const h of hyps) if (uniq.every(u => distinctPose(u, h, o.sepXY, o.sepTh))) uniq.push(h);
     const best = uniq[0], second = uniq[1];
@@ -728,14 +795,45 @@
     return { pose: { x: best.x, y: best.y, th: best.th }, inliers: best.inliers, confidence, ratio, hyps: uniq.slice(0, 5),
              ms: now() - t0, msCoarse: tCoarse, nCands: C.length * nA };
   }
+
+  /**
+   * Retrouver la position d'un scan sur une carte, sans aucune pose de départ, avec une incertitude estimée :
+   * le scan est relocalisé `draws` fois avec un tirage aléatoire de `keep` de ses points (affinage local depuis
+   * la pose trouvée) ; la dispersion des résultats donne l'incertitude (écart-type en position et en angle).
+   * local : points du scan dans son repère. Renvoie le résultat de globalLocalize + sigma { xy, x, y, th }.
+   */
+  function locateScan(M, local, opt = {}) {
+    const o = { draws: 12, keep: 0.7, seed: 1, ...opt }, t0 = now();
+    const pts = uniformSubsample(local, { max: 350 });
+    const g = globalLocalize(M, pts, o.global);
+    const rng = mulberry32(o.seed), R = [];
+    for (let k = 0; k < o.draws; k++) {
+      const sub = pts.filter(() => rng() < o.keep); if (sub.length < 20) continue;
+      R.push(refineOn(M, sub, g.pose, { rxy: 0.1, rth: 3, levels: [[0.05, 1], [0.025, 0.5]], keep: 2 }));
+    }
+    const m = a => a.reduce((s, v) => s + v, 0) / a.length, sd = a => { const mu = m(a); return Math.sqrt(m(a.map(v => (v - mu) ** 2))); };
+    const sx = R.length ? sd(R.map(r => r.x)) : 0, sy = R.length ? sd(R.map(r => r.y)) : 0, sth = R.length ? sd(R.map(r => normDeg(r.th - g.pose.th))) : 0;
+    return Object.assign(g, { sigma: { x: sx, y: sy, xy: Math.hypot(sx, sy), th: sth }, nPts: pts.length, msTotal: now() - t0 });
+  }
   /** Suivi : on part de la pose précédente (plus le déplacement commandé, s'il est connu) et on cherche
    *  dans une petite fenêtre qui grandit avec le déplacement. */
   function trackStep(M, pts, prev, motion, opt = {}) {
-    const o = { rxy: 0.35, rth: 15, ...opt }, t0 = now();
+    const o = { rxy: 0.35, rth: 15, near: false, nearXY: 0.12, nearTh: 5, jumpMargin: 0.08, ...opt }, t0 = now();
     const pred = motion ? compose(prev, motion) : prev;
     const mv = motion ? Math.hypot(motion.x, motion.y) : 0, mr = motion ? Math.abs(motion.th) : 0;
-    const r = refineOn(M, pts, pred, { rxy: o.rxy + 0.3 * mv, rth: o.rth + 0.3 * mr, levels: [[0.1, 3], [0.05, 1], [0.025, 0.5]], keep: 4 });
-    return Object.assign(r, { ms: now() - t0, pred });
+    const far = refineOn(M, pts, pred, { rxy: o.rxy + 0.3 * mv, rth: o.rth + 0.3 * mr, levels: [[0.1, 3], [0.05, 1], [0.025, 0.5]], keep: 4 });
+    let r = far, jumped = false;
+    if (o.near) {
+      // (option, désactivée : nuisible quand l'odométrie est bruitée) vraisemblance du mouvement : la solution proche de la prédiction est préférée ; une solution éloignée
+      // n'est retenue que si elle colle nettement mieux (au sol, des pieds de tables peuvent s'aligner sur un
+      // autre meuble de la carte et donner un faux « meilleur » score quelques dizaines de cm plus loin)
+      const near = refineOn(M, pts, pred, { rxy: o.nearXY, rth: o.nearTh, levels: [[0.05, 1], [0.025, 0.5]], keep: 2 });
+      const dist = Math.hypot(far.x - near.x, far.y - near.y), dth = Math.abs(normDeg(far.th - near.th));
+      if (dist < 0.05 && dth < 2) r = far.inliers >= near.inliers ? far : near;
+      else if (far.inliers > near.inliers + o.jumpMargin) { r = far; jumped = true; }
+      else r = near;
+    }
+    return Object.assign(r, { ms: now() - t0, pred, jumped });
   }
   /**
    * Suiveur : enchaîne les scans. Pas encore localisé -> recherche globale. Sinon suivi local ; si le
@@ -743,8 +841,8 @@
    * « perdu » -> nouvelle recherche globale (cas du robot « kidnappé », déplacé à la main).
    */
   function createTracker(M, opt = {}) {
-    return { M, o: { lostInl: 0.25, hardLost: 0.15, lostCount: 1, relDrop: 0.7, ambRatio: 0.8, maxHyps: 3, ...opt }, ref: 0, pose: null, hyps: null,
-             status: 'non localisé', lost: 0, n: 0, last: null };
+    return { M, o: { lostInl: 0.25, hardLost: 0.15, lostCount: 1, relDrop: 0.7, ambRatio: 0.8, maxHyps: 3, submap: true, window: 3, winDist: 3, noJump: true, ...opt },
+             ref: 0, pose: null, hyps: null, status: 'non localisé', lost: 0, n: 0, last: null, win: [] };
   }
   // résultat d'une recherche globale -> état du suiveur (plusieurs hypothèses gardées si c'est ambigu)
   function adoptGlobal(T, g, mode) {
@@ -757,43 +855,199 @@
     }
     return { x: g.pose.x, y: g.pose.y, th: g.pose.th, inliers: g.inliers, confidence: g.confidence, hyps: g.hyps };
   }
-  function trackerUpdate(T, pts, motion) {
+  /**
+   * Carte locale glissante : les derniers scans (au plus `window`, à moins de winDist m) ramenés dans le repère
+   * du scan courant. Le déplacement entre deux scans est estimé par recalage entre scans (corrélation
+   * multi-résolution du Jour 2, partant du déplacement commandé) et VÉRIFIÉ (≥ 40 % des points qui collent),
+   * sinon la fenêtre repart du scan courant. Au sol, un scan seul voit peu de murs (cachés par les pieds) :
+   * en avançant de quelques dizaines de centimètres, les murs masqués réapparaissent.
+   */
+  // recalage entre deux scans vérifié : beaucoup de points qui collent, ou assez et cohérent avec le
+  // déplacement commandé (les recalages faux s'en écartent de 0,8 à 1,8 m sur les scans réels)
+  function scanStepOk(ratio, rel, motion) {
+    if (ratio >= 0.4) return true;
+    if (!motion || ratio < 0.2) return false;
+    return Math.hypot(rel.x - motion.x, rel.y - motion.y) <= 0.25 && Math.abs(normDeg(rel.th - motion.th)) <= 10;
+  }
+  function updateWindow(T, local, motion) {
+    const W = T.win, sub = uniformSubsample(local, { max: 350 });
+    const ref = { pts: uniformSubsample(local, { cell: 0.03, minR: 0.3, max: 3000 }), ptsAll: local };
+    if (W.length) {
+      const prev = W[W.length - 1], init = motion || { x: 0, y: 0, th: 0 };
+      let rel = scanCorrelative(prev.ref, sub, init, { rxy: 0.5, rth: 25 });
+      const ok = scanStepOk(inlierRatio(prev.ref.field, sub, rel), rel, motion);
+      if (!ok) W.length = 0;
+      else {
+        const inv = relPose(rel, { x: 0, y: 0, th: 0 });                  // ancien repère -> repère courant
+        for (const e of W) e.pose = compose(inv, e.pose);
+        for (let k = W.length - 1; k >= 0; k--) if (Math.hypot(W[k].pose.x, W[k].pose.y) > T.o.winDist) W.splice(k, 1);
+        T.lastRel = rel;
+      }
+    }
+    W.push({ local, ref, pose: { x: 0, y: 0, th: 0 } });
+    while (W.length > T.o.window) W.shift();
+    if (W.length === 1) return sub;
+    const all = [];
+    for (const e of W) { const c = Math.cos(e.pose.th * D2R), s = Math.sin(e.pose.th * D2R); for (const p of e.local) all.push({ x: e.pose.x + c * p.x - s * p.y, y: e.pose.y + s * p.x + c * p.y }); }
+    return uniformSubsample(all, { max: 500 });
+  }
+  /**
+   * trackerUpdate(T, pts, motion, local) : pts = points du scan sous-échantillonnés ; local (option) = tous les
+   * points du scan, pour la carte locale glissante.
+   * Garde-fou « ne pas sauter » : si le suivi décroche et que la recherche globale propose un autre endroit,
+   * on ne saute pas : la position suivie et la nouvelle sont gardées comme hypothèses, et c'est le mouvement
+   * du robot (les scans suivants) qui tranche. On ne saute directement que si le suivi ne colle plus du tout.
+   */
+  function trackerUpdate(T, pts, motion, local) {
     const t0 = now(); T.n++;
+    const P = T.o.submap && local ? updateWindow(T, local, motion) : pts;
+    // déplacement mesuré par le recalage entre scans (plus fiable que la commande) quand la fenêtre le fournit
+    if (T.o.submap && local && T.win.length > 1 && T.lastRel) motion = T.lastRel;
+    T.lastRel = null;
     let res, mode;
     if (!T.pose) {
-      mode = 'global'; res = adoptGlobal(T, globalLocalize(T.M, pts, T.o.global), mode);
+      mode = 'global'; res = adoptGlobal(T, globalLocalize(T.M, P, T.o.global), mode);
     } else if (T.hyps && T.hyps.length > 1) {
-      // plusieurs hypothèses : chacune est suivie avec le même déplacement ; le robot qui bouge lève l'ambiguïté
       mode = 'hypothèses';
-      const H = T.hyps.map(h => trackStep(T.M, pts, h, motion, T.o.track)).sort((p, q) => q.inliers - p.inliers);
+      const H = T.hyps.map(h => trackStep(T.M, P, h, motion, T.o.track)).sort((p, q) => q.inliers - p.inliers);
       T.hyps = H.filter(h => h.inliers >= T.o.ambRatio * H[0].inliers).slice(0, T.o.maxHyps).map(h => ({ x: h.x, y: h.y, th: h.th, inliers: h.inliers }));
       T.pose = { x: H[0].x, y: H[0].y, th: H[0].th };
       res = Object.assign({}, H[0], { hyps: H });
       if (T.hyps.length === 1) { T.hyps = null; T.status = 'localisé'; } else T.status = 'ambigu';
-      if (H[0].inliers < T.o.hardLost) { mode = 'relocalisation'; res = adoptGlobal(T, globalLocalize(T.M, pts, T.o.global), mode); }
+      if (H[0].inliers < Math.max(T.o.lostInl, T.ref ? T.o.relDrop * T.ref : 0)) {
+        const g = globalLocalize(T.M, P, T.o.global);
+        if (H[0].inliers < T.o.hardLost || (g.confidence !== 'incertain' && g.inliers > H[0].inliers + 0.05)) { mode = 'relocalisation'; res = adoptGlobal(T, g, mode); }
+      }
     } else {
-      const s = trackStep(T.M, pts, T.pose, motion, T.o.track);
+      const s = trackStep(T.M, P, T.pose, motion, T.o.track);
       mode = 'suivi'; res = s;
-      // seuil relatif : un scan qui colle nettement moins bien que d'habitude (moyenne glissante des bons
-      // scans) est suspect, même au-dessus du seuil absolu (scans encombrés : 35 à 65 % des points collent)
       const thr = Math.max(T.o.lostInl, T.ref ? T.o.relDrop * T.ref : 0);
       if (s.inliers >= thr) { T.pose = { x: s.x, y: s.y, th: s.th }; T.lost = 0; T.status = 'localisé'; T.hyps = null; }
       else {
         T.lost++;
         if (T.lost >= T.o.lostCount || s.inliers < T.o.hardLost) {
-          // robot perdu (ou déplacé à la main) : nouvelle recherche sur toute la carte
-          const g = globalLocalize(T.M, pts, T.o.global);
+          const g = globalLocalize(T.M, P, T.o.global);
           mode = 'relocalisation';
-          if (g.inliers > s.inliers + 0.05 && g.confidence !== 'incertain') res = adoptGlobal(T, g, mode);
-          else { T.pose = { x: s.x, y: s.y, th: s.th }; T.status = 'perdu'; }
+          const elsewhere = distinctPose(g.pose, s, 0.5, 20);
+          if (g.confidence === 'incertain' || g.inliers <= s.inliers + 0.05) { T.pose = { x: s.x, y: s.y, th: s.th }; T.status = 'perdu'; }
+          else if (T.o.noJump && elsewhere && s.inliers >= T.o.hardLost && s.inliers >= T.o.ambRatio * g.inliers) {   // la position suivie reste presque aussi bonne
+            // pas de saut : on garde la position suivie ET la proposition, le mouvement tranchera
+            T.pose = { x: s.x, y: s.y, th: s.th };
+            T.hyps = [{ x: s.x, y: s.y, th: s.th, inliers: s.inliers }].concat(g.hyps.filter(h => h.inliers >= T.o.ambRatio * g.inliers).slice(0, T.o.maxHyps - 1).map(h => ({ x: h.x, y: h.y, th: h.th, inliers: h.inliers })));
+            T.status = 'ambigu'; mode = 'relocalisation à confirmer';
+            res = Object.assign({}, s, { hyps: T.hyps });
+          } else res = adoptGlobal(T, g, mode);
         } else { T.pose = { x: s.x, y: s.y, th: s.th }; T.status = 'incertain'; }
       }
     }
-    if (T.status === 'localisé' || T.status === 'relocalisé') T.ref = T.ref ? 0.7 * T.ref + 0.3 * res.inliers : res.inliers;   // « d'habitude »
+    if (T.status === 'localisé' || T.status === 'relocalisé') T.ref = T.ref ? 0.7 * T.ref + 0.3 * res.inliers : res.inliers;
     if (T.status === 'non localisé') T.ref = 0;
-    T.last = Object.assign({ mode, status: T.status, ms: now() - t0, n: T.n, nHyps: T.hyps ? T.hyps.length : (T.pose ? 1 : 0) }, res);
+    T.last = Object.assign({ mode, status: T.status, ms: now() - t0, n: T.n, nHyps: T.hyps ? T.hyps.length : (T.pose ? 1 : 0), nScans: T.o.submap && local ? T.win.length : 1 }, res);
     return T.last;
   }
+
+  // ==========================================================================
+  //  7. Cartographie automatique (SLAM simple par images clés)
+  // ==========================================================================
+  /**
+   * Le robot roule (piloté ou poussé), le lidar tourne en continu. Chaque scan reçu est recalé sur la carte
+   * DÉJÀ construite (multi-résolution autour de la pose prédite, puis gradient), ce qui limite la dérive.
+   * Image clé : dès que le robot s'est déplacé de kfDist m ou a tourné de kfRot° depuis la dernière, on garde
+   * une nouvelle position ; tant que le robot ne bouge pas, on y accumule jusqu'à `tours` tours du lidar
+   * (plus de points). L'image clé est intégrée à la grid map (agrandie si besoin) et devient un scan de la session.
+   * Si le scan ne colle plus (perdu), aucune image clé n'est ajoutée et on tente une relocalisation globale.
+   */
+  // part des points qui collent, parmi ceux qui tombent dans une zone DÉJÀ vue de la carte (les points qui
+  // découvrent une zone nouvelle ne comptent ni pour ni contre : sinon une pose restée en arrière paraît meilleure)
+  function inlierKnown(grid, F, pts, pose, tol = 0.10) {
+    const c = Math.cos(pose.th * D2R), s = Math.sin(pose.th * D2R); let n = 0, k = 0;
+    for (const p of pts) {
+      const x = pose.x + c * p.x - s * p.y, y = pose.y + s * p.x + c * p.y, [i, j] = LC.worldToCell(grid, x, y), v = LC.getCell(grid, i, j);
+      if (v === undefined || (v > LC.FREE_T && v < LC.OCC_T)) continue;
+      n++; if (fieldSample(F, x, y)[0] <= tol) k++;
+    }
+    return n >= 20 ? k / n : 0;
+  }
+  function createMapper(opt = {}) {
+    return { o: { kfDist: 0.4, kfRot: 25, tours: 3, res: 0.05, stillPos: 0.03, stillAng: 1.5, lostInl: 0.25, rxy: 0.5, rth: 25, jumpMargin: 0.1, ...opt },
+             grid: null, field: null, M: null, kfs: [], pose: { x: 0, y: 0, th: 0 }, lastKF: null, pending: null, status: 'démarrage', n: 0, lost: 0 };
+  }
+  function mapperIntegrate(Mp, kf) {
+    const P = LC.polarToGlobal(kf, kf.pose, { dMin: 0.1, dMax: 12 });
+    let x0 = kf.pose.x, x1 = kf.pose.x, y0 = kf.pose.y, y1 = kf.pose.y;
+    for (const q of P) { if (q.x < x0) x0 = q.x; if (q.x > x1) x1 = q.x; if (q.y < y0) y0 = q.y; if (q.y > y1) y1 = q.y; }
+    Mp.grid = Mp.grid ? LC.ensureCovers(Mp.grid, x0, y0, x1, y1, 1.0) : LC.createGrid({ xMin: x0 - 1, yMin: y0 - 1, xMax: x1 + 1, yMax: y1 + 1, res: Mp.o.res });
+    LC.updateGrid(Mp.grid, { x: kf.pose.x, y: kf.pose.y }, P, { fillBetween: true, occFree: 15 });
+    Mp.field = distanceField(Mp.grid); Mp.M = null;
+  }
+  function mapperCommit(Mp) {
+    const P = Mp.pending; Mp.pending = null; if (!P) return null;
+    const kf = { a: P.a, d: P.d, i: P.i, pose: { ...P.pose }, tours: P.count, n: Mp.kfs.length + 1, meta: P.meta };
+    Mp.kfs.push(kf); Mp.lastKF = { ...kf.pose }; mapperIntegrate(Mp, kf);
+    return kf;
+  }
+  /** Un scan reçu ({ a, d, i }) -> { pose, inliers, status, keyframe (ou null), ms } */
+  function mapperUpdate(Mp, scan, motion) {
+    const t0 = now(), o = Mp.o; Mp.n++;
+    const local = localPoints(scan), pts = uniformSubsample(local, { max: 350 });
+    const out = r => Object.assign({ pose: { ...Mp.pose }, status: Mp.status, keyframe: null, ms: now() - t0, kfs: Mp.kfs.length }, r);
+    if (!Mp.kfs.length && !Mp.pending) {                     // tout premier scan : origine de la carte
+      Mp.pose = { x: 0, y: 0, th: 0 }; Mp.status = 'carte démarrée';
+      Mp.pending = { a: Array.from(scan.a), d: Array.from(scan.d), i: Array.from(scan.i || scan.a.map(() => 200)), pose: { ...Mp.pose }, count: 1, meta: scan.meta };
+      return out({ keyframe: o.tours <= 1 ? mapperCommit(Mp) : null, inliers: 1 });
+    }
+    if (!Mp.field) {                                         // la première image clé s'accumule encore
+      const r = { x: 0, y: 0, th: 0 }, P = Mp.pending;
+      P.a.push(...scan.a); P.d.push(...scan.d); P.i.push(...(scan.i || scan.a.map(() => 200))); P.count++;
+      return out({ keyframe: P.count >= o.tours ? mapperCommit(Mp) : null, inliers: 1 });
+    }
+    const pred = motion ? compose(Mp.pose, motion) : Mp.pose;
+    const mv = motion ? Math.hypot(motion.x, motion.y) : 0, mr = motion ? Math.abs(motion.th) : 0;
+    const r1 = gridMultiRes(Mp.field, pts, pred, { rxy: o.rxy + 0.3 * mv, rth: o.rth + 0.3 * mr, levels: [[0.1, 3], [0.05, 1], [0.025, 0.5]], keep: 4 });
+    const r2 = gridGradient(Mp.field, pts, r1, { dmax0: 0.3, dmaxMin: 0.1 });
+    const IN = q => inlierKnown(Mp.grid, Mp.field, pts, q);
+    const i1 = IN(r1), i2 = IN(r2);
+    // l'affinage ne doit pas partir loin de la recherche (ex. vue tournée de 90° dans un coin encombré)
+    const sane = poseError(r2, r1).pos <= 0.15 && poseError(r2, r1).ang <= 5;
+    let r = sane && i2 >= i1 ? r2 : r1, inl = sane ? Math.max(i1, i2) : i1;
+    // préférence pour la solution proche de la prédiction (petits déplacements entre deux scans, carte encore
+    // petite au début) : une solution lointaine n'est retenue que si elle colle nettement mieux
+    const nr = gridMultiRes(Mp.field, pts, pred, { rxy: 0.12 + 0.2 * mv, rth: 5 + 0.2 * mr, levels: [[0.05, 1], [0.025, 0.5]], keep: 2 });
+    const ni = IN(nr);
+    if (poseError(nr, r).pos > 0.05 || poseError(nr, r).ang > 2) { if (inl < ni + o.jumpMargin) { r = nr; inl = ni; } }
+    if (inl < o.lostInl) {
+      Mp.lost++; Mp.status = 'perdu';
+      if (Mp.pending) mapperCommit(Mp);                      // on garde ce qui était acquis avant de se perdre
+      Mp.pose = pred;                                        // on suit le déplacement prévu en attendant
+      // relocalisation globale : seulement sur une carte assez grande (≥ 5 images clés), et près de la
+      // position prévue (≤ 1 m) sauf si le robot est perdu depuis longtemps (≥ 10 scans)
+      if (Mp.lost >= 2 && Mp.kfs.length >= 5) {
+        Mp.M = Mp.M || prepareMap(Mp.grid, null);
+        const g = globalLocalize(Mp.M, pts);
+        const near = Math.hypot(g.pose.x - pred.x, g.pose.y - pred.y) <= 1.0 && Math.abs(normDeg(g.pose.th - pred.th)) <= 30;
+        if (g.confidence === 'sûr' && (near || Mp.lost >= 10)) { Mp.pose = g.pose; Mp.status = 'relocalisé'; Mp.lost = 0; return out({ inliers: g.inliers }); }
+      }
+      return out({ inliers: inl });
+    }
+    Mp.lost = 0; Mp.pose = { x: r.x, y: r.y, th: normDeg(r.th) }; Mp.status = 'cartographie';
+    let keyframe = null;
+    if (Mp.pending) {                                        // accumulation de tours tant que le robot est arrêté
+      const e = poseError(Mp.pose, Mp.pending.pose);
+      if (e.pos <= o.stillPos && e.ang <= o.stillAng) {
+        const P = Mp.pending; P.a.push(...scan.a); P.d.push(...scan.d); P.i.push(...(scan.i || scan.a.map(() => 200))); P.count++;
+        if (P.count >= o.tours) keyframe = mapperCommit(Mp);
+      } else keyframe = mapperCommit(Mp);                    // le robot repart : on garde les tours déjà acquis
+    }
+    if (!Mp.pending && !keyframe) {
+      const e = poseError(Mp.pose, Mp.lastKF);
+      if (e.pos >= o.kfDist || e.ang >= o.kfRot) {
+        Mp.pending = { a: Array.from(scan.a), d: Array.from(scan.d), i: Array.from(scan.i || scan.a.map(() => 200)), pose: { ...Mp.pose }, count: 1, meta: scan.meta };
+        if (o.tours <= 1) keyframe = mapperCommit(Mp);
+      }
+    }
+    return out({ inliers: inl, keyframe });
+  }
+
   /** Démo simulée : la salle du simulateur, une carte faite de 9 scans (comme au Jour 1) et un trajet
    *  du robot (pas de `step` m, rotations en place), avec la vérité à chaque pas. */
   function demoScenario(seed = 3, opt = {}) {
@@ -821,6 +1075,8 @@
     segIndex, vecScore, vecBrute, vecICP, vecDirect, lineFeatures,
     pointIndex, scanICPPoint, scanICPLine, scanCorrelative,
     buildReferences, runLocBench, summarize, benchToCSV, benchToMarkdown, METHODS, REF_LABEL,
-    prepareMap, inlierRatio, globalLocalize, trackStep, createTracker, trackerUpdate, demoScenario
+    structurePoints, structureGrid, seeThrough, scanStepOk,
+    createMapper, mapperUpdate, mapperCommit, inlierKnown,
+    prepareMap, inlierRatio, globalLocalize, locateScan, trackStep, createTracker, trackerUpdate, demoScenario
   };
 });
