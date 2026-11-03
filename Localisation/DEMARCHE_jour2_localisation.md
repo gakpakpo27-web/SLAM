@@ -242,3 +242,82 @@ Erreurs angulaires médianes en réussite : 0,00° à 0,35°.
 - **Vitesses de la prédiction :** celles des commandes WiFi (0,25 m/s, 90°/s) sont à mesurer sur ton robot. Une prédiction fausse n'est pas grave : le suivi tolère ±35 cm et ±15°, et la recherche globale rattrape le reste.
 - **Scans encombrés pris au milieu des tables** (pos2, pos3) : ils restent ambigus tant que le robot ne bouge pas. Il faut alors avancer de quelques dizaines de centimètres, ou indiquer la position à la main.
 - **Fréquence des scans :** la recherche globale (0,2 s) dépasse l'intervalle entre deux scans en WiFi (5 Hz). Pendant qu'elle tourne, les scans arrivés entre-temps sont sautés : on ne garde que le plus récent.
+
+### 7.5 Robot au sol : pieds de chaises et obstacles
+
+**Constat.** Robot soulevé, il se repère bien. Posé au sol, il se trompe de position.
+
+**Cause.** Un lidar 2D ne voit qu'**une tranche horizontale**, à sa hauteur.
+- **Soulevé :** la tranche passe au-dessus des chaises et des tables. Le lidar voit les murs, les grands meubles et les plateaux de tables.
+- **Au sol :** elle passe dans les **pieds**. Beaucoup de petits groupes de points masquent les murs, et les plateaux de la carte n'existent plus : ce sont 4 pieds.
+
+Le scan ne décrit donc plus les mêmes objets que la carte. Des pieds peuvent s'aligner sur un autre meuble de la carte et donner un faux « meilleur » score, quelques dizaines de centimètres plus loin.
+
+**Ce qui a été fait :**
+1. **Carte locale glissante** (`updateWindow`). Les 3 derniers scans (à moins de 3 m) sont ramenés dans le repère du scan courant ; le déplacement entre deux scans est estimé par recalage entre scans (corrélation multi-résolution, en partant de la commande). Le recalage n'est gardé que s'il est **vérifié** (`scanStepOk`) :
+   - au moins 40 % des points collent ;
+   - ou au moins 20 % collent, et le résultat est à moins de 25 cm et 10° du déplacement commandé.
+
+   En avançant de quelques dizaines de centimètres, les murs cachés par les pieds réapparaissent. Le déplacement ainsi mesuré remplace aussi la commande pour la prédiction.
+2. **Ne pas sauter.** Si le suivi décroche et que la recherche globale propose un autre endroit, la position suivie **et** la proposition sont gardées comme hypothèses. Ce sont les scans suivants, avec le déplacement du robot, qui tranchent. On ne saute directement que si le suivi ne colle plus du tout (moins de 15 % des points).
+3. **Enregistrement de session.** Dans l'onglet Robot en direct, on peut enregistrer les scans et les commandes horodatés, puis les rejouer à l'identique. On peut ainsi analyser un échec réel au sol.
+
+**Mesures.**
+
+*Scans réels :* chaque scan assemblé avec son voisin, recalage vérifié, sur la carte des 12 autres scans (`resultats_suivi.md` §1 bis).
+
+| Méthode | Scans justes | Annoncés « sûr » | Annoncés « sûr » à tort |
+|---|---|---|---|
+| Scan seul | 11 / 13 | 9 | 0 |
+| Carte locale de 2 scans | **12 / 13** | 10 | 0 |
+
+- **pos3,** le scan le plus encombré, est retrouvé grâce à son voisin.
+- **Le recalage faux pos2 + pos3** (1,3 m d'erreur) est refusé par la vérification.
+
+*Simulation :* carte « en hauteur » (plateaux de tables), robot au sol au milieu de 60 chaises, 14 tables, des sacs et des personnes, robot déplacé à la main à mi-parcours, 3 graines.
+
+| Suiveur | Positions justes | Annoncées « localisé » à tort |
+|---|---|---|
+| Ancien suiveur | 97 % | 14 |
+| Nouveau suiveur | 98 % | 11 |
+
+La simulation ne reproduit pas l'ampleur du problème observé en réel : il faut des données réelles au sol, d'où l'enregistrement de session.
+
+**Essayé et écarté** (chiffres sur les mêmes données) :
+- **Retirer les petits groupes de points du scan, et les petits obstacles de la carte :** sur un scan isolé, au mieux aucun gain (12/14 → 11 à 12/14). Combiné à une carte réduite aux grandes structures, en simulation, c'est catastrophique : 28 % de positions justes. On jette trop d'information.
+- **Pénaliser les faisceaux qui traversent un mur de la carte :** cela pénalise aussi la bonne position, car des faisceaux légitimes passent par les portes et les fenêtres (9 à 11/14 au lieu de 12/14).
+- **Préférer la position proche de la prédiction :** sans gain quand le déplacement est bien mesuré, et nuisible avec une odométrie bruitée (79 % de positions justes au lieu de 97 %). L'option est désactivée par défaut.
+
+**Recommandations :**
+- **Construire la carte à la même hauteur que le robot en fonctionnement** (robot au sol). C'est la mesure la plus efficace : la carte contient alors les mêmes pieds que les scans.
+- Pour se repérer, utiliser la **grid map traitée** (avec les obstacles) plutôt que le plan.
+- Si l'état est « ambigu », **faire avancer le robot** de 50 cm à 1 m : la carte locale et les hypothèses lèvent le doute.
+
+### 7.6 Corriger la carte pendant le suivi, et proposer une carte juste
+
+**Besoin :** la carte du Jour 1 peut être fausse. Elle a pu être faite robot soulevé (plateaux de tables au lieu des pieds), ou un meuble a pu être déplacé, un carton apporté.
+
+**Méthode** (`createMapCorrector`, `correctorAdd`, `correctorDiff`, `correctorProposal` dans `lidar_maptools.js`) :
+1. **Couche de correction.** Elle a la même géométrie que la carte. Chaque scan pris à une position **sûre** y est intégré : on compte, pour chaque case, ses impacts et ses observations.
+   - On n'utilise ni les scans « ambigus » ni ceux qui ont plusieurs hypothèses : une pose fausse inscrirait de fausses corrections.
+2. **À ajouter :** une case vue occupée dans au moins 2 scans, et dans au moins 50 % de ses observations, alors que la carte n'a aucun obstacle à moins d'une case.
+3. **À retirer :** une case occupée sur la carte, observée au moins 3 fois, occupée dans au plus 10 % des observations, **et sans aucun impact dans ses 8 voisines**. Cette dernière condition évite d'effacer un mur seulement frôlé par les faisceaux, ou décalé d'une case.
+4. **Carte proposée :** la carte d'origine, plus les ajouts, moins les retraits. On peut la voir, l'**adopter** (le suivi continue sur la carte corrigée, et les segments qui ne reposent plus sur un obstacle sont retirés), l'envoyer à l'onglet Grid map ou l'exporter.
+
+**Mesures en simulation.** Carte faite robot soulevé (plateaux de tables), robot au sol (pieds, chaises, sacs, personnes), trajet de 264 scans, 3 graines. On compare les cases occupées avec la vraie carte du sol, à une case près :
+
+| | Carte d'origine | Carte corrigée |
+|---|---|---|
+| Précision (cases occupées vraiment occupées) | 74–78 % | **91 %** |
+| Rappel (vrais obstacles présents) | 70–75 % | **95–97 %** |
+| Points du scan qui collent | 64–67 % | **93–96 %** |
+| Positions justes | 251–263 / 264 | 253–263 / 264 |
+
+**Salle modifiée** (robot simulé, option « la salle a changé » : armoire retirée, 6 cartons et 10 chaises ajoutés) :
+- 148 scans comparés : 174 cases à ajouter, 72 à retirer ;
+- après adoption, les points du scan qui collent passent de 92 % à 99,6 %.
+
+**Limites :**
+- Une case doit être vue plusieurs fois : il faut parcourir la salle.
+- La couche a la taille de la carte d'origine : ce qui est vu au-delà de ses bords n'est pas ajouté.
+- Les murs (segments) de la carte vectorielle ne sont pas recalculés, seulement retirés quand ils ne reposent plus sur rien.

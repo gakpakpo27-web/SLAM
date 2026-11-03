@@ -14,7 +14,7 @@
 | `lidar_maptools.js` | Traitement des cartes et des obstacles : prétraitement, clusters, cercles / RANSAC / Douglas-Peucker, grid map enrichie et nettoyée, obstacles, régularisation de la carte vectorielle, carte de coût, trajet A*, recalage global des poses |
 | `DEMARCHE_traitement_cartes.md` | Démarche et résultats du traitement des cartes et des obstacles |
 | `resultats_traitement.md` | Rapport de la chaîne de traitement sur les 14 scans réels (avec recalage) |
-| `test_lidar_core.js` | 112 tests automatiques (`node test_lidar_core.js`), dont les cas limites de la découpe |
+| `test_lidar_core.js` | 115 tests automatiques (`node test_lidar_core.js`), dont les cas limites de la découpe |
 | `DEMARCHE_parties_3_4.md` | Démarche des parties 3 et 4 : choix techniques, hypothèses, difficultés, limites |
 | `DEMARCHE_partie_5.md` | Démarche de la partie 5 (carte vectorielle) |
 | `capture_lidar.py` | (Optionnel) capture en ligne de commande, 1 fichier CSV par position |
@@ -246,6 +246,14 @@ Le robot se repère sur la carte du Jour 1 et la vue le suit comme un GPS :
    *Indiquer la position à la main* (clic + glisser). Les commandes de pilotage WiFi servent de prédiction.
 4. **Vue** : cap en haut (la carte tourne), nord en haut, ou libre ; molette = zoom ; points verts = collent à la carte,
    rouges = obstacle nouveau ; trajectoire exportable en CSV.
+5. **Au sol** (pieds de chaises qui masquent les murs) : carte locale glissante des 3 derniers scans (recalage entre
+   scans vérifié), pas de saut de position sans confirmation par le mouvement ; **enregistrement de session**
+   (scans + commandes) rejouable à l'identique pour analyser un échec. Conseil : construire la carte avec le robot
+   au sol, à la hauteur où il roulera.
+6. **Corriger la carte** : pendant le suivi (positions sûres seulement), ce qui est vu de façon répétée et absent de la
+   carte est proposé **à ajouter** (vert), ce qui est sur la carte mais traversé sans impact **à retirer** (rouge) ;
+   *Voir la carte proposée*, *Adopter la carte corrigée*, envoi vers Grid map, export PGM + YAML. Pour essayer :
+   robot simulé avec l'option « la salle a changé ».
 
 ## Traitement des cartes et des obstacles (onglet *Traitement*)
 Chaîne complète sur les scans visibles, chaque étape activable, avec un compte rendu par étape et la qualité de la carte
@@ -259,9 +267,13 @@ avant / après :
 5. **obstacles** : composantes connexes classées petit / objet / structure, et obstacles circulaires suivis
    (confiance, absence, persistance) ;
 6. **carte vectorielle** (split-and-merge, Douglas-Peucker ou RANSAC) puis **régularisation** : murs redressés sur les
-   axes de la salle, alignés, fusionnés, coins raccordés, dépassements rognés ;
+   axes de la salle, alignés, fusionnés, coins raccordés, dépassements rognés ; puis **murs nets** : les murs sont
+   redessinés en trait continu dans la grid map (bord bruité effacé) ;
 7. **carte de coût** (obstacles gonflés du rayon du robot) et **trajet A\*** : clic départ, clic arrivée.
-8. **filtres « distance minimum »** (0 = désactivé) : segments plus courts que L, cercles de diamètre inférieur à D,
+8. **plan de la salle** : contour détecté automatiquement et redessiné (côtés sur les axes, coins exacts), obstacles
+   effacés (taches < 1 m), fuites par les portes coupées (< 90 cm), meubles pleins gardés en rectangles et espaces
+   entourés de tables en cloisons ; exportable (PGM + YAML, .txt, PNG) et envoyable aux onglets Grid map et Vectorielle ;
+9. **filtres « distance minimum »** (0 = désactivé) : segments plus courts que L, cercles de diamètre inférieur à D,
    taches de points plus petites que T, et tout ce qui est à moins de R d'une position du robot ;
    appliqués en fin de chaîne ou à tout moment avec *Appliquer les filtres maintenant*.
 

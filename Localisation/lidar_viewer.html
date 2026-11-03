@@ -552,9 +552,11 @@
 
     <h2>2 · Scans</h2>
     <div class="frm"><label for="lvFeed">Source</label><select id="lvFeed">
-      <option value="robot">Robot connecté (USB ou WiFi)</option><option value="replay">Rejouer les scans visibles</option><option value="sim">Robot simulé (trajet dans la salle simulée)</option></select>
+      <option value="robot">Robot connecté (USB ou WiFi)</option><option value="replay">Rejouer les scans visibles</option><option value="sim">Robot simulé (trajet dans la salle simulée)</option><option value="rec">Rejouer un enregistrement (.json)</option></select>
       <label for="lvPeriod">Intervalle (relecture, simulation) (ms)</label><input type="number" id="lvPeriod" value="400" step="100" min="50"></div>
     <label class="chk" id="lvLOORow" title="Chaque scan rejoué est cherché sur une carte construite SANS lui : sinon il se retrouverait lui-même dans la carte"><input type="checkbox" id="lvLOO" checked> Relecture : carte sans le scan rejoué (test honnête)</label>
+    <div class="row" id="lvRecRow"><label class="btn">Charger un enregistrement (.json)<input type="file" id="lvRecFile" accept=".json" hidden></label><span class="help" id="lvRecInfo"></span></div>
+    <label class="chk" id="lvSimChangeRow" title="Robot simulé : l'armoire a été retirée, des cartons et des chaises ont été ajoutés ; la carte n'est plus juste"><input type="checkbox" id="lvSimChange"> Robot simulé : la salle a changé depuis la carte</label>
     <div class="row"><button class="primary" id="lvStart">▶ Démarrer</button><button id="lvStop">■ Arrêter</button><button id="lvOnce">Un scan</button><button id="lvKidnap" title="Simulation : le robot est déplacé à la main sans prévenir">Kidnapper</button></div>
 
     <h2>3 · Repérage</h2>
@@ -571,6 +573,19 @@
     </div>
     <div class="info" id="lvState">Pas encore localisé.</div>
 
+    <h2>5 · Corriger la carte</h2>
+    <div class="help">Pendant le suivi, chaque scan pris à une position <b>sûre</b> est comparé à la carte. Une case vue occupée de façon répétée là où la carte est vide est <b>à ajouter</b> (vert). Une case occupée sur la carte mais traversée de façon répétée sans aucun impact autour est <b>à retirer</b> (rouge). Typique : carte faite robot soulevé, ou meuble déplacé.</div>
+    <label class="chk"><input type="checkbox" id="lvLearn" checked> Apprendre pendant le suivi</label>
+    <label class="chk"><input type="checkbox" id="lvShowCorr" checked> Montrer les corrections (vert à ajouter, rouge à retirer)</label>
+    <div class="info" id="lvCorrInfo">Aucune correction pour l’instant.</div>
+    <div class="row">
+      <button id="lvCorrView" title="Affiche la carte telle qu'elle serait une fois corrigée">Voir la carte proposée</button>
+      <button id="lvCorrAdopt" class="primary" title="La carte corrigée devient la carte de référence (le suivi continue)">Adopter la carte corrigée</button>
+    </div>
+    <div class="row" style="margin-top:6px">
+      <button id="lvCorrSend">Envoyer → onglet Grid map</button><button id="lvCorrExport">Exporter (PGM + YAML)</button><button id="lvCorrReset">Oublier les corrections</button>
+    </div>
+
     <h2>4 · Vue</h2>
     <div class="row seg-tools"><button id="lvViewHead" class="on" title="La carte tourne : l’avant du robot est toujours en haut">Cap en haut (GPS)</button><button id="lvViewNorth">Nord en haut</button><button id="lvViewFree">Libre</button></div>
     <div class="help">Molette : zoom. Glisser : déplacer la vue (passe en « Libre »). Touche C : recentrer.</div>
@@ -579,6 +594,9 @@
     <label class="chk"><input type="checkbox" id="lvShowHyps" checked> Hypothèses quand c’est ambigu</label>
     <label class="chk"><input type="checkbox" id="lvShowVec" checked> Carte vectorielle</label>
     <div class="row"><button id="lvClear">Effacer la trajectoire</button><button id="lvExport">Trajectoire (CSV)</button></div>
+    <h2>Enregistrer une session (pour analyse)</h2>
+    <div class="help">Enregistre chaque scan reçu et chaque commande de pilotage, avec l’heure. Le fichier se rejoue à l’identique (source « Rejouer un enregistrement ») : utile pour comprendre pourquoi le robot se perd au sol.</div>
+    <div class="row"><button id="lvRec">● Enregistrer</button><button id="lvRecSave">Télécharger l’enregistrement</button><span class="help" id="lvRecState"></span></div>
   </div>
 </aside>
 
@@ -1948,6 +1966,69 @@
   }
 
 
+
+  // ==========================================================================
+  //  6. Robustesse au sol : pieds, obstacles, carte faite à une autre hauteur
+  // ==========================================================================
+  // Un lidar 2D ne voit qu'une tranche horizontale. Au sol, la tranche passe dans les pieds de chaises et de
+  // tables : beaucoup de petits groupes de points, absents (ou différents) sur la carte, qui masquent les murs.
+  /** Points de structure : on retire du scan les petits groupes de points (pieds, sacs, jambes) dont
+   *  l'étendue est < minExtent ; il reste les murs et les grands meubles. pts : points locaux, ordre angulaire. */
+  function structurePoints(pts, opt = {}) {
+    const o = { minExtent: 0.25, gapBase: 0.08, gapK: 0.02, ...opt }, n = pts.length; if (n < 3) return pts.slice();
+    const r = p => Math.hypot(p.x, p.y), out = [];
+    let start = 0, worst = -1;
+    for (let k = 0; k < n; k++) { const p = pts[k], q = pts[(k + 1) % n], d = Math.hypot(p.x - q.x, p.y - q.y) - (o.gapBase + o.gapK * Math.max(r(p), r(q))); if (d > worst) { worst = d; start = (k + 1) % n; } }
+    let cur = [pts[start]];
+    const flush = () => {
+      let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
+      for (const p of cur) { if (p.x < x0) x0 = p.x; if (p.x > x1) x1 = p.x; if (p.y < y0) y0 = p.y; if (p.y > y1) y1 = p.y; }
+      if (Math.hypot(x1 - x0, y1 - y0) >= o.minExtent) out.push(...cur);
+    };
+    for (let m = 1; m < n; m++) {
+      const p = pts[(start + m - 1) % n], q = pts[(start + m) % n];
+      if (Math.hypot(p.x - q.x, p.y - q.y) > o.gapBase + o.gapK * Math.max(r(p), r(q))) { flush(); cur = []; }
+      cur.push(q);
+    }
+    flush();
+    return out;
+  }
+  /** Carte de structure : les petites taches d'obstacle (étendue < minExtent : pieds, chaises, objets) sont
+   *  retirées de la grid map ; restent les murs et les grands meubles. */
+  function structureGrid(grid, minExtent = 1.0) {
+    const W = grid.W, H = grid.H, out = Object.assign({}, grid, { data: grid.data.slice() }), seen = new Uint8Array(W * H), st = [];
+    for (let k0 = 0; k0 < W * H; k0++) {
+      if (seen[k0] || grid.data[k0] < LC.OCC_T) continue;
+      const cells = []; seen[k0] = 1; st.push(k0); let i0 = W, i1 = 0, j0 = H, j1 = 0;
+      while (st.length) {
+        const k = st.pop(), i = k % W, j = (k - i) / W; cells.push(k);
+        if (i < i0) i0 = i; if (i > i1) i1 = i; if (j < j0) j0 = j; if (j > j1) j1 = j;
+        for (let dj = -1; dj <= 1; dj++) for (let di = -1; di <= 1; di++) {
+          const a = i + di, b = j + dj; if (a < 0 || b < 0 || a >= W || b >= H) continue;
+          const m = b * W + a; if (!seen[m] && grid.data[m] >= LC.OCC_T) { seen[m] = 1; st.push(m); }
+        }
+      }
+      if (Math.hypot(i1 - i0 + 1, j1 - j0 + 1) * grid.res < minExtent) for (const k of cells) out.data[k] = LC.FREE_T - 25;
+    }
+    return out;
+  }
+  /** « Vu à travers » : part des faisceaux qui traversent un obstacle de la carte avant d'atteindre leur
+   *  point (avec une marge). À une mauvaise pose, des points tombent derrière des murs : c'est très
+   *  discriminant, même quand on voit peu de murs (les pieds devant un mur ne gênent pas : ils l'occultent). */
+  function seeThrough(M, pts, pose, opt = {}) {
+    const g = M.sgrid || M.grid, margin = opt.margin ?? 0.2, P = thin(pts, opt.n ?? 120);
+    const c = Math.cos(pose.th * D2R), s = Math.sin(pose.th * D2R), [ri, rj] = LC.worldToCell(g, pose.x, pose.y);
+    let bad = 0, n = 0;
+    for (const p of P) {
+      const L = Math.hypot(p.x, p.y); if (L < margin + 0.1) continue;
+      const k = (L - margin) / L, ex = pose.x + (c * p.x - s * p.y) * k, ey = pose.y + (s * p.x + c * p.y) * k;
+      const [ei, ej] = LC.worldToCell(g, ex, ey); let hit = false; n++;
+      LC.bresenham(ri, rj, ei, ej, (i, j) => { if (!hit && i >= 0 && j >= 0 && i < g.W && j < g.H && g.data[j * g.W + i] >= LC.OCC_T && (i !== ri || j !== rj)) hit = true; });
+      if (hit) bad++;
+    }
+    return n ? bad / n : 0;
+  }
+
   // ==========================================================================
   //  5. Robot en direct : localisation globale (sans pose initiale) et suivi
   // ==========================================================================
@@ -1957,15 +2038,17 @@
    * (cellules vues libres, tous les candStep mètres, à plus de `clearance` d'un obstacle).
    */
   function prepareMap(grid, segs, opt = {}) {
-    const o = { candStep: 0.2, clearance: 0.04, ...opt };
+    const o = { candStep: 0.2, clearance: 0.04, structure: 0, ...opt };
+    const full = grid;
+    if (o.structure > 0) grid = structureGrid(grid, o.structure);          // carte de structure (petits obstacles retirés)
     const F = distanceField(grid), cands = [], step = Math.max(1, Math.round(o.candStep / grid.res));
     for (let j = Math.floor(step / 2); j < grid.H; j += step) for (let i = Math.floor(step / 2); i < grid.W; i += step) {
       const k = j * grid.W + i;
-      if (grid.data[k] > LC.FREE_T || F.dist[k] < o.clearance) continue;
+      if (full.data[k] > LC.FREE_T && grid.data[k] > LC.FREE_T || F.dist[k] < o.clearance) continue;
       cands.push([grid.x0 + (i + 0.5) * grid.res, grid.y0 + (j + 0.5) * grid.res]);
     }
     const S = segs && segs.length ? segs : null;
-    return { grid, field: F, index: S ? segIndex(S) : null, segs: S || [], cands, candStep: o.candStep };
+    return { grid, full, field: F, index: S ? segIndex(S) : null, segs: S || [], cands, candStep: o.candStep, structure: o.structure };
   }
   /** Part des points du scan à moins de tol d'un obstacle de la carte : « % du scan qui colle à la carte » */
   function inlierRatio(F, pts, pose, tol = 0.10) {
@@ -1998,7 +2081,7 @@
    * pts : points locaux du scan (sous-échantillonnés). Renvoie { pose, inliers, confidence, hyps, ms }.
    */
   function globalLocalize(M, pts, opt = {}) {
-    const o = { sth: 4, sigma: 0.2, nPts: 80, keep: 24, refineTop: 8, sepXY: 0.5, sepTh: 20, okInl: 0.3, ambRatio: 0.8, ...opt };
+    const o = { sth: 4, sigma: 0.2, nPts: 80, keep: 24, refineTop: 8, sepXY: 0.5, sepTh: 20, okInl: 0.3, ambRatio: 0.8, seeW: 0, ...opt };
     const t0 = now(), F = M.field, L = likTable(F, o.sigma), P = thin(pts, o.nPts), n = P.length;
     const PX = new Float64Array(n), PY = new Float64Array(n), C = M.cands, nA = Math.round(360 / o.sth);
     // meilleur angle et 2e meilleur angle (éloigné) par position
@@ -2030,6 +2113,8 @@
       try { const d = vecDirect(M.index, pts, { x: 0, y: 0, th: 0 }); if (!d.failed) seeds.push({ ...d, from: 'coins' }); } catch (e) { /* pas de coin */ }
     }
     let hyps = seeds.map(h => Object.assign(refineOn(M, pts, h), { coarse: h.score, from: h.from || 'grille' }));
+    // note finale : points qui collent, moins les faisceaux qui traversent un mur (seeW, 0 = désactivé)
+    for (const h of hyps) { h.see = o.seeW > 0 ? seeThrough(M, pts, h) : 0; h.raw = h.inliers; h.inliers = Math.max(0, h.raw - o.seeW * h.see); }
     hyps.sort((p, q) => q.inliers - p.inliers);
     const uniq = []; for (const h of hyps) if (uniq.every(u => distinctPose(u, h, o.sepXY, o.sepTh))) uniq.push(h);
     const best = uniq[0], second = uniq[1];
@@ -2041,11 +2126,22 @@
   /** Suivi : on part de la pose précédente (plus le déplacement commandé, s'il est connu) et on cherche
    *  dans une petite fenêtre qui grandit avec le déplacement. */
   function trackStep(M, pts, prev, motion, opt = {}) {
-    const o = { rxy: 0.35, rth: 15, ...opt }, t0 = now();
+    const o = { rxy: 0.35, rth: 15, near: false, nearXY: 0.12, nearTh: 5, jumpMargin: 0.08, ...opt }, t0 = now();
     const pred = motion ? compose(prev, motion) : prev;
     const mv = motion ? Math.hypot(motion.x, motion.y) : 0, mr = motion ? Math.abs(motion.th) : 0;
-    const r = refineOn(M, pts, pred, { rxy: o.rxy + 0.3 * mv, rth: o.rth + 0.3 * mr, levels: [[0.1, 3], [0.05, 1], [0.025, 0.5]], keep: 4 });
-    return Object.assign(r, { ms: now() - t0, pred });
+    const far = refineOn(M, pts, pred, { rxy: o.rxy + 0.3 * mv, rth: o.rth + 0.3 * mr, levels: [[0.1, 3], [0.05, 1], [0.025, 0.5]], keep: 4 });
+    let r = far, jumped = false;
+    if (o.near) {
+      // (option, désactivée : nuisible quand l'odométrie est bruitée) vraisemblance du mouvement : la solution proche de la prédiction est préférée ; une solution éloignée
+      // n'est retenue que si elle colle nettement mieux (au sol, des pieds de tables peuvent s'aligner sur un
+      // autre meuble de la carte et donner un faux « meilleur » score quelques dizaines de cm plus loin)
+      const near = refineOn(M, pts, pred, { rxy: o.nearXY, rth: o.nearTh, levels: [[0.05, 1], [0.025, 0.5]], keep: 2 });
+      const dist = Math.hypot(far.x - near.x, far.y - near.y), dth = Math.abs(normDeg(far.th - near.th));
+      if (dist < 0.05 && dth < 2) r = far.inliers >= near.inliers ? far : near;
+      else if (far.inliers > near.inliers + o.jumpMargin) { r = far; jumped = true; }
+      else r = near;
+    }
+    return Object.assign(r, { ms: now() - t0, pred, jumped });
   }
   /**
    * Suiveur : enchaîne les scans. Pas encore localisé -> recherche globale. Sinon suivi local ; si le
@@ -2053,8 +2149,8 @@
    * « perdu » -> nouvelle recherche globale (cas du robot « kidnappé », déplacé à la main).
    */
   function createTracker(M, opt = {}) {
-    return { M, o: { lostInl: 0.25, hardLost: 0.15, lostCount: 1, relDrop: 0.7, ambRatio: 0.8, maxHyps: 3, ...opt }, ref: 0, pose: null, hyps: null,
-             status: 'non localisé', lost: 0, n: 0, last: null };
+    return { M, o: { lostInl: 0.25, hardLost: 0.15, lostCount: 1, relDrop: 0.7, ambRatio: 0.8, maxHyps: 3, submap: true, window: 3, winDist: 3, noJump: true, ...opt },
+             ref: 0, pose: null, hyps: null, status: 'non localisé', lost: 0, n: 0, last: null, win: [] };
   }
   // résultat d'une recherche globale -> état du suiveur (plusieurs hypothèses gardées si c'est ambigu)
   function adoptGlobal(T, g, mode) {
@@ -2067,41 +2163,94 @@
     }
     return { x: g.pose.x, y: g.pose.y, th: g.pose.th, inliers: g.inliers, confidence: g.confidence, hyps: g.hyps };
   }
-  function trackerUpdate(T, pts, motion) {
+  /**
+   * Carte locale glissante : les derniers scans (au plus `window`, à moins de winDist m) ramenés dans le repère
+   * du scan courant. Le déplacement entre deux scans est estimé par recalage entre scans (corrélation
+   * multi-résolution du Jour 2, partant du déplacement commandé) et VÉRIFIÉ (≥ 40 % des points qui collent),
+   * sinon la fenêtre repart du scan courant. Au sol, un scan seul voit peu de murs (cachés par les pieds) :
+   * en avançant de quelques dizaines de centimètres, les murs masqués réapparaissent.
+   */
+  // recalage entre deux scans vérifié : beaucoup de points qui collent, ou assez et cohérent avec le
+  // déplacement commandé (les recalages faux s'en écartent de 0,8 à 1,8 m sur les scans réels)
+  function scanStepOk(ratio, rel, motion) {
+    if (ratio >= 0.4) return true;
+    if (!motion || ratio < 0.2) return false;
+    return Math.hypot(rel.x - motion.x, rel.y - motion.y) <= 0.25 && Math.abs(normDeg(rel.th - motion.th)) <= 10;
+  }
+  function updateWindow(T, local, motion) {
+    const W = T.win, sub = uniformSubsample(local, { max: 350 });
+    const ref = { pts: uniformSubsample(local, { cell: 0.03, minR: 0.3, max: 3000 }), ptsAll: local };
+    if (W.length) {
+      const prev = W[W.length - 1], init = motion || { x: 0, y: 0, th: 0 };
+      let rel = scanCorrelative(prev.ref, sub, init, { rxy: 0.5, rth: 25 });
+      const ok = scanStepOk(inlierRatio(prev.ref.field, sub, rel), rel, motion);
+      if (!ok) W.length = 0;
+      else {
+        const inv = relPose(rel, { x: 0, y: 0, th: 0 });                  // ancien repère -> repère courant
+        for (const e of W) e.pose = compose(inv, e.pose);
+        for (let k = W.length - 1; k >= 0; k--) if (Math.hypot(W[k].pose.x, W[k].pose.y) > T.o.winDist) W.splice(k, 1);
+        T.lastRel = rel;
+      }
+    }
+    W.push({ local, ref, pose: { x: 0, y: 0, th: 0 } });
+    while (W.length > T.o.window) W.shift();
+    if (W.length === 1) return sub;
+    const all = [];
+    for (const e of W) { const c = Math.cos(e.pose.th * D2R), s = Math.sin(e.pose.th * D2R); for (const p of e.local) all.push({ x: e.pose.x + c * p.x - s * p.y, y: e.pose.y + s * p.x + c * p.y }); }
+    return uniformSubsample(all, { max: 500 });
+  }
+  /**
+   * trackerUpdate(T, pts, motion, local) : pts = points du scan sous-échantillonnés ; local (option) = tous les
+   * points du scan, pour la carte locale glissante.
+   * Garde-fou « ne pas sauter » : si le suivi décroche et que la recherche globale propose un autre endroit,
+   * on ne saute pas : la position suivie et la nouvelle sont gardées comme hypothèses, et c'est le mouvement
+   * du robot (les scans suivants) qui tranche. On ne saute directement que si le suivi ne colle plus du tout.
+   */
+  function trackerUpdate(T, pts, motion, local) {
     const t0 = now(); T.n++;
+    const P = T.o.submap && local ? updateWindow(T, local, motion) : pts;
+    // déplacement mesuré par le recalage entre scans (plus fiable que la commande) quand la fenêtre le fournit
+    if (T.o.submap && local && T.win.length > 1 && T.lastRel) motion = T.lastRel;
+    T.lastRel = null;
     let res, mode;
     if (!T.pose) {
-      mode = 'global'; res = adoptGlobal(T, globalLocalize(T.M, pts, T.o.global), mode);
+      mode = 'global'; res = adoptGlobal(T, globalLocalize(T.M, P, T.o.global), mode);
     } else if (T.hyps && T.hyps.length > 1) {
-      // plusieurs hypothèses : chacune est suivie avec le même déplacement ; le robot qui bouge lève l'ambiguïté
       mode = 'hypothèses';
-      const H = T.hyps.map(h => trackStep(T.M, pts, h, motion, T.o.track)).sort((p, q) => q.inliers - p.inliers);
+      const H = T.hyps.map(h => trackStep(T.M, P, h, motion, T.o.track)).sort((p, q) => q.inliers - p.inliers);
       T.hyps = H.filter(h => h.inliers >= T.o.ambRatio * H[0].inliers).slice(0, T.o.maxHyps).map(h => ({ x: h.x, y: h.y, th: h.th, inliers: h.inliers }));
       T.pose = { x: H[0].x, y: H[0].y, th: H[0].th };
       res = Object.assign({}, H[0], { hyps: H });
       if (T.hyps.length === 1) { T.hyps = null; T.status = 'localisé'; } else T.status = 'ambigu';
-      if (H[0].inliers < T.o.hardLost) { mode = 'relocalisation'; res = adoptGlobal(T, globalLocalize(T.M, pts, T.o.global), mode); }
+      if (H[0].inliers < Math.max(T.o.lostInl, T.ref ? T.o.relDrop * T.ref : 0)) {
+        const g = globalLocalize(T.M, P, T.o.global);
+        if (H[0].inliers < T.o.hardLost || (g.confidence !== 'incertain' && g.inliers > H[0].inliers + 0.05)) { mode = 'relocalisation'; res = adoptGlobal(T, g, mode); }
+      }
     } else {
-      const s = trackStep(T.M, pts, T.pose, motion, T.o.track);
+      const s = trackStep(T.M, P, T.pose, motion, T.o.track);
       mode = 'suivi'; res = s;
-      // seuil relatif : un scan qui colle nettement moins bien que d'habitude (moyenne glissante des bons
-      // scans) est suspect, même au-dessus du seuil absolu (scans encombrés : 35 à 65 % des points collent)
       const thr = Math.max(T.o.lostInl, T.ref ? T.o.relDrop * T.ref : 0);
       if (s.inliers >= thr) { T.pose = { x: s.x, y: s.y, th: s.th }; T.lost = 0; T.status = 'localisé'; T.hyps = null; }
       else {
         T.lost++;
         if (T.lost >= T.o.lostCount || s.inliers < T.o.hardLost) {
-          // robot perdu (ou déplacé à la main) : nouvelle recherche sur toute la carte
-          const g = globalLocalize(T.M, pts, T.o.global);
+          const g = globalLocalize(T.M, P, T.o.global);
           mode = 'relocalisation';
-          if (g.inliers > s.inliers + 0.05 && g.confidence !== 'incertain') res = adoptGlobal(T, g, mode);
-          else { T.pose = { x: s.x, y: s.y, th: s.th }; T.status = 'perdu'; }
+          const elsewhere = distinctPose(g.pose, s, 0.5, 20);
+          if (g.confidence === 'incertain' || g.inliers <= s.inliers + 0.05) { T.pose = { x: s.x, y: s.y, th: s.th }; T.status = 'perdu'; }
+          else if (T.o.noJump && elsewhere && s.inliers >= T.o.hardLost && s.inliers >= T.o.ambRatio * g.inliers) {   // la position suivie reste presque aussi bonne
+            // pas de saut : on garde la position suivie ET la proposition, le mouvement tranchera
+            T.pose = { x: s.x, y: s.y, th: s.th };
+            T.hyps = [{ x: s.x, y: s.y, th: s.th, inliers: s.inliers }].concat(g.hyps.filter(h => h.inliers >= T.o.ambRatio * g.inliers).slice(0, T.o.maxHyps - 1).map(h => ({ x: h.x, y: h.y, th: h.th, inliers: h.inliers })));
+            T.status = 'ambigu'; mode = 'relocalisation à confirmer';
+            res = Object.assign({}, s, { hyps: T.hyps });
+          } else res = adoptGlobal(T, g, mode);
         } else { T.pose = { x: s.x, y: s.y, th: s.th }; T.status = 'incertain'; }
       }
     }
-    if (T.status === 'localisé' || T.status === 'relocalisé') T.ref = T.ref ? 0.7 * T.ref + 0.3 * res.inliers : res.inliers;   // « d'habitude »
+    if (T.status === 'localisé' || T.status === 'relocalisé') T.ref = T.ref ? 0.7 * T.ref + 0.3 * res.inliers : res.inliers;
     if (T.status === 'non localisé') T.ref = 0;
-    T.last = Object.assign({ mode, status: T.status, ms: now() - t0, n: T.n, nHyps: T.hyps ? T.hyps.length : (T.pose ? 1 : 0) }, res);
+    T.last = Object.assign({ mode, status: T.status, ms: now() - t0, n: T.n, nHyps: T.hyps ? T.hyps.length : (T.pose ? 1 : 0), nScans: T.o.submap && local ? T.win.length : 1 }, res);
     return T.last;
   }
   /** Démo simulée : la salle du simulateur, une carte faite de 9 scans (comme au Jour 1) et un trajet
@@ -2131,6 +2280,7 @@
     segIndex, vecScore, vecBrute, vecICP, vecDirect, lineFeatures,
     pointIndex, scanICPPoint, scanICPLine, scanCorrelative,
     buildReferences, runLocBench, summarize, benchToCSV, benchToMarkdown, METHODS, REF_LABEL,
+    structurePoints, structureGrid, seeThrough, scanStepOk,
     prepareMap, inlierRatio, globalLocalize, trackStep, createTracker, trackerUpdate, demoScenario
   };
 });
@@ -3327,6 +3477,49 @@
   }
 
   // ==========================================================================
+  //  11 ter. Correction de la carte pendant le suivi (robot en direct)
+  // ==========================================================================
+  /**
+   * Couche de correction : même géométrie que la carte de référence. Chaque scan pris à une pose SÛRE y est
+   * intégré (impacts, observations). On compare ensuite à la référence :
+   *  - à ajouter : case vue occupée dans au moins minHits scans et dans au moins addPersist de ses
+   *    observations, alors que la référence n'a aucun obstacle à moins d'une case (pieds vus au sol,
+   *    objet apporté) ;
+   *  - à retirer : case occupée sur la référence, observée au moins minSeen fois, occupée dans au plus
+   *    remPersist des observations, et aucun impact dans les 8 cases voisines (meuble déplacé, plateau de
+   *    table vu robot soulevé mais traversé au sol). La règle des voisines évite d'effacer un mur frôlé.
+   */
+  function createMapCorrector(ref) {
+    const g = Object.assign({}, ref, { data: new Uint8Array(ref.W * ref.H).fill(UNKNOWN) });
+    return { ref, g, L: createLayers(g), n: 0 };
+  }
+  function correctorAdd(C, pose, local) {
+    const c = Math.cos(pose.th * D2R), s = Math.sin(pose.th * D2R);
+    const pts = local.map(p => ({ x: pose.x + c * p.x - s * p.y, y: pose.y + s * p.x + c * p.y }));
+    updateGridLayered(C.g, C.L, { x: pose.x, y: pose.y }, pts, { fillBetween: true, occFree: 15 });
+    C.n++;
+  }
+  function correctorDiff(C, opt = {}) {
+    const o = Object.assign({ minHits: 2, addPersist: 0.5, minSeen: 3, remPersist: 0.1 }, opt);
+    const { ref, L } = C, W = ref.W, H = ref.H, add = new Uint8Array(W * H), rem = new Uint8Array(W * H);
+    const around = (i, j, f) => { for (let dj = -1; dj <= 1; dj++) for (let di = -1; di <= 1; di++) { const a = i + di, b = j + dj; if (a >= 0 && b >= 0 && a < W && b < H && f(b * W + a)) return true; } return false; };
+    let nAdd = 0, nRem = 0;
+    for (let j = 0; j < H; j++) for (let i = 0; i < W; i++) {
+      const k = j * W + i, h = L.hits[k], sn = L.seen[k];
+      if (ref.data[k] < OCC_T) {
+        if (h >= o.minHits && h / sn >= o.addPersist && !around(i, j, m => ref.data[m] >= OCC_T)) { add[k] = 1; nAdd++; }
+      } else if (sn >= o.minSeen && h / sn <= o.remPersist && !around(i, j, m => L.hits[m] > 0)) { rem[k] = 1; nRem++; }
+    }
+    return { add, rem, nAdd, nRem, scans: C.n };
+  }
+  /** Carte proposée : la référence, plus les ajouts (occupés), moins les retraits (libres). */
+  function correctorProposal(C, diff) {
+    const P = Object.assign({}, C.ref, { data: C.ref.data.slice() });
+    for (let k = 0; k < P.data.length; k++) { if (diff.add[k]) P.data[k] = OCC_T + 60; else if (diff.rem[k]) P.data[k] = FREE_T - 25; }
+    return P;
+  }
+
+  // ==========================================================================
   //  12. Chaîne complète
   // ==========================================================================
   const PIPE_DEFAULTS = {
@@ -3472,7 +3665,8 @@
     decayGrid, clearObsolete, removeMobile, labelComponents, removeSpeckles, smoothGrid, closeGaps, gridObstacles,
     dominantDirection, snapDirections, alignCollinear, mergeKeepProps, joinCorners, trimCollisions, regularizeVectorMap, sharpenWalls, maskMorph, maskFlood, fillHoles, traceLoops, regularizePolygon, roomPlan,
     costmap, costmapToPGM, planPath, mapQuality, refinePoses,
-    clipSegmentDisc, eraseDisc, filterSmall, filterNearPoses, refreshDerived, processMap, reportToMarkdown
+    clipSegmentDisc, eraseDisc, filterSmall, filterNearPoses, refreshDerived,
+    createMapCorrector, correctorAdd, correctorDiff, correctorProposal, processMap, reportToMarkdown
   };
 });
 
@@ -3936,12 +4130,18 @@
         const truth = { x: 7.3, y: 3.2, th: 123 }, g = LL.globalLocalize(live.M, lvScan(truth)), e = LL.poseError(g.pose, truth);
         return expect(e.pos <= 0.05 && e.ang <= 2 && g.confidence === 'sûr', `${(e.pos * 100).toFixed(1)} cm ${e.ang.toFixed(2)}° ${g.confidence}`);
       });
-      test('robot en direct · suivi sur 40 pas, puis robot déplacé à la main : relocalisé au scan suivant', () => {
+      test('robot en direct · suivi sur 40 pas, puis robot déplacé à la main : relocalisé en quelques scans, sans faux « localisé »', () => {
         const T = LL.createTracker(live.M), P = live.D.path; let okN = 0;
         for (let k = 0; k < 40; k++) { LL.trackerUpdate(T, lvScan(P[k]), k ? LL.relPose(P[k - 1], P[k]) : null); const e = LL.poseError(T.pose, P[k]); if (e.pos <= 0.05 && e.ang <= 2) okN++; }
-        const far = P[Math.floor(P.length * 0.7)];
-        const r = LL.trackerUpdate(T, lvScan(far), null), e = LL.poseError(T.pose, far);
-        return expect(okN === 40 && e.pos <= 0.05 && e.ang <= 2 && r.mode === 'relocalisation', `${okN}/40, après kidnapping ${(e.pos * 100).toFixed(1)} cm (${r.mode}, ${r.status})`);
+        // déplacé à la main : pas de saut à l'aveugle ; la bonne position doit gagner dans les scans suivants,
+        // sans jamais se dire « localisé » à une position fausse
+        const k0 = Math.floor(P.length * 0.7); let wrongSure = 0, r = null;
+        for (let k = k0; k < k0 + 5; k++) {
+          r = LL.trackerUpdate(T, lvScan(P[k]), k > k0 ? LL.relPose(P[k - 1], P[k]) : null);
+          const e = LL.poseError(T.pose, P[k]); if (r.status === 'localisé' && (e.pos > 0.05 || e.ang > 2)) wrongSure++;
+        }
+        const e = LL.poseError(T.pose, P[k0 + 4]);
+        return expect(okN === 40 && e.pos <= 0.05 && e.ang <= 2 && wrongSure === 0, `${okN}/40, après kidnapping ${(e.pos * 100).toFixed(1)} cm (${r.mode}, ${r.status}), faux « localisé » : ${wrongSure}`);
       });
       test('robot en direct · la part de points qui collent à la carte chute quand la pose est fausse', () => {
         const truth = live.D.path[10], pts = lvScan(truth), good = LL.inlierRatio(live.M.field, pts, truth), bad = LL.inlierRatio(live.M.field, pts, { ...truth, x: truth.x + 0.5, th: truth.th + 20 });
@@ -4148,6 +4348,20 @@
         const tableOk = P.islands.length === 1 && Math.abs(Math.min(...ix) - 2.5) < 0.06 && Math.abs(Math.max(...ix) - 4.0) < 0.06 && Math.abs(Math.min(...iy) - 1.5) < 0.06 && Math.abs(Math.max(...iy) - 2.5) < 0.06;
         const [ci, cj] = LC.worldToCell(P.grid, 1.02, 1.02);
         return expect(rectOk && tableOk && P.grid.data[cj * P.grid.W + ci] === 0 && P.stats.erased >= 4, JSON.stringify({ outer: P.outer.map(p => p.map(v => +v.toFixed(2))), islands: P.islands.length, st: P.stats }));
+      });
+      test('correction de carte : meuble retiré détecté « à retirer », carton ajouté « à ajouter », mur frôlé gardé', () => {
+        const sc = LL.classroomScene(3, { legs: 0 }), rng = LL.mulberry32(21);
+        const poses = [{ x: 2, y: 2, th: 0 }, { x: 6, y: 5, th: 90 }, { x: 11, y: 6, th: 200 }, { x: 3, y: 6, th: -40 }, { x: 7, y: 1.5, th: 10 }];
+        const ref = LL.buildReferences(poses.map(p => Object.assign(LL.simulateScan(sc.walls, p, { tours: 3 }, rng), { pose: p })), -1).grid;
+        // la salle change : armoire (x ≤ 0,6 ; 3 ≤ y ≤ 5) retirée, carton de 50 cm posé en (4 ; 4)
+        const W2 = sc.walls.filter(w => !(Math.max(w.x1, w.x2) <= 0.61 && Math.min(w.y1, w.y2) >= 2.99 && Math.max(w.y1, w.y2) <= 5.01));
+        W2.push(S(4, 4, 4.5, 4), S(4.5, 4, 4.5, 4.5), S(4.5, 4.5, 4, 4.5), S(4, 4.5, 4, 4));
+        const C = LM.createMapCorrector(ref);
+        for (const p of [{ x: 2, y: 3.5, th: 180 }, { x: 2.5, y: 4.5, th: 170 }, { x: 3, y: 3, th: 150 }, { x: 2, y: 2.5, th: 30 }, { x: 5.5, y: 5.5, th: -120 }, { x: 3.2, y: 5.5, th: -60 }])
+          LM.correctorAdd(C, p, LL.localPoints(LL.simulateScan(W2, p, { tours: 2 }, rng)));
+        const D = LM.correctorDiff(C), at = (m, x, y, r = 2) => { const [i, j] = LC.worldToCell(ref, x, y); for (let dj = -r; dj <= r; dj++) for (let di = -r; di <= r; di++) if (m[(j + dj) * ref.W + i + di]) return true; return false; };
+        const boxAdded = at(D.add, 4.25, 4.0), cupRemoved = at(D.rem, 0.6, 4.0), wallKept = !at(D.rem, 0.0, 6.5) && !at(D.rem, 3, 0.0);
+        return expect(boxAdded && cupRemoved && wallKept, JSON.stringify({ boxAdded, cupRemoved, wallKept, nAdd: D.nAdd, nRem: D.nRem }));
       });
       test('qualité : scans simulés à poses exactes -> plus de 90 % des points sur un obstacle', () => {
         const sc = LL.classroomScene(3, { legs: 0 }), rng = LL.mulberry32(8), poses = [{ x: 2, y: 2, th: 0 }, { x: 6, y: 5, th: 90 }, { x: 11, y: 6, th: 200 }];
@@ -6839,6 +7053,7 @@ function livePrepare(silent){
       LIVE.sim = LL.demoScenario(3); grid = LIVE.sim.refs.grid; segs = LIVE.sim.refs.vmap.features; label = 'salle simulée (9 scans)';
     }
     LIVE.map = LL.prepareMap(grid, segs); LIVE.map.label = label; LIVE.mapImg = null; LIVE.looCache.clear();
+    liveCorrReset(true);
     liveReset(false);
     const st = LC.gridStats(grid);
     lvSetInfo(`<b>Carte prête</b> : ${label}<br>${grid.W} × ${grid.H} cellules de ${(grid.res * 100).toFixed(0)} cm · ${(st.free * grid.res * grid.res).toFixed(0)} m² libres · ` +
@@ -6860,6 +7075,7 @@ function liveCenterOnMap(){
 }
 // --- traitement d'un scan
 function liveFeedScan(b, truth){
+  if (LIVE.rec && LIVE.feed !== 'rec') LIVE.rec.scans.push({ t: Date.now() - LIVE.rec.t0, a: Array.from(b.a), d: Array.from(b.d), i: b.i ? Array.from(b.i) : null, truth: truth || null });
   if (!LIVE.map) return;
   if (LIVE.busy){ LIVE.pending = [b, truth]; return; }      // on garde seulement le plus récent
   LIVE.busy = true;
@@ -6876,10 +7092,14 @@ function liveFeedScan(b, truth){
     } else if (LIVE.tracker) LIVE.tracker.M = LIVE.map;
     const local = LL.localPoints(raw), pts = LL.uniformSubsample(local, { max: 350 });
     const motion = $('lvOdom').checked ? LIVE.motion : null; LIVE.motion = null;
-    const r = LL.trackerUpdate(LIVE.tracker, pts, motion);
+    const r = LL.trackerUpdate(LIVE.tracker, pts, motion, local);
     LIVE.stats.n++; if (r.mode === 'global') LIVE.stats.global++; if (r.mode === 'relocalisation') LIVE.stats.reloc++;
     const T = LIVE.tracker;
     LIVE.cur = { local, res: r, truth: truth || null, t: Date.now() };
+    if ($('lvLearn').checked && LIVE.corr && T.pose && (r.status === 'localisé' || r.status === 'relocalisé') && !(T.hyps && T.hyps.length > 1)){
+      LM.correctorAdd(LIVE.corr, T.pose, local);
+      if (LIVE.corr.n % 3 === 1 || LIVE.corr.n < 4) liveCorrUpdate();
+    }
     if (T.pose){
       LIVE.trail.push({ x: T.pose.x, y: T.pose.y, th: T.pose.th, inliers: r.inliers, mode: r.mode, status: r.status, ms: r.ms, t: Date.now(),
                         err: truth ? LL.poseError(T.pose, truth) : null });
@@ -6899,6 +7119,10 @@ function liveFeedScan(b, truth){
 }
 // déplacement commandé (pilotage WiFi) -> prédiction pour le prochain scan, dans le repère du robot
 function liveOnDrive(mv, ms){
+  if (LIVE.rec) LIVE.rec.cmds.push({ t: Date.now() - LIVE.rec.t0, mv, ms });
+  liveOnDriveMotion(mv, ms);
+}
+function liveOnDriveMotion(mv, ms){
   if (!LIVE.running) return;
   const v = numVal('lvV') * ms / 1000, w = numVal('lvW') * ms / 1000;
   const d = { forward: [v, 0, 0], backward: [-v, 0, 0], left: [0, v, 0], right: [0, -v, 0], rotateleft: [0, 0, w], rotateright: [0, 0, -w] }[mv];
@@ -6914,7 +7138,8 @@ function liveState(){
   const p = T.pose, tr = LIVE.cur.truth;
   let h = `<span style="color:${col};font-weight:700;font-size:15px">● ${r.status}</span> · ${r.mode} · ${r.ms.toFixed(0)} ms`;
   if (p) h += `<br>x <b>${p.x.toFixed(2)}</b> m · y <b>${p.y.toFixed(2)}</b> m · cap <b>${p.th.toFixed(1)}°</b>`;
-  h += `<br>points du scan sur la carte : <b>${(r.inliers * 100).toFixed(0)} %</b>`;
+  h += `<br>points sur la carte : <b>${(r.inliers * 100).toFixed(0)} %</b>` + (r.nScans > 1 ? ` · carte locale de ${r.nScans} scans` : '');
+  if (r.mode === 'relocalisation à confirmer') h += `<br><span style="color:#ffb347">Une autre position est possible : le robot ne saute pas, il garde les deux et laisse son déplacement trancher.</span>`;
   if (r.status === 'ambigu' && T.hyps) h += `<br><span style="color:#ffb347">${T.hyps.length} positions possibles : déplacer le robot pour lever le doute, ou l’indiquer à la main.</span>`;
   if (tr && p){ const e = LL.poseError(p, tr); h += `<br>écart à la vraie pose : <b style="color:${e.pos <= 0.05 && e.ang <= 2 ? '#4cd97b' : '#ff6b6b'}">${(e.pos * 100).toFixed(1)} cm, ${e.ang.toFixed(2)}°</b>`; }
   const okN = LIVE.trail.filter(t => t.err).length ? LIVE.trail.filter(t => t.err && t.err.pos <= 0.05 && t.err.ang <= 2).length : null;
@@ -6924,10 +7149,10 @@ function liveState(){
 }
 // --- sources de scans
 function liveStart(){
-  if (!LIVE.map && !livePrepare()) return;
   const feed = LIVE.feed = $('lvFeed').value;
-  if (feed === 'sim' && !LIVE.sim){ $('lvSrc').value = 'sim'; if (!livePrepare()) return; toast('Carte : salle simulée'); }
-  if (feed === 'sim' && $('lvSrc').value !== 'sim'){ $('lvSrc').value = 'sim'; livePrepare(); }
+  // le robot simulé roule dans la salle simulée : c'est sa carte
+  if (feed === 'sim' && ($('lvSrc').value !== 'sim' || !LIVE.sim || !LIVE.map)){ $('lvSrc').value = 'sim'; $('lvSrc').onchange(); if (!livePrepare()) return; toast('Carte : salle simulée'); }
+  if (!LIVE.map && !livePrepare()) return;
   liveStop(true); liveReset(true); LIVE.running = true; liveViewButtons();
   if (feed === 'robot'){
     if (!isConnected()){ LIVE.running = false; return toast('Connecte d’abord le robot (onglet Scans, USB ou WiFi)'); }
@@ -6937,6 +7162,9 @@ function liveStart(){
     LIVE.replay = { i: 0, list: S.scans.filter(s => s.visible) };
     if (!LIVE.replay.list.length){ LIVE.running = false; return toast('Aucun scan visible'); }
     liveTick();
+  } else if (feed === 'rec'){
+    if (!LIVE.recPlay){ LIVE.running = false; return toast('Charge d’abord un enregistrement (.json)'); }
+    LIVE.recPlay.i = 0; liveTick();
   } else { LIVE.simIdx = 0; LIVE.simPrev = null; liveTick(); }
   if (LIVE.view === 'free') LIVE.zoom = Math.max(LIVE.zoom, 70);          // vue GPS : assez près du robot
   liveSetView(LIVE.view === 'free' ? 'head' : LIVE.view);
@@ -6952,6 +7180,15 @@ function liveStep(){                       // un scan de la source relecture / s
     liveFeedScan(lvRaw(s), { ...s.pose });
     return true;
   }
+  if (LIVE.feed === 'rec'){
+    const R = LIVE.recPlay; if (!R || R.i >= R.data.scans.length) return false;
+    const sc = R.data.scans[R.i], prevT = R.i ? R.data.scans[R.i - 1].t : -Infinity; R.i++;
+    // commandes envoyées entre le scan précédent et celui-ci -> prédiction (comme en direct)
+    for (const c of R.data.cmds) if (c.t > prevT && c.t <= sc.t) { const run = LIVE.running; LIVE.running = true; liveOnDriveMotion(c.mv, c.ms); LIVE.running = run; }
+    liveFeedScan({ a: sc.a, d: sc.d, i: sc.i || sc.a.map(() => 200) }, sc.truth || undefined);
+    $('lvRecInfo').textContent = `scan ${R.i}/${R.data.scans.length}`;
+    return true;
+  }
   if (LIVE.feed === 'sim'){
     const D = LIVE.sim; if (!D) return false;
     const truth = D.path[LIVE.simIdx % D.path.length]; LIVE.simIdx++;
@@ -6960,7 +7197,7 @@ function liveStep(){                       // un scan de la source relecture / s
       LIVE.motion = { x: m.x * (1 + g()) + 0.01, y: m.y * (1 + g()), th: m.th * (1 + g()) + 0.5 };   // odométrie bruitée
     }
     LIVE.kidnapped = false; LIVE.simPrev = truth;
-    liveFeedScan(Object.assign(LL.simulateScan(D.scene.walls, truth, { tours: 1 }, D.rng), { name: 'sim', pose: null }), truth);
+    liveFeedScan(Object.assign(LL.simulateScan($('lvSimChange').checked ? liveChangedScene(D) : D.scene.walls, truth, { tours: 1 }, D.rng), { name: 'sim', pose: null }), truth);
     return true;
   }
   return false;
@@ -6984,7 +7221,7 @@ const lvW2S = (X, x, y) => { const dx = x - X.x, dy = y - X.y, c = Math.cos(X.ph
 const lvS2W = (X, sx, sy) => { const u = (sx - X.cx) / X.k, v = -(sy - X.cy) / X.k, c = Math.cos(-X.phi), s = Math.sin(-X.phi);
   return [X.x + c * u - s * v, X.y + s * u + c * v]; };
 function liveMapImage(){
-  const g = LIVE.map.grid;
+  const g = LIVE.showProposal && LIVE.proposal ? LIVE.proposal : LIVE.map.grid;
   if (LIVE.mapImg && LIVE.mapImg.g === g) return LIVE.mapImg.c;
   const c = document.createElement('canvas'); c.width = g.W; c.height = g.H;
   const x = c.getContext('2d'), im = x.createImageData(g.W, g.H);
@@ -7007,7 +7244,9 @@ function drawLiveView(){
   const ytop = g.y0 + g.H * g.res, o = P(g.x0, ytop), di = P(g.x0 + g.res, ytop), dj = P(g.x0, ytop - g.res);
   ctx.save(); ctx.imageSmoothingEnabled = false;
   ctx.setTransform(dpr * (di[0] - o[0]), dpr * (di[1] - o[1]), dpr * (dj[0] - o[0]), dpr * (dj[1] - o[1]), dpr * o[0], dpr * o[1]);
-  ctx.drawImage(liveMapImage(), 0, 0); ctx.restore();
+  ctx.drawImage(liveMapImage(), 0, 0);
+  if ($('lvShowCorr').checked && LIVE.corrDiff && !LIVE.showProposal){ const ci = liveCorrImage(); if (ci) ctx.drawImage(ci, 0, 0); }
+  ctx.restore();
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   // grille métrique légère (repère : tous les mètres)
   ctx.save(); ctx.lineCap = 'round';
@@ -7160,7 +7399,7 @@ function liveRelocalizeCurrent(){
 }
 // --- boutons
 $('lvSrc').onchange = () => { $('lvFileRow').style.display = $('lvSrc').value === 'file' ? '' : 'none'; };
-$('lvFeed').onchange = () => { $('lvLOORow').style.display = $('lvFeed').value === 'replay' ? '' : 'none'; $('lvKidnap').style.display = $('lvFeed').value === 'sim' ? '' : 'none'; };
+$('lvFeed').onchange = () => { $('lvSimChangeRow').style.display = $('lvFeed').value === 'sim' ? '' : 'none'; $('lvLOORow').style.display = $('lvFeed').value === 'replay' ? '' : 'none'; $('lvKidnap').style.display = $('lvFeed').value === 'sim' ? '' : 'none'; $('lvRecRow').style.display = $('lvFeed').value === 'rec' ? '' : 'none'; };
 $('lvFeed').onchange();
 $('lvPrep').onclick = () => { liveStop(true); LIVE.trail = []; livePrepare(); };
 $('lvGridFile').onchange = async e => {
@@ -7241,6 +7480,124 @@ $('pExpPlanTxt').onclick = () => {
   s += '# Segments x1,y1,x2,y2\n' + R.plan.segments.map(f => [f.x1, f.y1, f.x2, f.y2].map(v => v.toFixed(4)).join(',')).join('\n') + '\n';
   download('plan_salle.txt', s, 'text/plain');
 };
+
+// --- enregistrement d'une session (scans + commandes) et relecture à l'identique
+function liveRecState(){
+  $('lvRec').textContent = LIVE.rec ? '■ Arrêter l’enregistrement' : '● Enregistrer';
+  $('lvRec').classList.toggle('on', !!LIVE.rec);
+  const R = LIVE.rec || LIVE.recLast;
+  $('lvRecState').textContent = R ? `${R.scans.length} scans, ${R.cmds.length} commandes${LIVE.rec ? ' (en cours)' : ''}` : '';
+}
+$('lvRec').onclick = () => {
+  if (LIVE.rec){ LIVE.recLast = LIVE.rec; LIVE.rec = null; toast(`Enregistrement arrêté : ${LIVE.recLast.scans.length} scans`); }
+  else { LIVE.rec = { format: 'ld06-session-direct', version: 1, t0: Date.now(), date: new Date().toISOString(), scans: [], cmds: [],
+                      speeds: { v: numVal('lvV'), w: numVal('lvW') }, mirror: !!S.opt.mirror }; toast('Enregistrement : chaque scan reçu et chaque commande sont gardés'); }
+  liveRecState();
+};
+setInterval(() => { if (LIVE.rec) liveRecState(); }, 1000);
+$('lvRecSave').onclick = () => {
+  const R = LIVE.rec || LIVE.recLast; if (!R || !R.scans.length) return toast('Rien à télécharger : lance l’enregistrement pendant que le robot scanne');
+  download(`session_direct_${R.date.slice(0, 19).replace(/[:T]/g, '-')}.json`, JSON.stringify(R), 'application/json');
+};
+$('lvRecFile').onchange = async e => {
+  const f = e.target.files[0]; e.target.value = ''; if (!f) return;
+  try {
+    const d = JSON.parse(await f.text()); if (!d.scans || !d.scans.length) throw new Error('aucun scan');
+    LIVE.recPlay = { data: { scans: d.scans, cmds: d.cmds || [] }, i: 0 };
+    if (d.speeds){ $('lvV').value = d.speeds.v; $('lvW').value = d.speeds.w; }
+    $('lvFeed').value = 'rec'; $('lvFeed').onchange();
+    $('lvRecInfo').textContent = `${d.scans.length} scans, ${(d.cmds || []).length} commandes`;
+    toast('Enregistrement chargé : prépare la carte puis Démarrer');
+  } catch (err){ toast('Enregistrement illisible : ' + err.message); }
+};
+liveRecState();
+
+// --- correction de la carte
+function liveCorrReset(quiet){
+  LIVE.corr = LIVE.map ? LM.createMapCorrector(LIVE.map.grid) : null;
+  LIVE.corrDiff = null; LIVE.proposal = null; LIVE.corrImg = null; LIVE.showProposal = false;
+  $('lvCorrView').classList.remove('on'); liveCorrInfo();
+  if (!quiet) toast('Corrections oubliées');
+}
+function liveCorrUpdate(){
+  if (!LIVE.corr) return;
+  LIVE.corrDiff = LM.correctorDiff(LIVE.corr);
+  LIVE.proposal = LM.correctorProposal(LIVE.corr, LIVE.corrDiff);
+  LIVE.corrImg = null; if (LIVE.showProposal) LIVE.mapImg = null;
+  liveCorrInfo();
+}
+function liveCorrInfo(){
+  const D = LIVE.corrDiff, C = LIVE.corr, el = $('lvCorrInfo');
+  if (!C || !C.n){ el.textContent = 'Aucune correction pour l’instant : démarre le suivi (les scans pris à une position sûre sont utilisés).'; return; }
+  const r = LIVE.map.grid.res * LIVE.map.grid.res;
+  el.innerHTML = `<b>${C.n}</b> scans comparés à la carte · <span style="color:#4cd97b"><b>${D ? D.nAdd : 0}</b> cases à ajouter</span> (${D ? (D.nAdd * r).toFixed(2) : 0} m²) · ` +
+    `<span style="color:#ff6b6b"><b>${D ? D.nRem : 0}</b> à retirer</span> (${D ? (D.nRem * r).toFixed(2) : 0} m²)` +
+    (C.n < 10 ? '<br><span class="help">Encore peu de scans : les corrections se confirment au fil du trajet (une case doit être vue plusieurs fois).</span>' : '');
+}
+function liveCorrImage(){
+  if (LIVE.corrImg) return LIVE.corrImg;
+  const D = LIVE.corrDiff, g = LIVE.map.grid; if (!D) return null;
+  const c = document.createElement('canvas'); c.width = g.W; c.height = g.H;
+  const x = c.getContext('2d'), im = x.createImageData(g.W, g.H);
+  for (let j = 0; j < g.H; j++) for (let i = 0; i < g.W; i++){
+    const k = j * g.W + i, o = ((g.H - 1 - j) * g.W + i) * 4;
+    if (D.add[k]){ im.data[o] = 76; im.data[o + 1] = 217; im.data[o + 2] = 123; im.data[o + 3] = 255; }
+    else if (D.rem[k]){ im.data[o] = 255; im.data[o + 1] = 92; im.data[o + 2] = 92; im.data[o + 3] = 255; }
+  }
+  x.putImageData(im, 0, 0); return LIVE.corrImg = c;
+}
+const needCorr = () => { if (!LIVE.corrDiff || !(LIVE.corrDiff.nAdd || LIVE.corrDiff.nRem)){ toast('Pas encore de correction : fais rouler le robot (suivi sûr) pour comparer ses scans à la carte'); return false; } return true; };
+$('lvCorrView').onclick = () => {
+  if (!needCorr()) return;
+  LIVE.showProposal = !LIVE.showProposal; LIVE.mapImg = null;
+  $('lvCorrView').classList.toggle('on', LIVE.showProposal);
+  $('lvCorrView').textContent = LIVE.showProposal ? 'Revoir la carte actuelle' : 'Voir la carte proposée';
+  draw();
+};
+$('lvCorrAdopt').onclick = () => {
+  if (!needCorr()) return;
+  const P = LIVE.proposal, label = LIVE.map.label, D = LIVE.corrDiff;
+  // segments qui ne reposent plus sur un obstacle de la carte corrigée (meuble retiré) : supprimés
+  const onObst = f => { const L = LC.segLen(f), n = Math.max(2, Math.ceil(L / 0.05)); let ok = 0;
+    for (let q = 0; q <= n; q++){ const x = f.x1 + (f.x2 - f.x1) * q / n, y = f.y1 + (f.y2 - f.y1) * q / n, [i, j] = LC.worldToCell(P, x, y);
+      let hit = false; for (let dj = -1; dj <= 1 && !hit; dj++) for (let di = -1; di <= 1; di++){ const v = LC.getCell(P, i + di, j + dj); if (v !== undefined && v >= LC.OCC_T){ hit = true; break; } }
+      if (hit) ok++; }
+    return ok / (n + 1) >= 0.5; };
+  const segs = LIVE.map.segs.filter(onObst), dropped = LIVE.map.segs.length - segs.length;
+  LIVE.map = LL.prepareMap(P, segs); LIVE.map.label = label + ' (corrigée)'; LIVE.mapImg = null;
+  if (LIVE.tracker) LIVE.tracker.M = LIVE.map;
+  LIVE.looCache.clear();
+  liveCorrReset(true);
+  $('lvCorrView').textContent = 'Voir la carte proposée';
+  const st = LC.gridStats(P);
+  lvSetInfo(`<b>Carte corrigée adoptée</b> : ${D.nAdd} cases ajoutées, ${D.nRem} retirées, ${dropped} segment(s) retiré(s)<br>${P.W} × ${P.H} cellules · ${(st.free * P.res * P.res).toFixed(0)} m² libres · ${LIVE.map.cands.length} positions candidates`);
+  toast('Carte corrigée adoptée : le suivi continue sur la nouvelle carte'); draw();
+};
+$('lvCorrSend').onclick = () => {
+  const P = LIVE.corrDiff && (LIVE.corrDiff.nAdd || LIVE.corrDiff.nRem) ? LIVE.proposal : LIVE.map && LIVE.map.grid;
+  if (!P) return toast('Pas de carte');
+  gridSet(LM.cloneGrid(P), LIVE.proposal ? 'Carte corrigée (Robot en direct)' : 'Carte du robot en direct'); toast('Carte envoyée vers l’onglet Grid map');
+};
+$('lvCorrExport').onclick = () => {
+  const P = LIVE.corrDiff && (LIVE.corrDiff.nAdd || LIVE.corrDiff.nRem) ? LIVE.proposal : LIVE.map && LIVE.map.grid;
+  if (!P) return toast('Pas de carte');
+  const { pgm, yaml } = LC.gridToPGM(P, 'carte_corrigee');
+  download('carte_corrigee.pgm', pgm, 'image/x-portable-graymap'); setTimeout(() => download('carte_corrigee.yaml', yaml, 'text/yaml'), 300);
+};
+$('lvCorrReset').onclick = () => { liveCorrReset(false); LIVE.mapImg = null; draw(); };
+$('lvShowCorr').onchange = draw;
+liveCorrInfo();
+
+// salle simulée modifiée : armoire retirée, 6 cartons et 10 chaises ajoutés (la carte ne le sait pas)
+function liveChangedScene(D){
+  if (D.changed) return D.changed;
+  const S = LC.seg, rng = LL.mulberry32(1234), W = D.scene.walls.filter(w => !(Math.max(w.x1, w.x2) <= 0.61 && Math.min(w.y1, w.y2) >= 2.99 && Math.max(w.y1, w.y2) <= 5.01));
+  const box = (x, y, w) => W.push(S(x, y, x + w, y), S(x + w, y, x + w, y + w), S(x + w, y + w, x, y + w), S(x, y + w, x, y));
+  const far = (x, y) => D.path.every(p => Math.hypot(p.x - x, p.y - y) > 0.7);
+  for (let n = 0, k = 0; n < 6 && k < 500; k++){ const x = 1 + rng() * 11.5, y = 1 + rng() * 6.5; if (D.scene.free(x, y, 0.6) && far(x, y)){ box(x, y, 0.5); n++; } }
+  for (let n = 0, k = 0; n < 10 && k < 500; k++){ const x = 1 + rng() * 11.5, y = 1 + rng() * 6.5; if (D.scene.free(x, y, 0.5) && far(x, y)){ for (const [a, b] of [[0, 0], [0.4, 0], [0, 0.4], [0.4, 0.4]]) box(x + a, y + b, 0.03); n++; } }
+  return D.changed = W;
+}
 
 // MAPS-UI:END
 syncOptUI(); renderList(); resize();

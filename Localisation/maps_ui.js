@@ -18,7 +18,7 @@ const numVal = id => parseFloat($(id).value);
 const GRID = { g: null, img: null, dirty: true, last: null, history: [] };
 function gridParams(){
   return { res: numVal('gRes'), margin: numVal('gMargin'), model: $('gModel').value,
-           free: numVal('gFree'), occ: numVal('gOcc'), init: +$('gInit').value, fillBetween: $('gFill').checked };
+           free: numVal('gFree'), occ: numVal('gOcc'), occFree: numVal('gOccFree'), init: +$('gInit').value, fillBetween: $('gFill').checked };
 }
 function scanForGrid(s){
   const [X, Y] = toWorldPts(s), pts = new Array(X.length);
@@ -128,7 +128,7 @@ $('gClear').onclick = () => { if (GRID.g) GRID.history.push(GRID.g); GRID.g = nu
 $('gShow').onchange = draw; $('gAlpha').oninput = draw;
 $('gThresh').onchange = () => { GRID.dirty = true; draw(); };
 $('gPts').onchange = draw;
-$('gModel').onchange = () => { const b = $('gModel').value === 'binary'; $('gFree').disabled = b; $('gOcc').disabled = b; };
+$('gModel').onchange = () => { const b = $('gModel').value === 'binary'; $('gFree').disabled = b; $('gOcc').disabled = b; $('gOccFree').disabled = b; };
 $('gExpJson').onclick = () => { if (!GRID.g) return toast('Aucune carte'); download('grid_map.json', JSON.stringify(LC.gridToJSON(GRID.g)), 'application/json'); };
 $('gExpPgm').onclick = () => {
   if (!GRID.g) return toast('Aucune carte');
@@ -710,11 +710,14 @@ function procOpt(){
     features: { method: $('pMethod').value, smallMax: numVal('pSmall') },
     obstacleOpt: { smallMax: numVal('pSmall') },
     vmOpt: { extract: Object.assign(segExtractOpt(), { minLen: 0.3 }) },
+    sharpen: $('pSharp').checked, occFree: numVal('gOccFree') || 15,
+    plan: $('pPlan').checked, planOpt: planOpt(),
     regularize: $('pReg').checked, regOpt: { snapTol: numVal('pSnap'), orthogonal: numVal('pSnap') > 0 },
     filters: filterOpt(),
     cost: { robotRadius: numVal('pRobotR'), inflation: numVal('pInfl') }
   };
 }
+function planOpt(){ return { objMax: numVal('pObjMax') || 1, leak: numVal('pLeak') || 0, notch: numVal('pNotch') || 0 }; }
 async function procRun(){
   if (PROC.busy) return;
   const vis = S.scans.filter(s => s.visible);
@@ -740,6 +743,7 @@ async function procRun(){
     PROC.res.ms = performance.now() - t0;
     PROC.imgs = {}; PROC.plan = { start: null, goal: null, result: null }; PROC.undo = [];
     $('pStatus').textContent = `terminé en ${(PROC.res.ms / 1000).toFixed(1)} s`;
+    if (PROC.res.plan) $('pLayer').value = 'plan'; else if ($('pLayer').value === 'plan') $('pLayer').value = 'clean';
     procInfo(); procPlanInfo(); if (typeof procEInfo === 'function') procEInfo();
   } catch (e){ $('pStatus').textContent = ''; toast(e.message === 'arrêt' ? 'Traitement arrêté' : 'Erreur : ' + e.message); console.error(e); }
   finally {
@@ -787,7 +791,8 @@ function procLayerImage(kind){
     const k = j * Wg + i, o = ((Hg - 1 - j) * Wg + i) * 4;
     let r, gg, b, a = 255;
     const gray = v => { const x = 255 - v; return [x, x, x]; };
-    if (kind === 'clean') [r, gg, b] = gray(g.data[k]);
+    if (kind === 'plan') [r, gg, b] = R.plan ? (R.plan.grid.data[k] === 0 ? [246, 247, 249] : R.plan.grid.data[k] === 255 ? [30, 34, 40] : [120, 126, 134]) : [120, 126, 134];
+    else if (kind === 'clean') [r, gg, b] = gray(g.data[k]);
     else if (kind === 'raw') [r, gg, b] = gray(R.gridRaw.data[k]);
     else if (kind === 'diff'){
       const before = R.gridRaw.data[k] >= LC.OCC_T, after = g.data[k] >= LC.OCC_T;
@@ -828,18 +833,27 @@ function drawProcOver(){
   const R = PROC.res;
   ctx.save(); ctx.lineCap = 'round';
   const line = (f) => { const [x1, y1] = w2s(f.x1, f.y1), [x2, y2] = w2s(f.x2, f.y2); ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke(); };
-  if (R && $('pShowVecRaw').checked){
+  const planLayer = R && R.plan && $('pLayer').value === 'plan';
+  if (planLayer){
+    const poly = (pts, col) => { if (!pts.length) return; ctx.strokeStyle = col; ctx.lineWidth = 3.5; ctx.lineJoin = 'miter'; ctx.beginPath();
+      pts.forEach((p, k) => { const [x, y] = w2s(p[0], p[1]); k ? ctx.lineTo(x, y) : ctx.moveTo(x, y); }); ctx.closePath(); ctx.stroke();
+      ctx.fillStyle = '#ffe14d'; for (const p of pts){ const [x, y] = w2s(p[0], p[1]); ctx.fillRect(x - 3, y - 3, 6, 6); } };
+    poly(R.plan.outer, '#4da3ff'); R.plan.islands.forEach(I => poly(I, '#ffb347'));
+    ctx.strokeStyle = '#ffb347'; ctx.lineWidth = 3.5; ctx.lineCap = 'round';
+    for (const [a, b] of R.plan.innerWalls || []){ const p = w2s(a[0], a[1]), q = w2s(b[0], b[1]); ctx.beginPath(); ctx.moveTo(p[0], p[1]); ctx.lineTo(q[0], q[1]); ctx.stroke(); }
+  }
+  if (R && $('pShowVecRaw').checked && !planLayer){
     ctx.strokeStyle = 'rgba(255,214,77,.9)'; ctx.lineWidth = 1.5; ctx.setLineDash([5, 4]);
     R.vmapRaw.features.forEach(line); ctx.setLineDash([]);
   }
-  if (R && $('pShowVec').checked){
+  if (R && $('pShowVec').checked && !planLayer){
     ctx.strokeStyle = '#4da3ff'; ctx.lineWidth = 3; R.vmap.features.forEach(line);
     for (const c of R.vmap.corners){
       const [x, y] = w2s(c.x, c.y); ctx.strokeStyle = '#ffe14d'; ctx.fillStyle = 'rgba(255,225,77,.3)'; ctx.lineWidth = 1.5;
       ctx.beginPath(); ctx.rect(x - 4, y - 4, 8, 8); ctx.fill(); ctx.stroke();
     }
   }
-  if (R && $('pShowCirc').checked){
+  if (R && $('pShowCirc').checked && !planLayer){
     const mc = numVal('pMinConf');
     for (const it of R.omap.items){
       if (it.conf < mc && !it.mobile) continue;
@@ -940,6 +954,12 @@ $('pExpPng').onclick = () => {
   const x = c.getContext('2d'); x.imageSmoothingEnabled = false; x.drawImage(src, 0, 0, c.width, c.height);
   // superposition de la carte vectorielle et des obstacles circulaires
   const g = PROC.res.grid, tw = (X, Y) => [(X - g.x0) / g.res * k, (g.y0 + g.H * g.res - Y) / g.res * k];
+  if ($('pLayer').value === 'plan' && PROC.res.plan){
+    const poly = (pts, col) => { x.strokeStyle = col; x.lineWidth = Math.max(2.5, k); x.beginPath(); pts.forEach((p, n) => { const [a, b2] = tw(p[0], p[1]); n ? x.lineTo(a, b2) : x.moveTo(a, b2); }); x.closePath(); x.stroke(); };
+    poly(PROC.res.plan.outer, '#1e6fff'); PROC.res.plan.islands.forEach(I => poly(I, '#ff8a00'));
+    for (const [a, b] of PROC.res.plan.innerWalls || []){ const [p1, p2] = tw(a[0], a[1]), [q1, q2] = tw(b[0], b[1]); x.strokeStyle = '#ff8a00'; x.beginPath(); x.moveTo(p1, p2); x.lineTo(q1, q2); x.stroke(); }
+    download('plan_salle.png', c.toDataURL('image/png')); return;
+  }
   if ($('pShowVec').checked){ x.strokeStyle = '#4da3ff'; x.lineWidth = Math.max(2, k * 0.8); x.lineCap = 'round';
     for (const f of PROC.res.vmap.features){ const [a, b] = tw(f.x1, f.y1), [c2, d] = tw(f.x2, f.y2); x.beginPath(); x.moveTo(a, b); x.lineTo(c2, d); x.stroke(); } }
   if ($('pShowCirc').checked){ for (const it of PROC.res.omap.items){ if (it.conf < numVal('pMinConf') && !it.mobile) continue;
@@ -1068,6 +1088,9 @@ function livePrepare(silent){
     if (src === 'scans'){
       const vis = S.scans.filter(s => s.visible); if (!vis.length) throw new Error('aucun scan visible');
       const R = LL.buildReferences(vis.map(lvRaw), -1); grid = R.grid; segs = R.vmap.features; label = `${vis.length} scans visibles`;
+    } else if (src === 'plan'){
+      if (!PROC.res || !PROC.res.plan) throw new Error('construis d’abord le plan (onglet Traitement)');
+      grid = PROC.res.plan.grid; segs = PROC.res.plan.segments; label = 'plan de la salle (sans obstacles)';
     } else if (src === 'proc'){
       if (!PROC.res) throw new Error('lance d’abord le traitement (onglet Traitement)');
       grid = PROC.res.grid; segs = PROC.res.vmap.features; label = 'grid map traitée + carte vectorielle régularisée';
@@ -1078,6 +1101,7 @@ function livePrepare(silent){
       LIVE.sim = LL.demoScenario(3); grid = LIVE.sim.refs.grid; segs = LIVE.sim.refs.vmap.features; label = 'salle simulée (9 scans)';
     }
     LIVE.map = LL.prepareMap(grid, segs); LIVE.map.label = label; LIVE.mapImg = null; LIVE.looCache.clear();
+    liveCorrReset(true);
     liveReset(false);
     const st = LC.gridStats(grid);
     lvSetInfo(`<b>Carte prête</b> : ${label}<br>${grid.W} × ${grid.H} cellules de ${(grid.res * 100).toFixed(0)} cm · ${(st.free * grid.res * grid.res).toFixed(0)} m² libres · ` +
@@ -1099,6 +1123,7 @@ function liveCenterOnMap(){
 }
 // --- traitement d'un scan
 function liveFeedScan(b, truth){
+  if (LIVE.rec && LIVE.feed !== 'rec') LIVE.rec.scans.push({ t: Date.now() - LIVE.rec.t0, a: Array.from(b.a), d: Array.from(b.d), i: b.i ? Array.from(b.i) : null, truth: truth || null });
   if (!LIVE.map) return;
   if (LIVE.busy){ LIVE.pending = [b, truth]; return; }      // on garde seulement le plus récent
   LIVE.busy = true;
@@ -1115,10 +1140,14 @@ function liveFeedScan(b, truth){
     } else if (LIVE.tracker) LIVE.tracker.M = LIVE.map;
     const local = LL.localPoints(raw), pts = LL.uniformSubsample(local, { max: 350 });
     const motion = $('lvOdom').checked ? LIVE.motion : null; LIVE.motion = null;
-    const r = LL.trackerUpdate(LIVE.tracker, pts, motion);
+    const r = LL.trackerUpdate(LIVE.tracker, pts, motion, local);
     LIVE.stats.n++; if (r.mode === 'global') LIVE.stats.global++; if (r.mode === 'relocalisation') LIVE.stats.reloc++;
     const T = LIVE.tracker;
     LIVE.cur = { local, res: r, truth: truth || null, t: Date.now() };
+    if ($('lvLearn').checked && LIVE.corr && T.pose && (r.status === 'localisé' || r.status === 'relocalisé') && !(T.hyps && T.hyps.length > 1)){
+      LM.correctorAdd(LIVE.corr, T.pose, local);
+      if (LIVE.corr.n % 3 === 1 || LIVE.corr.n < 4) liveCorrUpdate();
+    }
     if (T.pose){
       LIVE.trail.push({ x: T.pose.x, y: T.pose.y, th: T.pose.th, inliers: r.inliers, mode: r.mode, status: r.status, ms: r.ms, t: Date.now(),
                         err: truth ? LL.poseError(T.pose, truth) : null });
@@ -1138,6 +1167,10 @@ function liveFeedScan(b, truth){
 }
 // déplacement commandé (pilotage WiFi) -> prédiction pour le prochain scan, dans le repère du robot
 function liveOnDrive(mv, ms){
+  if (LIVE.rec) LIVE.rec.cmds.push({ t: Date.now() - LIVE.rec.t0, mv, ms });
+  liveOnDriveMotion(mv, ms);
+}
+function liveOnDriveMotion(mv, ms){
   if (!LIVE.running) return;
   const v = numVal('lvV') * ms / 1000, w = numVal('lvW') * ms / 1000;
   const d = { forward: [v, 0, 0], backward: [-v, 0, 0], left: [0, v, 0], right: [0, -v, 0], rotateleft: [0, 0, w], rotateright: [0, 0, -w] }[mv];
@@ -1153,7 +1186,8 @@ function liveState(){
   const p = T.pose, tr = LIVE.cur.truth;
   let h = `<span style="color:${col};font-weight:700;font-size:15px">● ${r.status}</span> · ${r.mode} · ${r.ms.toFixed(0)} ms`;
   if (p) h += `<br>x <b>${p.x.toFixed(2)}</b> m · y <b>${p.y.toFixed(2)}</b> m · cap <b>${p.th.toFixed(1)}°</b>`;
-  h += `<br>points du scan sur la carte : <b>${(r.inliers * 100).toFixed(0)} %</b>`;
+  h += `<br>points sur la carte : <b>${(r.inliers * 100).toFixed(0)} %</b>` + (r.nScans > 1 ? ` · carte locale de ${r.nScans} scans` : '');
+  if (r.mode === 'relocalisation à confirmer') h += `<br><span style="color:#ffb347">Une autre position est possible : le robot ne saute pas, il garde les deux et laisse son déplacement trancher.</span>`;
   if (r.status === 'ambigu' && T.hyps) h += `<br><span style="color:#ffb347">${T.hyps.length} positions possibles : déplacer le robot pour lever le doute, ou l’indiquer à la main.</span>`;
   if (tr && p){ const e = LL.poseError(p, tr); h += `<br>écart à la vraie pose : <b style="color:${e.pos <= 0.05 && e.ang <= 2 ? '#4cd97b' : '#ff6b6b'}">${(e.pos * 100).toFixed(1)} cm, ${e.ang.toFixed(2)}°</b>`; }
   const okN = LIVE.trail.filter(t => t.err).length ? LIVE.trail.filter(t => t.err && t.err.pos <= 0.05 && t.err.ang <= 2).length : null;
@@ -1163,10 +1197,10 @@ function liveState(){
 }
 // --- sources de scans
 function liveStart(){
-  if (!LIVE.map && !livePrepare()) return;
   const feed = LIVE.feed = $('lvFeed').value;
-  if (feed === 'sim' && !LIVE.sim){ $('lvSrc').value = 'sim'; if (!livePrepare()) return; toast('Carte : salle simulée'); }
-  if (feed === 'sim' && $('lvSrc').value !== 'sim'){ $('lvSrc').value = 'sim'; livePrepare(); }
+  // le robot simulé roule dans la salle simulée : c'est sa carte
+  if (feed === 'sim' && ($('lvSrc').value !== 'sim' || !LIVE.sim || !LIVE.map)){ $('lvSrc').value = 'sim'; $('lvSrc').onchange(); if (!livePrepare()) return; toast('Carte : salle simulée'); }
+  if (!LIVE.map && !livePrepare()) return;
   liveStop(true); liveReset(true); LIVE.running = true; liveViewButtons();
   if (feed === 'robot'){
     if (!isConnected()){ LIVE.running = false; return toast('Connecte d’abord le robot (onglet Scans, USB ou WiFi)'); }
@@ -1176,6 +1210,9 @@ function liveStart(){
     LIVE.replay = { i: 0, list: S.scans.filter(s => s.visible) };
     if (!LIVE.replay.list.length){ LIVE.running = false; return toast('Aucun scan visible'); }
     liveTick();
+  } else if (feed === 'rec'){
+    if (!LIVE.recPlay){ LIVE.running = false; return toast('Charge d’abord un enregistrement (.json)'); }
+    LIVE.recPlay.i = 0; liveTick();
   } else { LIVE.simIdx = 0; LIVE.simPrev = null; liveTick(); }
   if (LIVE.view === 'free') LIVE.zoom = Math.max(LIVE.zoom, 70);          // vue GPS : assez près du robot
   liveSetView(LIVE.view === 'free' ? 'head' : LIVE.view);
@@ -1191,6 +1228,15 @@ function liveStep(){                       // un scan de la source relecture / s
     liveFeedScan(lvRaw(s), { ...s.pose });
     return true;
   }
+  if (LIVE.feed === 'rec'){
+    const R = LIVE.recPlay; if (!R || R.i >= R.data.scans.length) return false;
+    const sc = R.data.scans[R.i], prevT = R.i ? R.data.scans[R.i - 1].t : -Infinity; R.i++;
+    // commandes envoyées entre le scan précédent et celui-ci -> prédiction (comme en direct)
+    for (const c of R.data.cmds) if (c.t > prevT && c.t <= sc.t) { const run = LIVE.running; LIVE.running = true; liveOnDriveMotion(c.mv, c.ms); LIVE.running = run; }
+    liveFeedScan({ a: sc.a, d: sc.d, i: sc.i || sc.a.map(() => 200) }, sc.truth || undefined);
+    $('lvRecInfo').textContent = `scan ${R.i}/${R.data.scans.length}`;
+    return true;
+  }
   if (LIVE.feed === 'sim'){
     const D = LIVE.sim; if (!D) return false;
     const truth = D.path[LIVE.simIdx % D.path.length]; LIVE.simIdx++;
@@ -1199,7 +1245,7 @@ function liveStep(){                       // un scan de la source relecture / s
       LIVE.motion = { x: m.x * (1 + g()) + 0.01, y: m.y * (1 + g()), th: m.th * (1 + g()) + 0.5 };   // odométrie bruitée
     }
     LIVE.kidnapped = false; LIVE.simPrev = truth;
-    liveFeedScan(Object.assign(LL.simulateScan(D.scene.walls, truth, { tours: 1 }, D.rng), { name: 'sim', pose: null }), truth);
+    liveFeedScan(Object.assign(LL.simulateScan($('lvSimChange').checked ? liveChangedScene(D) : D.scene.walls, truth, { tours: 1 }, D.rng), { name: 'sim', pose: null }), truth);
     return true;
   }
   return false;
@@ -1223,7 +1269,7 @@ const lvW2S = (X, x, y) => { const dx = x - X.x, dy = y - X.y, c = Math.cos(X.ph
 const lvS2W = (X, sx, sy) => { const u = (sx - X.cx) / X.k, v = -(sy - X.cy) / X.k, c = Math.cos(-X.phi), s = Math.sin(-X.phi);
   return [X.x + c * u - s * v, X.y + s * u + c * v]; };
 function liveMapImage(){
-  const g = LIVE.map.grid;
+  const g = LIVE.showProposal && LIVE.proposal ? LIVE.proposal : LIVE.map.grid;
   if (LIVE.mapImg && LIVE.mapImg.g === g) return LIVE.mapImg.c;
   const c = document.createElement('canvas'); c.width = g.W; c.height = g.H;
   const x = c.getContext('2d'), im = x.createImageData(g.W, g.H);
@@ -1246,7 +1292,9 @@ function drawLiveView(){
   const ytop = g.y0 + g.H * g.res, o = P(g.x0, ytop), di = P(g.x0 + g.res, ytop), dj = P(g.x0, ytop - g.res);
   ctx.save(); ctx.imageSmoothingEnabled = false;
   ctx.setTransform(dpr * (di[0] - o[0]), dpr * (di[1] - o[1]), dpr * (dj[0] - o[0]), dpr * (dj[1] - o[1]), dpr * o[0], dpr * o[1]);
-  ctx.drawImage(liveMapImage(), 0, 0); ctx.restore();
+  ctx.drawImage(liveMapImage(), 0, 0);
+  if ($('lvShowCorr').checked && LIVE.corrDiff && !LIVE.showProposal){ const ci = liveCorrImage(); if (ci) ctx.drawImage(ci, 0, 0); }
+  ctx.restore();
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   // grille métrique légère (repère : tous les mètres)
   ctx.save(); ctx.lineCap = 'round';
@@ -1319,11 +1367,24 @@ function drawLiveView(){
   ctx.save(); ctx.strokeStyle = '#d6dee8'; ctx.fillStyle = '#d6dee8'; ctx.lineWidth = 2; ctx.font = '12px system-ui';
   ctx.beginPath(); ctx.moveTo(16, H - 22); ctx.lineTo(16 + m * X.k, H - 22); ctx.moveTo(16, H - 27); ctx.lineTo(16, H - 17); ctx.moveTo(16 + m * X.k, H - 27); ctx.lineTo(16 + m * X.k, H - 17); ctx.stroke();
   ctx.fillText(m + ' m', 20 + m * X.k, H - 18); ctx.restore();
+  // pas encore localisé : le dernier scan reçu est montré tel quel autour du centre de l'écran (on voit que ça scanne)
+  if ((!T || !T.pose) && cur && $('lvShowScan').checked){
+    ctx.save(); ctx.fillStyle = '#e3e7ec';
+    for (const q of cur.local) ctx.fillRect(W / 2 + q.x * X.k - 1.4, H / 2 - q.y * X.k - 1.4, 2.8, 2.8);
+    ctx.fillStyle = '#9aa3ad'; ctx.font = '12px system-ui'; ctx.textAlign = 'center';
+    ctx.fillText('scan brut (robot pas encore localisé)', W / 2, H / 2 + 18); ctx.textAlign = 'left'; ctx.restore();
+  }
   // bandeau d'état
   if (r || LIVE.running){
     const st = T ? T.status : '…', col = LV_COL[st] || '#9aa3ad';
     const line1 = r ? `${st}` : 'en attente du premier scan…';
-    const line2 = r ? `${(r.inliers * 100).toFixed(0)} % du scan sur la carte · ${r.mode} · ${r.ms.toFixed(0)} ms` : '';
+    let line2 = r ? `${(r.inliers * 100).toFixed(0)} % du scan sur la carte · ${r.mode} · ${r.ms.toFixed(0)} ms` : '';
+    if (LIVE.feed === 'robot' && LIVE.running){
+      const age = SER.lastScanAt ? (performance.now() - SER.lastScanAt) / 1000 : Infinity;
+      line2 += (line2 ? ' · ' : '') + (isFinite(age) ? `dernier scan il y a ${age.toFixed(1)} s` : 'aucun scan reçu');
+      if (age > 2){ ctx.save(); ctx.fillStyle = '#ff6b6b'; ctx.font = '700 13px system-ui';
+        ctx.fillText(isConnected() ? (SER.live ? 'le robot n’envoie plus de scans : batterie, WiFi ou lidar ?' : 'aperçu direct arrêté (case « Aperçu direct » décochée)') : 'robot déconnecté', 26, 84); ctx.restore(); }
+    }
     ctx.save(); ctx.fillStyle = 'rgba(15,18,22,.88)'; ctx.strokeStyle = col; ctx.lineWidth = 2;
     const w = 330, hh = r ? 52 : 34; ctx.beginPath(); ctx.roundRect ? ctx.roundRect(14, 14, w, hh, 8) : ctx.rect(14, 14, w, hh); ctx.fill(); ctx.stroke();
     ctx.fillStyle = col; ctx.font = '700 15px system-ui'; ctx.fillText('● ' + line1, 26, 36);
@@ -1386,7 +1447,7 @@ function liveRelocalizeCurrent(){
 }
 // --- boutons
 $('lvSrc').onchange = () => { $('lvFileRow').style.display = $('lvSrc').value === 'file' ? '' : 'none'; };
-$('lvFeed').onchange = () => { $('lvLOORow').style.display = $('lvFeed').value === 'replay' ? '' : 'none'; $('lvKidnap').style.display = $('lvFeed').value === 'sim' ? '' : 'none'; };
+$('lvFeed').onchange = () => { $('lvSimChangeRow').style.display = $('lvFeed').value === 'sim' ? '' : 'none'; $('lvLOORow').style.display = $('lvFeed').value === 'replay' ? '' : 'none'; $('lvKidnap').style.display = $('lvFeed').value === 'sim' ? '' : 'none'; $('lvRecRow').style.display = $('lvFeed').value === 'rec' ? '' : 'none'; };
 $('lvFeed').onchange();
 $('lvPrep').onclick = () => { liveStop(true); LIVE.trail = []; livePrepare(); };
 $('lvGridFile').onchange = async e => {
@@ -1430,3 +1491,158 @@ $('lvExport').onclick = () => {
 document.querySelectorAll('#lvPad [data-mv]').forEach(b => b.onclick = () => { if (!SER.wifi) return toast('Pilotage : robot connecté en WiFi'); drive(b.dataset.mv); });
 $('lvPadStop').onclick = robotStop;
 liveViewButtons();
+
+setInterval(() => { if (TAB === 'live' && LIVE.running && LIVE.feed === 'robot') draw(); }, 500);   // âge du dernier scan
+
+// --- plan de la salle
+function planRecompute(){
+  const R = PROC.res; if (!R) return toast('Lance d’abord le traitement');
+  const t0 = performance.now(), th = R.regReport && R.regReport.theta0 !== undefined ? R.regReport.theta0 : LM.dominantDirection(R.vmap.features);
+  R.plan = LM.roomPlan(R.grid, R.poses, Object.assign({ theta0: th, segs: R.vmap.features }, planOpt()));
+  R.plan.cost = LM.costmap(R.plan.grid, { robotRadius: numVal('pRobotR'), inflation: numVal('pInfl') });
+  delete PROC.imgs.plan; $('pLayer').value = 'plan';
+  const ps = R.plan.stats;
+  toast(`Plan : ${ps.corners} coins, ${ps.roomArea.toFixed(1)} m², ${ps.erased} obstacles effacés, ${ps.islands} meuble(s), ${ps.innerWalls} cloison(s) (${(performance.now() - t0).toFixed(0)} ms)`);
+  draw();
+}
+$('pPlanRedo').onclick = planRecompute;
+['pObjMax', 'pLeak', 'pNotch'].forEach(id => $(id).onchange = () => { if (PROC.res && $('pPlan').checked) planRecompute(); });
+$('pPlanSend').onclick = () => {
+  const R = PROC.res; if (!R || !R.plan) return toast('Pas de plan : coche « Construire le plan de la salle » et lance le traitement');
+  gridSet(LM.cloneGrid(R.plan.grid), 'Plan de la salle (onglet Traitement)');
+  vecPush(); VEC.map = { features: R.plan.segments.map(s => ({ ...s })), corners: LC.computeCorners(R.plan.segments, LC.VM_DEFAULTS), scans: 0, nextId: R.plan.segments.length + 1 };
+  VEC.last = null; VEC.sel = -1; vecRefresh();
+  toast('Plan envoyé vers les onglets Grid map et Vectorielle');
+};
+$('pExpPlan').onclick = () => {
+  const R = PROC.res; if (!R || !R.plan) return toast('Pas de plan');
+  const { pgm, yaml } = LC.gridToPGM(R.plan.grid, 'plan_salle');
+  download('plan_salle.pgm', pgm, 'image/x-portable-graymap'); setTimeout(() => download('plan_salle.yaml', yaml, 'text/yaml'), 300);
+};
+$('pExpPlanTxt').onclick = () => {
+  const R = PROC.res; if (!R || !R.plan) return toast('Pas de plan');
+  let s = '# Plan de la salle : contour (C), meubles (M), cloisons (W) ; sommets x,y en metres, dans l ordre\n';
+  s += 'C,' + R.plan.outer.map(p => p[0].toFixed(3) + ' ' + p[1].toFixed(3)).join(',') + '\n';
+  R.plan.islands.forEach(I => s += 'M,' + I.map(p => p[0].toFixed(3) + ' ' + p[1].toFixed(3)).join(',') + '\n');
+  (R.plan.innerWalls || []).forEach(([a, b]) => s += 'W,' + [a, b].map(p => p[0].toFixed(3) + ' ' + p[1].toFixed(3)).join(',') + '\n');
+  s += '# Segments x1,y1,x2,y2\n' + R.plan.segments.map(f => [f.x1, f.y1, f.x2, f.y2].map(v => v.toFixed(4)).join(',')).join('\n') + '\n';
+  download('plan_salle.txt', s, 'text/plain');
+};
+
+// --- enregistrement d'une session (scans + commandes) et relecture à l'identique
+function liveRecState(){
+  $('lvRec').textContent = LIVE.rec ? '■ Arrêter l’enregistrement' : '● Enregistrer';
+  $('lvRec').classList.toggle('on', !!LIVE.rec);
+  const R = LIVE.rec || LIVE.recLast;
+  $('lvRecState').textContent = R ? `${R.scans.length} scans, ${R.cmds.length} commandes${LIVE.rec ? ' (en cours)' : ''}` : '';
+}
+$('lvRec').onclick = () => {
+  if (LIVE.rec){ LIVE.recLast = LIVE.rec; LIVE.rec = null; toast(`Enregistrement arrêté : ${LIVE.recLast.scans.length} scans`); }
+  else { LIVE.rec = { format: 'ld06-session-direct', version: 1, t0: Date.now(), date: new Date().toISOString(), scans: [], cmds: [],
+                      speeds: { v: numVal('lvV'), w: numVal('lvW') }, mirror: !!S.opt.mirror }; toast('Enregistrement : chaque scan reçu et chaque commande sont gardés'); }
+  liveRecState();
+};
+setInterval(() => { if (LIVE.rec) liveRecState(); }, 1000);
+$('lvRecSave').onclick = () => {
+  const R = LIVE.rec || LIVE.recLast; if (!R || !R.scans.length) return toast('Rien à télécharger : lance l’enregistrement pendant que le robot scanne');
+  download(`session_direct_${R.date.slice(0, 19).replace(/[:T]/g, '-')}.json`, JSON.stringify(R), 'application/json');
+};
+$('lvRecFile').onchange = async e => {
+  const f = e.target.files[0]; e.target.value = ''; if (!f) return;
+  try {
+    const d = JSON.parse(await f.text()); if (!d.scans || !d.scans.length) throw new Error('aucun scan');
+    LIVE.recPlay = { data: { scans: d.scans, cmds: d.cmds || [] }, i: 0 };
+    if (d.speeds){ $('lvV').value = d.speeds.v; $('lvW').value = d.speeds.w; }
+    $('lvFeed').value = 'rec'; $('lvFeed').onchange();
+    $('lvRecInfo').textContent = `${d.scans.length} scans, ${(d.cmds || []).length} commandes`;
+    toast('Enregistrement chargé : prépare la carte puis Démarrer');
+  } catch (err){ toast('Enregistrement illisible : ' + err.message); }
+};
+liveRecState();
+
+// --- correction de la carte
+function liveCorrReset(quiet){
+  LIVE.corr = LIVE.map ? LM.createMapCorrector(LIVE.map.grid) : null;
+  LIVE.corrDiff = null; LIVE.proposal = null; LIVE.corrImg = null; LIVE.showProposal = false;
+  $('lvCorrView').classList.remove('on'); liveCorrInfo();
+  if (!quiet) toast('Corrections oubliées');
+}
+function liveCorrUpdate(){
+  if (!LIVE.corr) return;
+  LIVE.corrDiff = LM.correctorDiff(LIVE.corr);
+  LIVE.proposal = LM.correctorProposal(LIVE.corr, LIVE.corrDiff);
+  LIVE.corrImg = null; if (LIVE.showProposal) LIVE.mapImg = null;
+  liveCorrInfo();
+}
+function liveCorrInfo(){
+  const D = LIVE.corrDiff, C = LIVE.corr, el = $('lvCorrInfo');
+  if (!C || !C.n){ el.textContent = 'Aucune correction pour l’instant : démarre le suivi (les scans pris à une position sûre sont utilisés).'; return; }
+  const r = LIVE.map.grid.res * LIVE.map.grid.res;
+  el.innerHTML = `<b>${C.n}</b> scans comparés à la carte · <span style="color:#4cd97b"><b>${D ? D.nAdd : 0}</b> cases à ajouter</span> (${D ? (D.nAdd * r).toFixed(2) : 0} m²) · ` +
+    `<span style="color:#ff6b6b"><b>${D ? D.nRem : 0}</b> à retirer</span> (${D ? (D.nRem * r).toFixed(2) : 0} m²)` +
+    (C.n < 10 ? '<br><span class="help">Encore peu de scans : les corrections se confirment au fil du trajet (une case doit être vue plusieurs fois).</span>' : '');
+}
+function liveCorrImage(){
+  if (LIVE.corrImg) return LIVE.corrImg;
+  const D = LIVE.corrDiff, g = LIVE.map.grid; if (!D) return null;
+  const c = document.createElement('canvas'); c.width = g.W; c.height = g.H;
+  const x = c.getContext('2d'), im = x.createImageData(g.W, g.H);
+  for (let j = 0; j < g.H; j++) for (let i = 0; i < g.W; i++){
+    const k = j * g.W + i, o = ((g.H - 1 - j) * g.W + i) * 4;
+    if (D.add[k]){ im.data[o] = 76; im.data[o + 1] = 217; im.data[o + 2] = 123; im.data[o + 3] = 255; }
+    else if (D.rem[k]){ im.data[o] = 255; im.data[o + 1] = 92; im.data[o + 2] = 92; im.data[o + 3] = 255; }
+  }
+  x.putImageData(im, 0, 0); return LIVE.corrImg = c;
+}
+const needCorr = () => { if (!LIVE.corrDiff || !(LIVE.corrDiff.nAdd || LIVE.corrDiff.nRem)){ toast('Pas encore de correction : fais rouler le robot (suivi sûr) pour comparer ses scans à la carte'); return false; } return true; };
+$('lvCorrView').onclick = () => {
+  if (!needCorr()) return;
+  LIVE.showProposal = !LIVE.showProposal; LIVE.mapImg = null;
+  $('lvCorrView').classList.toggle('on', LIVE.showProposal);
+  $('lvCorrView').textContent = LIVE.showProposal ? 'Revoir la carte actuelle' : 'Voir la carte proposée';
+  draw();
+};
+$('lvCorrAdopt').onclick = () => {
+  if (!needCorr()) return;
+  const P = LIVE.proposal, label = LIVE.map.label, D = LIVE.corrDiff;
+  // segments qui ne reposent plus sur un obstacle de la carte corrigée (meuble retiré) : supprimés
+  const onObst = f => { const L = LC.segLen(f), n = Math.max(2, Math.ceil(L / 0.05)); let ok = 0;
+    for (let q = 0; q <= n; q++){ const x = f.x1 + (f.x2 - f.x1) * q / n, y = f.y1 + (f.y2 - f.y1) * q / n, [i, j] = LC.worldToCell(P, x, y);
+      let hit = false; for (let dj = -1; dj <= 1 && !hit; dj++) for (let di = -1; di <= 1; di++){ const v = LC.getCell(P, i + di, j + dj); if (v !== undefined && v >= LC.OCC_T){ hit = true; break; } }
+      if (hit) ok++; }
+    return ok / (n + 1) >= 0.5; };
+  const segs = LIVE.map.segs.filter(onObst), dropped = LIVE.map.segs.length - segs.length;
+  LIVE.map = LL.prepareMap(P, segs); LIVE.map.label = label + ' (corrigée)'; LIVE.mapImg = null;
+  if (LIVE.tracker) LIVE.tracker.M = LIVE.map;
+  LIVE.looCache.clear();
+  liveCorrReset(true);
+  $('lvCorrView').textContent = 'Voir la carte proposée';
+  const st = LC.gridStats(P);
+  lvSetInfo(`<b>Carte corrigée adoptée</b> : ${D.nAdd} cases ajoutées, ${D.nRem} retirées, ${dropped} segment(s) retiré(s)<br>${P.W} × ${P.H} cellules · ${(st.free * P.res * P.res).toFixed(0)} m² libres · ${LIVE.map.cands.length} positions candidates`);
+  toast('Carte corrigée adoptée : le suivi continue sur la nouvelle carte'); draw();
+};
+$('lvCorrSend').onclick = () => {
+  const P = LIVE.corrDiff && (LIVE.corrDiff.nAdd || LIVE.corrDiff.nRem) ? LIVE.proposal : LIVE.map && LIVE.map.grid;
+  if (!P) return toast('Pas de carte');
+  gridSet(LM.cloneGrid(P), LIVE.proposal ? 'Carte corrigée (Robot en direct)' : 'Carte du robot en direct'); toast('Carte envoyée vers l’onglet Grid map');
+};
+$('lvCorrExport').onclick = () => {
+  const P = LIVE.corrDiff && (LIVE.corrDiff.nAdd || LIVE.corrDiff.nRem) ? LIVE.proposal : LIVE.map && LIVE.map.grid;
+  if (!P) return toast('Pas de carte');
+  const { pgm, yaml } = LC.gridToPGM(P, 'carte_corrigee');
+  download('carte_corrigee.pgm', pgm, 'image/x-portable-graymap'); setTimeout(() => download('carte_corrigee.yaml', yaml, 'text/yaml'), 300);
+};
+$('lvCorrReset').onclick = () => { liveCorrReset(false); LIVE.mapImg = null; draw(); };
+$('lvShowCorr').onchange = draw;
+liveCorrInfo();
+
+// salle simulée modifiée : armoire retirée, 6 cartons et 10 chaises ajoutés (la carte ne le sait pas)
+function liveChangedScene(D){
+  if (D.changed) return D.changed;
+  const S = LC.seg, rng = LL.mulberry32(1234), W = D.scene.walls.filter(w => !(Math.max(w.x1, w.x2) <= 0.61 && Math.min(w.y1, w.y2) >= 2.99 && Math.max(w.y1, w.y2) <= 5.01));
+  const box = (x, y, w) => W.push(S(x, y, x + w, y), S(x + w, y, x + w, y + w), S(x + w, y + w, x, y + w), S(x, y + w, x, y));
+  const far = (x, y) => D.path.every(p => Math.hypot(p.x - x, p.y - y) > 0.7);
+  for (let n = 0, k = 0; n < 6 && k < 500; k++){ const x = 1 + rng() * 11.5, y = 1 + rng() * 6.5; if (D.scene.free(x, y, 0.6) && far(x, y)){ box(x, y, 0.5); n++; } }
+  for (let n = 0, k = 0; n < 10 && k < 500; k++){ const x = 1 + rng() * 11.5, y = 1 + rng() * 6.5; if (D.scene.free(x, y, 0.5) && far(x, y)){ for (const [a, b] of [[0, 0], [0.4, 0], [0, 0.4], [0.4, 0.4]]) box(x + a, y + b, 0.03); n++; } }
+  return D.changed = W;
+}
