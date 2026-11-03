@@ -599,6 +599,31 @@
         const bad = LM.planPath(cm, { x: 1, y: 0.5 }, { x: 2.02, y: 1 });
         return expect(costOk && clear && r.length > 3.5 && Math.max(...r.path.map(p => p.y)) > 2.25 + 0.15 && !bad.ok, JSON.stringify({ costOk, len: r.length, bad: bad.reason }));
       });
+      test('gomme : segment coupé en deux au bord du disque, cellules et cercles effacés, segment entièrement dedans supprimé', () => {
+        const g = LC.createGrid({ xMin: 0, yMin: 0, xMax: 4, yMax: 2, res: 0.05, init: 0 });
+        for (let i = 0; i < 80; i++) g.data[20 * g.W + i] = 255;                    // mur y ≈ 1 m
+        const vmap = { features: [Object.assign(S(0, 1, 4, 1), { id: 1, conf: 5 }), Object.assign(S(1.9, 0.5, 2.1, 0.5), { id: 2, conf: 1 })], corners: [], nextId: 3 };
+        const omap = { items: [{ id: 1, x: 2, y: 1.3, r: 0.02 }, { id: 2, x: 3.5, y: 0.3, r: 0.02 }] };
+        const R = { grid: g, vmap, omap }, st = LM.eraseDisc(R, 2, 0.9, 0.5);
+        const [a, b] = vmap.features, cut = vmap.features.length === 2 && near(a.x2, 2 - Math.sqrt(0.24), 1e-9) && near(b.x1, 2 + Math.sqrt(0.24), 1e-9) && a.conf === 5 && b.id === 3;
+        const cellsOk = g.data[20 * g.W + 40] === LC.FREE_T - 25 && g.data[20 * g.W + 5] === 255;
+        return expect(cut && cellsOk && st.segCut === 1 && st.segRemoved === 1 && st.circles === 1 && omap.items[0].id === 2, JSON.stringify(st) + ' ' + vmap.features.map(fmt).join(' '));
+      });
+      test('filtres de taille : segments courts, petits cercles et petites taches supprimés ; le reste intact', () => {
+        const g = LC.createGrid({ xMin: 0, yMin: 0, xMax: 4, yMax: 2, res: 0.05, init: 0 });
+        g.data[5 * g.W + 5] = 255;                                                    // tache de 5 cm
+        for (let i = 20; i < 60; i++) g.data[30 * g.W + i] = 255;                     // mur de 2 m
+        const R = { grid: g, vmap: { features: [S(0, 0, 0.2, 0), S(0, 1, 2, 1)], corners: [] }, omap: { items: [{ x: 1, y: 1, r: 0.01 }, { x: 2, y: 1, r: 0.1 }] } };
+        const st = LM.filterSmall(R, { minSegLen: 0.5, minCircleD: 0.05, minBlob: 0.1 });
+        return expect(st.segments === 1 && st.circles === 1 && st.blobs === 1 && g.data[5 * g.W + 5] < LC.FREE_T && g.data[30 * g.W + 30] === 255 && R.vmap.features.length === 1, JSON.stringify(st));
+      });
+      test('filtre de distance au robot : ce qui touche une position de scan est effacé, pas le reste', () => {
+        const g = LC.createGrid({ xMin: 0, yMin: 0, xMax: 4, yMax: 2, res: 0.05, init: 0 });
+        g.data[20 * g.W + 22] = 255; g.data[20 * g.W + 60] = 255;                      // à 8 cm du robot (1 ; 1), et loin
+        const R = { grid: g, vmap: { features: [], corners: [], nextId: 1 }, omap: { items: [{ x: 1.1, y: 1, r: 0.02 }] } };
+        const st = LM.filterNearPoses(R, [{ x: 1, y: 1, th: 0 }], 0.2);
+        return expect(st.cells === 1 && st.circles === 1 && g.data[20 * g.W + 60] === 255, JSON.stringify(st));
+      });
       test('qualité : scans simulés à poses exactes -> plus de 90 % des points sur un obstacle', () => {
         const sc = LL.classroomScene(3, { legs: 0 }), rng = LL.mulberry32(8), poses = [{ x: 2, y: 2, th: 0 }, { x: 6, y: 5, th: 90 }, { x: 11, y: 6, th: 200 }];
         const data = poses.map(p => ({ robot: p, pts: LM.preprocessScan(LL.simulateScan(sc.walls, p, { tours: 2 }, rng), p).pts }));

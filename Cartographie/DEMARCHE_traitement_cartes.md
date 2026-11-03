@@ -2,7 +2,7 @@
 
 **Code :** `lidar_maptools.js`.
 **Outil :** onglet **Traitement** de `lidar_viewer.html`.
-**Tests :** 18 tests « Traitement » dans `test_lidar_core.js` (106 au total, tous réussis).
+**Tests :** 21 tests « Traitement » dans `test_lidar_core.js` (109 au total, tous réussis).
 **Résultats sur les 14 scans réels :** `resultats_traitement.md`.
 
 ---
@@ -136,6 +136,25 @@ C'est la correction géométrique du document « cartographie » (§6, §9) : on
 - **Passes 2 à 4 :** affinage sur tous les autres scans, avec arrêt quand plus aucun scan ne bouge de plus de 5 mm et 0,1°.
 - **Garde-fous :** une correction est refusée si elle dépasse 30 cm ou 8°, ou si le score d'appariement baisse.
 
+### 2.8 Édition manuelle : gomme et filtres « distance minimum »
+
+Aucun traitement automatique n'est parfait : une personne restée immobile, ou une chaise qui touchait le robot, reste dans la carte. Deux outils permettent de corriger à la main.
+
+**Gomme** (`eraseDisc`) : on la glisse sur la carte, et dans le disque de la gomme :
+- les cellules non libres deviennent libres (ou inconnues, au choix) ;
+- les segments sont **coupés exactement au bord du disque** : on calcule l'intersection droite–cercle, |P(t) − C|² = r², et les morceaux restants gardent la confiance et l'historique du segment d'origine ;
+- les cercles qui touchent le disque sont supprimés.
+
+Entre deux positions de la souris, le passage est interpolé tous les demi-rayons, pour ne pas laisser de trous. Chaque coup de gomme est annulable (Ctrl+Z). La carte de coût, les obstacles et la qualité sont recalculés au relâchement.
+
+**Filtres** (`filterSmall`, `filterNearPoses`), 0 pour désactiver :
+- segments plus courts que L ;
+- cercles de diamètre inférieur à D ;
+- taches de points (composantes d'obstacle de la grid map) plus petites que T ;
+- **tout ce qui est à moins de R d'une position du robot**, effacé comme avec une gomme posée sur chaque position de scan : objets qui touchaient le robot, câbles, jambes de l'opérateur.
+
+Ils s'appliquent en fin de chaîne, ou au résultat affiché avec *Appliquer les filtres maintenant*.
+
 ## 3. Résultats
 
 ### 3.1 Chaîne complète sur les 14 scans réels (sans recalage, 0,5 s)
@@ -203,6 +222,8 @@ On a calculé un trajet A\* entre toutes les paires de positions de scan (robot 
 - **39 refus :** la position d'arrivée est elle-même à moins de 15 cm d'un obstacle (`pos1` 6 cm, `pos14` 9 cm, `pos3` 12 cm, `pos12` 13 cm). Le message l'explique.
 
 Ces positions ont pourtant été atteintes par le robot. Il faut donc soit réduire le rayon du robot dans la carte de coût, soit reconnaître que ces points proches viennent d'objets touchant le robot au moment du scan.
+
+Avec le **filtre de distance au robot à 20 cm**, on efface 29 cellules, on coupe 4 segments et on supprime 3 cercles autour des positions de scan. Les **182 trajets** passent alors tous. Ce sont bien des objets collés au robot au moment des scans, et non de vrais obstacles de la salle.
 
 ## 4. Limites
 

@@ -12,7 +12,7 @@
 | `lidar_maptools.js` | Traitement des cartes et des obstacles : prétraitement, clusters, cercles / RANSAC / Douglas-Peucker, grid map enrichie et nettoyée, obstacles, régularisation de la carte vectorielle, carte de coût, trajet A*, recalage global des poses |
 | `DEMARCHE_traitement_cartes.md` | Démarche et résultats du traitement des cartes et des obstacles |
 | `resultats_traitement.md` | Rapport de la chaîne de traitement sur les 14 scans réels (avec recalage) |
-| `test_lidar_core.js` | 106 tests automatiques (`node test_lidar_core.js`), dont les cas limites de la découpe |
+| `test_lidar_core.js` | 109 tests automatiques (`node test_lidar_core.js`), dont les cas limites de la découpe |
 | `DEMARCHE_parties_3_4.md` | Démarche des parties 3 et 4 : choix techniques, hypothèses, difficultés, limites |
 | `DEMARCHE_partie_5.md` | Démarche de la partie 5 (carte vectorielle) |
 | `capture_lidar.py` | (Optionnel) capture en ligne de commande, 1 fichier CSV par position |
@@ -248,6 +248,13 @@ avant / après :
 6. **carte vectorielle** (split-and-merge, Douglas-Peucker ou RANSAC) puis **régularisation** : murs redressés sur les
    axes de la salle, alignés, fusionnés, coins raccordés, dépassements rognés ;
 7. **carte de coût** (obstacles gonflés du rayon du robot) et **trajet A\*** : clic départ, clic arrivée.
+8. **filtres « distance minimum »** (0 = désactivé) : segments plus courts que L, cercles de diamètre inférieur à D,
+   taches de points plus petites que T, et tout ce qui est à moins de R d'une position du robot ;
+   appliqués en fin de chaîne ou à tout moment avec *Appliquer les filtres maintenant*.
+
+**Gomme** : glisser sur la carte efface les cellules d'obstacle, coupe les segments au bord du disque et supprime les
+cercles touchés (rayon réglable, Maj + molette). Ctrl+Z annule. La carte de coût, les obstacles et la qualité sont
+recalculés après chaque coup de gomme. Relancer le traitement efface les retouches.
 
 Couches affichables : grid map traitée ou brute, différences, persistance, obstacles par classe, carte de coût.
 Les résultats peuvent être envoyés aux onglets Grid map et Vectorielle, et exportés (PGM + YAML, .txt, CSV, PNG, rapport .md).

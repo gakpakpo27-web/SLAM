@@ -832,6 +832,93 @@
   }
 
   // ==========================================================================
+  //  11 bis. Édition : gomme et filtres « distance minimum »
+  // ==========================================================================
+  // Les fonctions travaillent sur un résultat R = { grid, vmap, omap } (celui de processMap).
+  // fill : valeur donnée aux cellules effacées, 'free' (libre) ou 'unknown' (inconnue).
+  const fillValue = fill => fill === 'unknown' ? UNKNOWN : FREE_T - 25;
+  /** Parties d'un segment hors du disque (centre cx, cy, rayon r) : [] si entièrement dedans, [s] si non touché */
+  function clipSegmentDisc(s, cx, cy, r) {
+    const dx = s.x2 - s.x1, dy = s.y2 - s.y1, a = dx * dx + dy * dy, fx = s.x1 - cx, fy = s.y1 - cy;
+    if (a < 1e-12) return Math.hypot(fx, fy) < r ? [] : [s];
+    const b = 2 * (fx * dx + fy * dy), c = fx * fx + fy * fy - r * r, disc = b * b - 4 * a * c;
+    if (disc <= 0) return [s];
+    const sq = Math.sqrt(disc), t1 = (-b - sq) / (2 * a), t2 = (-b + sq) / (2 * a);
+    if (t2 <= 0 || t1 >= 1) return [s];
+    if ((Math.min(t2, 1) - Math.max(t1, 0)) * Math.sqrt(a) < 1e-6) return [s];     // le disque ne fait qu'effleurer le segment
+    const at = t => [s.x1 + dx * t, s.y1 + dy * t], out = [];
+    if (t1 > 0) { const [x, y] = at(t1); out.push(Object.assign({}, s, { x2: x, y2: y })); }
+    if (t2 < 1) { const [x, y] = at(t2); out.push(Object.assign({}, s, { x1: x, y1: y })); }
+    return out;
+  }
+  /**
+   * Gomme : efface dans un disque (x, y, r) les cellules non libres de la grille, les parties de
+   * segments (un segment coupé en deux garde ses propriétés) et les cercles qui touchent le disque.
+   * opt : { grid, segments, circles (booléens), fill, minPiece (m, morceaux plus courts supprimés) }
+   */
+  function eraseDisc(R, x, y, r, opt = {}) {
+    const o = Object.assign({ grid: true, segments: true, circles: true, fill: 'free', minPiece: 0.05 }, opt), st = { cells: 0, segCut: 0, segRemoved: 0, circles: 0, cutIds: [] };
+    if (o.grid && R.grid) {
+      const g = R.grid, v = fillValue(o.fill);
+      const i0 = Math.max(0, Math.floor((x - r - g.x0) / g.res)), i1 = Math.min(g.W - 1, Math.floor((x + r - g.x0) / g.res));
+      const j0 = Math.max(0, Math.floor((y - r - g.y0) / g.res)), j1 = Math.min(g.H - 1, Math.floor((y + r - g.y0) / g.res));
+      for (let j = j0; j <= j1; j++) for (let i = i0; i <= i1; i++) {
+        const [cx, cy] = LC.cellCenter(g, i, j); if (Math.hypot(cx - x, cy - y) > r) continue;
+        const k = j * g.W + i;
+        if (g.data[k] > FREE_T && g.data[k] !== v) { g.data[k] = v; st.cells++; }
+      }
+    }
+    if (o.segments && R.vmap) {
+      const out = [];
+      for (const f of R.vmap.features) {
+        const P = clipSegmentDisc(f, x, y, r);
+        if (P.length === 1 && P[0] === f) { out.push(f); continue; }
+        const keep = P.filter(q => LC.segLen(q) >= o.minPiece);
+        if (!keep.length) { st.segRemoved++; continue; }
+        st.segCut++; st.cutIds.push(f.id);
+        keep.forEach((q, n) => out.push(n === 0 ? Object.assign(q, { id: f.id }) : Object.assign(q, { id: R.vmap.nextId++ })));
+      }
+      R.vmap.features = out;
+    }
+    if (o.circles && R.omap) {
+      const n0 = R.omap.items.length;
+      R.omap.items = R.omap.items.filter(it => Math.hypot(it.x - x, it.y - y) >= r + it.r);
+      st.circles = n0 - R.omap.items.length;
+    }
+    return st;
+  }
+  /** Filtre de taille : segments plus courts que minSegLen, cercles de diamètre < minCircleD,
+   *  taches d'obstacle de la grille (composantes connexes) d'étendue < minBlob. 0 = désactivé. */
+  function filterSmall(R, opt = {}) {
+    const { minSegLen = 0, minCircleD = 0, minBlob = 0, fill = 'free' } = opt, st = { segments: 0, circles: 0, blobs: 0, cells: 0 };
+    if (minSegLen > 0 && R.vmap) { const n0 = R.vmap.features.length; R.vmap.features = R.vmap.features.filter(f => LC.segLen(f) >= minSegLen); st.segments = n0 - R.vmap.features.length; }
+    if (minCircleD > 0 && R.omap) { const n0 = R.omap.items.length; R.omap.items = R.omap.items.filter(it => 2 * it.r >= minCircleD); st.circles = n0 - R.omap.items.length; }
+    if (minBlob > 0 && R.grid) {
+      const { labels, obstacles } = gridObstacles(R.grid, null), small = new Set(obstacles.filter(o => Math.max(o.len, o.wid) < minBlob).map(o => o.id)), v = fillValue(fill);
+      for (let k = 0; k < labels.length; k++) if (small.has(labels[k])) { R.grid.data[k] = v; st.cells++; }
+      st.blobs = small.size;
+    }
+    return st;
+  }
+  /** Filtre de distance : tout ce qui est à moins de `radius` d'une des positions du robot (objets
+   *  touchant le robot, câbles, jambes de l'opérateur) est effacé, comme avec la gomme. */
+  function filterNearPoses(R, poses, radius, opt = {}) {
+    const st = { cells: 0, segCut: 0, segRemoved: 0, circles: 0 };
+    for (const p of poses) { const r = eraseDisc(R, p.x, p.y, radius, opt); for (const k in st) st[k] += r[k]; }   // cutIds non cumulés
+    return st;
+  }
+  /** Après une édition : obstacles de la grille, coins de la carte vectorielle, carte de coût et qualité recalculés */
+  function refreshDerived(R, opt = {}) {
+    const o = Object.assign({}, R.opt || {}, opt);
+    const { labels, obstacles } = gridObstacles(R.grid, R.layers, o.obstacleOpt);
+    R.labels = labels; R.obstacles = obstacles;
+    R.vmap.corners = LC.computeCorners(R.vmap.features, LC.VM_DEFAULTS);
+    R.cost = costmap(R.grid, o.cost);
+    if (R.pre && R.poses) R.quality.clean = mapQuality(R.grid, R.pre.map((p, k) => ({ robot: R.poses[k], pts: p.pts })), R.layers);
+    return R;
+  }
+
+  // ==========================================================================
   //  12. Chaîne complète
   // ==========================================================================
   const PIPE_DEFAULTS = {
@@ -845,6 +932,7 @@
     close: true, closeOpt: {},
     features: {}, obstacleOpt: {}, vmOpt: { extract: { minLen: 0.3 } },
     regularize: true, regOpt: {},
+    filters: { minSegLen: 0, minCircleD: 0, minBlob: 0, nearPoses: 0, fill: 'free' },
     cost: { robotRadius: 0.15, inflation: 0.35 }
   };
   /**
@@ -886,13 +974,6 @@
     if (o.speckles) stepG('Taches isolées', () => { const r = removeSpeckles(grid, layers, o.speckleOpt); return { detail: `${r.removed} cellules de bruit retirées, ${r.keptInterest} petits obstacles confirmés gardés` }; });
     if (o.smooth) stepG('Lissage (majoritaire)', () => { const r = smoothGrid(grid, o.smoothOpt); return { detail: `${r.changed} cellules inconnues tranchées` }; });
     if (o.close) stepG('Fermeture des murs', () => { const r = closeGaps(grid, o.closeOpt); return { detail: `${r.filled} trous bouchés` }; });
-    const qClean = mapQuality(grid, data, layers);
-
-    await prog(base + 0.3 * (1 - base), 'Obstacles de la grille');
-    t0 = T();
-    const { labels, obstacles } = gridObstacles(grid, layers, o.obstacleOpt);
-    const cnt = c => obstacles.filter(x => x.cls === c).length;
-    steps.push({ step: 'Obstacles (composantes connexes)', detail: `${obstacles.length} : ${cnt('structure')} structures, ${cnt('objet')} objets, ${cnt('petit')} petits`, ms: T() - t0 });
 
     await prog(base + 0.45 * (1 - base), 'Features (segments, cercles)');
     t0 = T();
@@ -911,13 +992,35 @@
       const r = regularizeVectorMap(vmapRaw, o.regOpt); vmap = r.map; regReport = r.report;
       steps.push({ step: 'Régularisation de la carte vectorielle', detail: `${r.report.before} → ${r.report.after} segments ; ${r.report.snapped ?? 0} redressés (axes ${(r.report.theta0 ?? 0).toFixed(1)}° / ${((r.report.theta0 ?? 0) + 90).toFixed(1)}°), ${r.report.aligned} alignés, ${r.report.merged} fusions, ${r.report.joined} coins raccordés, ${r.report.trimmed} dépassements rognés`, ms: T() - t0 });
     }
+    // filtres « distance minimum » : taille des éléments et distance aux positions du robot
+    const F = o.filters || {}, fill = F.fill || 'free';
+    const tmp = { grid, vmap: vmap === vmapRaw ? JSON.parse(JSON.stringify(vmapRaw)) : vmap, omap, poses };   // la carte « avant régularisation » reste intacte
+    if (F.minSegLen > 0 || F.minCircleD > 0 || F.minBlob > 0) {
+      t0 = T(); const r = filterSmall(tmp, Object.assign({ fill }, F));
+      steps.push({ step: 'Filtre de taille', detail: `${r.segments} segments de moins de ${Math.round((F.minSegLen || 0) * 100)} cm, ${r.circles} cercles de moins de ${Math.round((F.minCircleD || 0) * 100)} cm de diamètre, ${r.blobs} taches de moins de ${Math.round((F.minBlob || 0) * 100)} cm (${r.cells} cellules) supprimés`, ms: T() - t0 });
+    }
+    if (F.nearPoses > 0) {
+      t0 = T(); const r = filterNearPoses(tmp, poses, F.nearPoses, { fill });
+      steps.push({ step: 'Filtre de distance au robot', detail: `à moins de ${Math.round(F.nearPoses * 100)} cm d'une position du robot : ${r.cells} cellules, ${r.segCut} segments coupés (${r.segRemoved} supprimés), ${r.circles} cercles supprimés`, ms: T() - t0 });
+    }
+    vmap = tmp.vmap;
+    if (vmap !== vmapRaw) vmap.corners = LC.computeCorners(vmap.features, LC.VM_DEFAULTS);
+    const qClean = mapQuality(grid, data, layers);
+
+    await prog(base + 0.8 * (1 - base), 'Obstacles de la grille');
+    t0 = T();
+    const { labels, obstacles } = gridObstacles(grid, layers, o.obstacleOpt);
+    const cnt = c => obstacles.filter(x => x.cls === c).length;
+    steps.push({ step: 'Obstacles (composantes connexes)', detail: `${obstacles.length} : ${cnt('structure')} structures, ${cnt('objet')} objets, ${cnt('petit')} petits`, ms: T() - t0 });
+
     await prog(base + 0.85 * (1 - base), 'Carte de coût');
     t0 = T();
     const cost = costmap(grid, o.cost);
-    steps.push({ step: 'Carte de coût', detail: `robot ${o.cost.robotRadius * 100} cm + marge ${o.cost.inflation * 100} cm ; ${cost.stats.navigable.toFixed(1)} m² accessibles au centre du robot`, ms: T() - t0 });
+    steps.push({ step: 'Carte de coût', detail: `robot ${Math.round(o.cost.robotRadius * 100)} cm + marge ${Math.round(o.cost.inflation * 100)} cm ; ${cost.stats.navigable.toFixed(1)} m² accessibles au centre du robot`, ms: T() - t0 });
     await prog(1, 'terminé');
     return { poses, refineLog, pre, gridRaw, grid, layers, mobile, obstacles, labels, omap, vmapRaw, vmap, regReport, cost,
-             quality: { raw: qRaw, clean: qClean }, steps };
+             quality: { raw: qRaw, clean: qClean }, steps, opt: { obstacleOpt: o.obstacleOpt, cost: o.cost },
+             manual: { cells: 0, segCut: 0, segRemoved: 0, circles: 0 } };
   }
 
   function reportToMarkdown(R) {
@@ -947,6 +1050,7 @@
     createLayers, updateGridLayered, buildLayeredGrid, cloneGrid, cloneLayers,
     decayGrid, clearObsolete, removeMobile, labelComponents, removeSpeckles, smoothGrid, closeGaps, gridObstacles,
     dominantDirection, snapDirections, alignCollinear, mergeKeepProps, joinCorners, trimCollisions, regularizeVectorMap,
-    costmap, costmapToPGM, planPath, mapQuality, refinePoses, processMap, reportToMarkdown
+    costmap, costmapToPGM, planPath, mapQuality, refinePoses,
+    clipSegmentDisc, eraseDisc, filterSmall, filterNearPoses, refreshDerived, processMap, reportToMarkdown
   };
 });

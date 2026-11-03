@@ -711,6 +711,7 @@ function procOpt(){
     obstacleOpt: { smallMax: numVal('pSmall') },
     vmOpt: { extract: Object.assign(segExtractOpt(), { minLen: 0.3 }) },
     regularize: $('pReg').checked, regOpt: { snapTol: numVal('pSnap'), orthogonal: numVal('pSnap') > 0 },
+    filters: filterOpt(),
     cost: { robotRadius: numVal('pRobotR'), inflation: numVal('pInfl') }
   };
 }
@@ -737,9 +738,9 @@ async function procRun(){
     const t0 = performance.now();
     PROC.res = await LM.processMap(PROC.scans, o, prog);
     PROC.res.ms = performance.now() - t0;
-    PROC.imgs = {}; PROC.plan = { start: null, goal: null, result: null };
+    PROC.imgs = {}; PROC.plan = { start: null, goal: null, result: null }; PROC.undo = [];
     $('pStatus').textContent = `terminé en ${(PROC.res.ms / 1000).toFixed(1)} s`;
-    procInfo(); procPlanInfo();
+    procInfo(); procPlanInfo(); if (typeof procEInfo === 'function') procEInfo();
   } catch (e){ $('pStatus').textContent = ''; toast(e.message === 'arrêt' ? 'Traitement arrêté' : 'Erreur : ' + e.message); console.error(e); }
   finally {
     PROC.busy = false; $('pRun').disabled = false;
@@ -956,3 +957,95 @@ $('pExpObs').onclick = () => {
 $('pExpCost').onclick = () => { if (!needProc()) return; download('carte_de_cout.pgm', LM.costmapToPGM(PROC.res.cost), 'image/x-portable-graymap'); };
 $('pExpRep').onclick = () => { if (!needProc()) return; download('rapport_traitement.md', LM.reportToMarkdown(PROC.res), 'text/markdown'); };
 procPlanInfo();
+
+// ---------------------------------------------------------------- TRAITEMENT : gomme et filtres
+PROC.eraser = false; PROC.erasing = false; PROC.cursor = null; PROC.undo = []; PROC.lastErase = null;
+function procSnapshot(){
+  const R = PROC.res;
+  PROC.undo.push({ grid: R.grid.data.slice(), vmap: JSON.stringify(R.vmap), omap: JSON.stringify(R.omap), manual: { ...R.manual } });
+  if (PROC.undo.length > 40) PROC.undo.shift();
+}
+function procRefresh(){
+  LM.refreshDerived(PROC.res, { cost: { robotRadius: numVal('pRobotR'), inflation: numVal('pInfl') } });
+  PROC.imgs = {}; procPlan(); procPlanInfo(); procInfo(); procEInfo(); draw();
+}
+function procUndo(){
+  const u = PROC.undo.pop(); if (!u || !PROC.res) return toast('Rien à annuler');
+  const R = PROC.res; R.grid.data.set(u.grid); R.vmap = JSON.parse(u.vmap); R.omap = JSON.parse(u.omap); R.manual = u.manual;
+  procRefresh(); toast('Retouche annulée');
+}
+function procEInfo(){
+  const R = PROC.res, m = R && R.manual;
+  $('pEraser').classList.toggle('on', PROC.eraser);
+  if (!m){ $('pEInfo').textContent = 'Lance d’abord le traitement.'; return; }
+  $('pEInfo').innerHTML = (m.cells || m.segCut || m.segRemoved || m.circles)
+    ? `Retouches : <b>${m.cells}</b> cellules effacées, <b>${m.segCut}</b> segments coupés, <b>${m.segRemoved}</b> supprimés, <b>${m.circles}</b> cercles supprimés · ${PROC.undo.length} étape(s) annulable(s)`
+    : 'Aucune retouche.';
+}
+function eraseOpt(){ return { grid: $('pEGrid').checked, segments: $('pESeg').checked, circles: $('pECirc').checked, fill: $('pFill').value }; }
+function eraseAt(x, y){
+  const r = numVal('pBrush'), o = eraseOpt(), R = PROC.res;
+  // on interpole depuis le point précédent pour ne pas laisser de trous quand la souris va vite
+  const prev = PROC.lastErase, pts = [];
+  if (prev){ const d = Math.hypot(x - prev.x, y - prev.y), n = Math.ceil(d / (r * 0.5)); for (let k = 1; k <= n; k++) pts.push([prev.x + (x - prev.x) * k / n, prev.y + (y - prev.y) * k / n]); }
+  else pts.push([x, y]);
+  for (const [a, b] of pts){
+    const st = LM.eraseDisc(R, a, b, r, o);
+    R.manual.cells += st.cells; R.manual.circles += st.circles; R.manual.segRemoved += st.segRemoved;
+    for (const id of st.cutIds) if (!PROC.strokeIds.has(id)){ PROC.strokeIds.add(id); R.manual.segCut++; }   // un segment compte une fois par coup de gomme
+  }
+  PROC.lastErase = { x, y };
+  delete PROC.imgs.clean; delete PROC.imgs.diff; delete PROC.imgs.obst; delete PROC.imgs.cost;   // couches à redessiner
+}
+// remplace le gestionnaire de clic : gomme prioritaire, puis trajet
+const procPointerDownPlan = procPointerDown;
+procPointerDown = function(e, mx, my){
+  if (PROC.eraser && e.button === 0){
+    if (!PROC.res){ toast('Lance d’abord le traitement'); return true; }
+    procSnapshot(); PROC.erasing = true; PROC.lastErase = null; PROC.strokeIds = new Set();
+    const [x, y] = s2w(mx, my); eraseAt(x, y); draw(); return true;
+  }
+  return procPointerDownPlan(e, mx, my);
+};
+function procPointerMove(mx, my){
+  if (!PROC.eraser) return false;
+  PROC.cursor = [mx, my];
+  if (PROC.erasing){ const [x, y] = s2w(mx, my); eraseAt(x, y); }
+  draw();
+  return PROC.erasing;
+}
+function procPointerUp(){
+  if (!PROC.erasing) return;
+  PROC.erasing = false; PROC.lastErase = null; procRefresh();
+}
+// curseur de la gomme (dessiné par-dessus le reste)
+const drawProcOverBase = drawProcOver;
+drawProcOver = function(){
+  drawProcOverBase();
+  if (!PROC.eraser || !PROC.cursor) return;
+  const [mx, my] = PROC.cursor, r = numVal('pBrush') * S.view.s;
+  ctx.save(); ctx.strokeStyle = '#ff6bd5'; ctx.fillStyle = 'rgba(255,107,213,.12)'; ctx.lineWidth = 1.5; ctx.setLineDash([4, 3]);
+  ctx.beginPath(); ctx.arc(mx, my, Math.max(2, r), 0, 2 * Math.PI); ctx.fill(); ctx.stroke(); ctx.restore();
+};
+$('pEraser').onclick = () => {
+  PROC.eraser = !PROC.eraser;
+  if (PROC.eraser && PROC.planMode){ PROC.planMode = false; procPlanInfo(); }
+  if (!PROC.eraser) PROC.cursor = null;
+  procEInfo(); draw();
+};
+$('pPlanMode').addEventListener('click', () => { if (PROC.planMode && PROC.eraser){ PROC.eraser = false; PROC.cursor = null; procEInfo(); draw(); } });
+$('pEUndo').onclick = procUndo;
+$('pBrush').oninput = draw;
+cv.addEventListener('pointerleave', () => { if (PROC.cursor){ PROC.cursor = null; if (TAB === 'proc') draw(); } });
+function filterOpt(){ return { minSegLen: numVal('pFSeg') || 0, minCircleD: numVal('pFCirc') || 0, minBlob: numVal('pFBlob') || 0, nearPoses: numVal('pFNear') || 0, fill: $('pFill').value }; }
+$('pFApply').onclick = () => {
+  if (!needProc()) return;
+  const F = filterOpt(), R = PROC.res;
+  if (!(F.minSegLen || F.minCircleD || F.minBlob || F.nearPoses)) return toast('Tous les filtres sont à 0');
+  procSnapshot();
+  const a = LM.filterSmall(R, F), b = F.nearPoses > 0 ? LM.filterNearPoses(R, R.poses, F.nearPoses, { fill: F.fill }) : { cells: 0, segCut: 0, segRemoved: 0, circles: 0 };
+  R.manual.cells += a.cells + b.cells; R.manual.segRemoved += a.segments + b.segRemoved; R.manual.segCut += b.segCut; R.manual.circles += a.circles + b.circles;
+  procRefresh();
+  toast(`Supprimés : ${a.segments + b.segRemoved} segments (${b.segCut} coupés), ${a.circles + b.circles} cercles, ${a.blobs} taches, ${a.cells + b.cells} cellules`);
+};
+procEInfo();
