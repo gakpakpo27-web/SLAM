@@ -70,7 +70,8 @@
   .scl input{padding:3px 4px;font-size:11px;text-align:right}
   .scl.changed .lbl,.scl.changed input{color:#ffb347}
   .tabs{display:flex;gap:4px;margin:2px 0 10px;background:#12161b;border:1px solid var(--line);border-radius:9px;padding:3px}
-  .tabs button{flex:1;border:none;background:none;padding:7px 3px;font-weight:600;color:var(--muted);font-size:12px}
+  .tabs{flex-wrap:wrap}
+  .tabs button{flex:1 1 30%;border:none;background:none;padding:7px 3px;font-weight:600;color:var(--muted);font-size:12px}
   .tabs button.on{background:var(--accent);color:#06121f;border-radius:6px}
   .tab[hidden]{display:none}
   .frm{display:grid;grid-template-columns:1fr 92px;gap:5px 8px;align-items:center;margin-bottom:6px}
@@ -89,6 +90,17 @@
   .pad{display:grid;grid-template-columns:repeat(3,52px);gap:4px;justify-content:center}
   .pad button{justify-content:center;font-size:15px;padding:7px 0}
   .pad button.stop{background:#7a1f24;border-color:#ff6b6b;color:#fff;font-size:11px;font-weight:700}
+  #autoOverlay{position:absolute;left:50%;top:60px;transform:translateX(-50%);display:none;flex-direction:column;align-items:flex-start;gap:6px;
+    width:min(460px,80%);background:rgba(23,27,33,.96);border:1px solid var(--accent);border-radius:10px;padding:12px 14px;z-index:5;box-shadow:0 8px 30px rgba(0,0,0,.4)}
+  .ao-title{font-weight:650}
+  .ao-track{width:100%;height:6px;background:#2a313b;border-radius:3px;overflow:hidden}
+  #aoBar{height:100%;width:0;background:var(--accent);transition:width .2s}
+  table.bench{border-collapse:collapse;font-size:12px;margin:6px 0}
+  table.bench th,table.bench td{border:1px solid var(--line);padding:4px 7px;text-align:center;vertical-align:top}
+  table.bench td:first-child{text-align:left;max-width:220px}
+  .bench-wrap{display:flex;gap:14px;flex-wrap:wrap;align-items:flex-start}
+  .modal canvas.bench-chart{width:560px;height:200px;border:1px solid var(--line);border-radius:6px;flex:none}
+  #benchBody h3{margin:16px 0 4px;font-size:15px} #benchBody h4{margin:12px 0 2px;font-size:13px;color:var(--accent)}
   .empty{color:var(--muted);font-size:12px;padding:10px;border:1px dashed var(--line);border-radius:8px;text-align:center}
 </style>
 </head>
@@ -102,6 +114,8 @@
     <button data-tab="grid">Grid map</button>
     <button data-tab="seg">Segments</button>
     <button data-tab="vec">Vectorielle</button>
+    <button data-tab="loc">Localisation</button>
+    <button data-tab="proc">Traitement</button>
   </div>
   <div class="tab" id="tab-scans">
   <h2 style="margin-top:4px">1 · Acquisition depuis le robot</h2>
@@ -159,8 +173,8 @@
   <div id="list"></div>
 
   <h2>Superposition automatique</h2>
-  <div class="help" style="margin-bottom:6px">Le scan verrouillé 🔒 sert de référence (sinon le scan sélectionné). Les autres sont cherchés à toutes les orientations et positions, puis affinés par ICP.</div>
-  <div class="opt"><span>Seuil d'acceptation</span><input type="range" id="autoThr" min="15" max="70" step="5" value="35"><span id="autoThrV">35 %</span></div>
+  <div class="help" style="margin-bottom:6px">Le scan verrouillé 🔒 sert de référence (sinon le scan sélectionné) : choisis-en un qui voit bien les murs. Les autres sont cherchés à toutes les orientations et positions, affinés par ICP, et placés en commençant par les moins ambigus. Score = points qui retombent sur la carte − faisceaux qui traversent un mur connu.</div>
+  <div class="opt"><span>Seuil d'acceptation</span><input type="range" id="autoThr" min="10" max="70" step="5" value="20"><span id="autoThrV">20 %</span></div>
   <div class="row">
     <button id="autoAll" class="primary">Tout superposer automatiquement</button>
   </div>
@@ -169,7 +183,7 @@
 
   <h2>Scan sélectionné</h2>
   <div class="row">
-    <button id="autoOne" title="Cherche la meilleure pose du scan sélectionné sur les scans verrouillés, quelle que soit sa position actuelle">Placer automatiquement</button>
+    <button id="autoOne" title="Cherche la meilleure pose du scan sélectionné sur les scans verrouillés : autour de sa position actuelle (±1,5 m, ±35°) s'il a été déplacé, sinon partout">Placer automatiquement</button>
     <button id="icp" title="Affine la pose du scan sélectionné sur les scans verrouillés (ou, à défaut, sur tous les scans visibles)">Affiner (ICP)</button>
     <button id="reset">Pose à 0</button>
     <button id="undo" title="Ctrl+Z">Annuler</button>
@@ -373,6 +387,121 @@
       <button id="vToSeg" title="Pour mesurer angles, intersections, découpes… avec les outils de l’onglet Segments">Copier vers l’onglet Segments</button>
     </div>
   </div>
+  <!-- ===================================================== LOCALISATION -->
+  <div class="tab" id="tab-loc" hidden>
+    <div class="help">Retrouver la pose d’un scan sur une référence : grid map ou carte vectorielle construites avec les <b>autres</b> scans visibles, ou un scan de référence pris à proximité.</div>
+    <h2>Localiser un scan</h2>
+    <div class="info" id="locTarget"></div>
+    <div class="frm" style="margin-top:8px">
+      <label for="locRef">Référence</label><select id="locRef"><option value="grid">Grid map</option><option value="vector">Carte vectorielle</option><option value="scan">Scan de référence</option></select>
+      <label for="locMethod">Méthode</label><select id="locMethod"></select>
+    </div>
+    <div class="frm" id="locScanRefRow" style="display:none"><label for="locScanRef">Scan de référence</label><select id="locScanRef"></select></div>
+    <div class="frm">
+      <label for="locRxy">Fenêtre des recherches globales ± (m)</label><input type="number" id="locRxy" value="1.2" step="0.1" min="0.1">
+      <label for="locRth">… et ± (°)</label><input type="number" id="locRth" value="50" step="5" min="1" max="180">
+    </div>
+    <div class="row">
+      <button id="locMem" title="Les poses actuelles (après superposition) servent de vérité pour mesurer l'erreur">Mémoriser les poses de référence</button>
+    </div>
+    <div class="frm" style="margin-top:6px">
+      <label for="locPd">Perturbation de test : distance (m)</label><input type="number" id="locPd" value="0.5" step="0.1" min="0">
+      <label for="locPa">… et angle (°)</label><input type="number" id="locPa" value="20" step="5" min="0">
+    </div>
+    <div class="row">
+      <button id="locPert">Déplacer le scan (perturbation)</button>
+      <button id="locBack">Remettre à la référence</button>
+    </div>
+    <div class="row" style="margin-top:6px"><button class="primary" id="locGo">Localiser le scan sélectionné</button><span class="help" id="locStatus"></span></div>
+    <div class="info" id="locResult">Le scan part de sa pose actuelle (tu peux aussi le déplacer à la main).</div>
+
+    <h2>Banc d’évaluation</h2>
+    <div class="help">Mêmes scans et mêmes poses initiales (même graine) pour toutes les méthodes. Réel : poses de référence mémorisées, carte construite sans le scan testé ; entre scans : scan le plus proche (≤ 1,5 m).</div>
+    <label class="chk"><input type="checkbox" id="benchSim" checked> Simulation (poses exactes)</label>
+    <label class="chk"><input type="checkbox" id="benchReal"> Scans réels visibles (poses de référence)</label>
+    <div class="frm">
+      <label for="benchLevels">Perturbations « m/° » séparées par « ; »</label><input type="text" id="benchLevels" value="0/0; 0.1/5; 0.25/10; 0.5/20; 1/45">
+      <label for="benchDraws">Tirages par niveau</label><input type="number" id="benchDraws" value="3" min="1" max="20">
+      <label for="benchNSim">Scans simulés à localiser</label><input type="number" id="benchNSim" value="6" min="1" max="30">
+      <label for="benchSeed">Graine</label><input type="number" id="benchSeed" value="7">
+      <label for="benchPos">Réussite si erreur ≤ (cm)</label><input type="number" id="benchPos" value="5" step="1" min="1">
+      <label for="benchAng">… et ≤ (°)</label><input type="number" id="benchAng" value="2" step="0.5" min="0.1">
+    </div>
+    <div id="benchMethods"></div>
+    <div class="row" style="margin-top:8px">
+      <button class="primary" id="benchGo">Lancer le banc</button><button id="benchView">Voir les résultats</button>
+    </div>
+    <div class="help" style="margin-top:4px">Les recherches exhaustives sont lentes (0,2 à 0,5 s par essai) : réduire les tirages pour un premier essai.</div>
+  </div>
+  <!-- ===================================================== TRAITEMENT -->
+  <div class="tab" id="tab-proc" hidden>
+    <div class="help">Chaîne complète appliquée aux scans visibles (avec leurs poses) : prétraitement, grid map enrichie et nettoyée, obstacles, carte vectorielle régularisée, carte de coût. Les cartes des onglets Grid map et Vectorielle ne sont pas modifiées (boutons « Envoyer » plus bas).</div>
+    <h2>1 · Poses</h2>
+    <label class="chk" title="Chaque scan est relocalisé sur la carte des autres (multi-résolution puis ICP point-segment), 2 passes. Environ 0,5 s par scan."><input type="checkbox" id="pRefine"> Recaler toutes les poses avant (alignement global)</label>
+    <h2>2 · Prétraitement des scans</h2>
+    <div class="frm">
+      <label for="pDMin" title="Les points plus proches appartiennent au robot (châssis, câbles)">Rayon du robot : points ignorés en dessous (m)</label><input type="number" id="pDMin" value="0.10" step="0.01" min="0">
+      <label for="pDMax">Portée maximum (m)</label><input type="number" id="pDMax" value="12" step="0.5" min="1">
+      <label for="pIMin">Intensité minimum (0–255)</label><input type="number" id="pIMin" value="0" step="5" min="0" max="255">
+    </div>
+    <label class="chk"><input type="checkbox" id="pIso" checked> Retirer les points isolés (sans voisin proche)</label>
+    <label class="chk" title="Faisceau à cheval sur un premier plan et le fond : point fantôme entre les deux"><input type="checkbox" id="pMixed" checked> Retirer les points mixtes (bords d’objets)</label>
+    <h2>3 · Nettoyage de la grid map</h2>
+    <div class="frm"><label for="pRes">Résolution (m)</label><input type="number" id="pRes" value="0.05" step="0.01" min="0.02"></div>
+    <label class="chk" title="Cellule vue au moins 3 fois mais impact dans moins d'un tiers des observations : objet déplacé, personne, porte"><input type="checkbox" id="pMobile" checked> Effacer les traces d’obstacles mobiles (persistance)</label>
+    <div class="frm"><label for="pPersist">Persistance maximum d’un obstacle mobile (%)</label><input type="number" id="pPersist" value="34" step="1" min="5" max="90"></div>
+    <label class="chk" title="1 ou 2 cellules isolées vues dans un seul scan. Les petites taches vues souvent (pieds de chaise) sont gardées."><input type="checkbox" id="pSpeck" checked> Retirer les taches isolées (bruit)</label>
+    <label class="chk" title="Une cellule inconnue prend l'état d'au moins 5 de ses 8 voisines"><input type="checkbox" id="pSmooth" checked> Lissage majoritaire (trous et stries)</label>
+    <label class="chk" title="Fermeture morphologique : bouche les trous d'une ou deux cellules dans les murs"><input type="checkbox" id="pClose" checked> Fermer les trous des murs</label>
+    <label class="chk" title="Scans pris dans l'ordre : une cellule occupée qui n'est plus revue comme impact depuis N scans est libérée (si revue libre) ou remise à inconnue"><input type="checkbox" id="pObsolete"> Effacer les obstacles obsolètes</label>
+    <label class="chk" title="Les cellules non observées depuis N scans se rapprochent de « inconnu »"><input type="checkbox" id="pDecay"> Décroissance temporelle</label>
+    <div class="frm"><label for="pAge">… durée de vie (scans)</label><input type="number" id="pAge" value="8" step="1" min="1"></div>
+    <h2>4 · Features et obstacles</h2>
+    <div class="frm">
+      <label for="pMethod">Extraction des segments</label><select id="pMethod"><option value="split">Split-and-merge (partie 4)</option><option value="dp">Douglas-Peucker</option><option value="ransac">RANSAC (robuste)</option></select>
+      <label for="pSmall" title="Cluster plus petit : pied de chaise, poteau (cercle)">Taille max d’un petit obstacle (m)</label><input type="number" id="pSmall" value="0.15" step="0.01" min="0.03">
+    </div>
+    <label class="chk" title="Murs ramenés aux directions dominantes, segments d'un même mur alignés et fusionnés, coins raccordés, dépassements rognés"><input type="checkbox" id="pReg" checked> Régulariser la carte vectorielle</label>
+    <div class="frm"><label for="pSnap">Redresser si l’écart aux axes de la salle ≤ (°)</label><input type="number" id="pSnap" value="6" step="1" min="0" max="20"></div>
+    <h2>5 · Carte de coût (navigation)</h2>
+    <div class="frm">
+      <label for="pRobotR">Rayon du robot (m)</label><input type="number" id="pRobotR" value="0.15" step="0.01" min="0.05">
+      <label for="pInfl">Marge de sécurité (m)</label><input type="number" id="pInfl" value="0.35" step="0.05" min="0">
+    </div>
+    <div class="row" style="margin-top:8px"><button class="primary" id="pRun">Lancer le traitement</button><span class="help" id="pStatus"></span></div>
+    <div class="info" id="pInfo">Aucun traitement.</div>
+
+    <h2>Affichage</h2>
+    <div class="frm"><label for="pLayer">Couche</label><select id="pLayer">
+      <option value="clean">Grid map traitée</option><option value="raw">Grid map brute</option>
+      <option value="diff">Différences (rouge retiré, vert ajouté, violet mobile)</option>
+      <option value="persist">Persistance (impacts ÷ observations)</option>
+      <option value="obst">Obstacles par classe</option><option value="cost">Carte de coût</option><option value="none">Aucune</option></select></div>
+    <div class="opt"><span>Opacité</span><input type="range" id="pAlpha" min="0.2" max="1" step="0.05" value="1"><span></span></div>
+    <label class="chk"><input type="checkbox" id="pShowVec" checked> Carte vectorielle régularisée (+ coins)</label>
+    <label class="chk"><input type="checkbox" id="pShowVecRaw"> Carte vectorielle avant régularisation (pointillés)</label>
+    <label class="chk"><input type="checkbox" id="pShowCirc" checked> Obstacles circulaires (orange ; mobiles en rouge)</label>
+    <div class="opt"><span>Confiance minimum des cercles</span><input type="range" id="pMinConf" min="1" max="10" step="1" value="3"><span id="pMinConfV">3</span></div>
+    <label class="chk"><input type="checkbox" id="pShowPts"> Points des scans</label>
+
+    <h2>Trajet sur la carte de coût</h2>
+    <div class="row"><button id="pPlanMode">Placer départ / arrivée</button><button id="pPlanClear">Effacer</button></div>
+    <label class="chk"><input type="checkbox" id="pPlanUnk"> Autoriser les zones inconnues</label>
+    <div class="info" id="pPlanInfo">Active le mode puis clique le départ, puis l’arrivée (A* 8-connexe, le robot garde ses distances aux obstacles).</div>
+
+    <h2>Utiliser le résultat</h2>
+    <div class="row">
+      <button id="pApply" title="Remplace la pose des scans par la pose recalée (annulable avec Ctrl+Z dans l'onglet Scans)">Appliquer les poses recalées</button>
+      <button id="pToGrid">Envoyer la grid map → onglet Grid map</button>
+      <button id="pToVec">Envoyer la carte vectorielle → onglet Vectorielle</button>
+    </div>
+    <h2>Fichiers</h2>
+    <div class="row">
+      <button id="pExpPgm">Grid map traitée (PGM + YAML)</button><button id="pExpPng">Image de la couche (PNG)</button>
+      <button id="pExpVec">Carte vectorielle (.txt)</button><button id="pExpObs">Obstacles (CSV)</button>
+      <button id="pExpCost">Carte de coût (PGM)</button><button id="pExpRep">Rapport (.md)</button>
+    </div>
+  </div>
 </aside>
 
 <main>
@@ -383,8 +512,20 @@
   </div>
   <div id="hud"></div>
   <div id="toast"></div>
+  <div id="autoOverlay">
+    <div class="ao-title">Superposition automatique en cours</div>
+    <div id="aoText">…</div>
+    <div class="ao-track"><div id="aoBar"></div></div>
+    <div class="row" style="justify-content:space-between;width:100%"><span id="aoSub" class="help"></span><button id="aoStop">Arrêter</button></div>
+  </div>
   <div id="drop">Déposer les fichiers de scans ici</div>
 </main>
+
+<div class="modal" id="benchModal"><div class="box" style="width:min(1150px,96vw)">
+  <div class="row" style="justify-content:space-between"><h3 style="margin:0">Résultats du banc de localisation</h3>
+    <div class="row"><button id="benchCsv">CSV (tous les essais)</button><button id="benchMd">Markdown (tableaux)</button><button id="benchPng">PNG (1re courbe)</button><button id="benchClose">Fermer</button></div></div>
+  <div id="benchBody"></div>
+</div></div>
 
 <div class="modal" id="tpModal"><div class="box">
   <h3 id="tpTitle">Import Teleplot</h3>
@@ -567,6 +708,7 @@
       for (const k of freeSet) d[k] = Math.max(0, d[k] - free);
       for (const k of occSet) d[k] = Math.min(255, d[k] + occ);
     }
+    if (p.onCells) p.onCells(freeSet, occSet);         // couches annexes (compteurs, horodatage) : voir lidar_maptools.js
     return { freed: freeSet.size, occupied: occSet.size, outside, robotInside: inGrid(g, ri, rj) };
   }
 
@@ -914,7 +1056,7 @@
     const t = ++map.scans;
     const st = { scan: t, extracted: 0, added: [], merged: [], shortened: [], split: [], weakened: [], removed: [], expired: [], fused: 0, ghosts: [] };
 
-    const segs = extractSegments(pts, robot, o.extract);
+    const segs = o.segments || extractSegments(pts, robot, o.extract);   // o.segments : segments déjà extraits (autre méthode)
     st.extracted = segs.length;
 
     if (o.absence && map.features.length) absenceCheck(map, robot, pts, o, st);
@@ -1085,6 +1227,1612 @@
 </script>
 <script>
 /* ============================================================================
+ *  lidar_loc.js – Localisation (scan matching) sur grid map, carte vectorielle et scan
+ *  Dépend de lidar_core.js (LidarCore). Navigateur : window.LidarLoc ; Node : require.
+ *
+ *  Conventions (identiques à lidar_core.js)
+ *   - poses { x, y, th } : mètres, th en degrés (sens trigonométrique)
+ *   - un « scan » brut : { a: [deg], d: [mm], i?: [] } ; points locaux : [{ x, y }] (m)
+ *   - toutes les méthodes : f(référence, pointsLocaux, poseInitiale, options) -> { x, y, th, score, iters }
+ * ========================================================================== */
+(function (root, factory) {
+  if (typeof module === 'object' && module.exports) module.exports = factory(require('./lidar_core.js'));
+  else root.LidarLoc = factory(root.LidarCore);
+})(typeof self !== 'undefined' ? self : this, function (LC) {
+  'use strict';
+  const D2R = Math.PI / 180, R2D = 180 / Math.PI;
+  const normDeg = a => ((a + 180) % 360 + 360) % 360 - 180;
+  const now = () => (typeof performance !== 'undefined' ? performance.now() : Date.now());
+
+  // ------------------------------------------------------------------ outils
+  function mulberry32(seed) {               // générateur pseudo-aléatoire reproductible
+    let a = seed >>> 0;
+    return () => { a = (a + 0x6D2B79F5) >>> 0; let t = a; t = Math.imul(t ^ (t >>> 15), t | 1); t ^= t + Math.imul(t ^ (t >>> 7), t | 61); return ((t ^ (t >>> 14)) >>> 0) / 4294967296; };
+  }
+  const gauss = rng => Math.sqrt(-2 * Math.log(rng() + 1e-12)) * Math.cos(2 * Math.PI * rng());
+
+  // Scan brut -> points locaux (m), dans l'ordre angulaire
+  function localPoints(scan, opt = {}) {
+    return LC.polarToGlobal(scan, { x: 0, y: 0, th: 0 }, { dMin: opt.dMin ?? 0.05, dMax: opt.dMax ?? 12, iMin: opt.iMin ?? 0 });
+  }
+  // Sous-échantillonnage uniforme dans l'espace (1 point par case) et sans les points trop proches du lidar
+  // (densité en 1/r : sinon les obstacles proches dominent le recalage)
+  function uniformSubsample(pts, opt = {}) {
+    const cell = opt.cell ?? 0.08, minR = opt.minR ?? 0.4, max = opt.max ?? 400;
+    const seen = new Set(), out = [];
+    for (const p of pts) {
+      if (Math.hypot(p.x, p.y) < minR) continue;
+      const k = Math.floor(p.x / cell) * 100003 + Math.floor(p.y / cell);
+      if (!seen.has(k)) { seen.add(k); out.push(p); }
+    }
+    const src = out.length >= 20 ? out : pts;
+    if (src.length <= max) return src.slice();
+    const step = src.length / max, res = [];
+    for (let k = 0; k < max; k++) res.push(src[Math.floor(k * step)]);
+    return res;
+  }
+  function transform(pts, pose) {
+    const c = Math.cos(pose.th * D2R), s = Math.sin(pose.th * D2R);
+    return pts.map(p => ({ x: pose.x + c * p.x - s * p.y, y: pose.y + s * p.x + c * p.y }));
+  }
+  // pose de b exprimée dans le repère de a (a⁻¹ ∘ b) et composition a ∘ b
+  function relPose(a, b) {
+    const c = Math.cos(-a.th * D2R), s = Math.sin(-a.th * D2R), dx = b.x - a.x, dy = b.y - a.y;
+    return { x: c * dx - s * dy, y: s * dx + c * dy, th: normDeg(b.th - a.th) };
+  }
+  function compose(a, b) {
+    const c = Math.cos(a.th * D2R), s = Math.sin(a.th * D2R);
+    return { x: a.x + c * b.x - s * b.y, y: a.y + s * b.x + c * b.y, th: normDeg(a.th + b.th) };
+  }
+  function poseError(est, truth) {
+    return { pos: Math.hypot(est.x - truth.x, est.y - truth.y), ang: Math.abs(normDeg(est.th - truth.th)) };
+  }
+  function solve3(A, b) {
+    const M = A.map((r, i) => [...r, b[i]]);
+    for (let i = 0; i < 3; i++) {
+      let p = i; for (let r = i + 1; r < 3; r++) if (Math.abs(M[r][i]) > Math.abs(M[p][i])) p = r;
+      if (Math.abs(M[p][i]) < 1e-12) return null;
+      [M[i], M[p]] = [M[p], M[i]];
+      for (let r = 0; r < 3; r++) if (r !== i) { const f = M[r][i] / M[i][i]; for (let c = i; c < 4; c++) M[r][c] -= f * M[i][c]; }
+    }
+    return [M[0][3] / M[0][0], M[1][3] / M[1][1], M[2][3] / M[2][2]];
+  }
+
+  // ==========================================================================
+  //  Simulation (poses connues exactement)
+  // ==========================================================================
+  // Salle de classe en L inspirée de la salle réelle : 13,5 × 9,8 m, décroché, meuble central, pieds de chaises
+  function classroomScene(seed = 1, opt = {}) {
+    const rng = mulberry32(seed), S = LC.seg, walls = [];
+    const box = (x0, y0, x1, y1) => walls.push(S(x0, y0, x1, y0), S(x1, y0, x1, y1), S(x1, y1, x0, y1), S(x0, y1, x0, y0));
+    walls.push(S(0, 0, 13.5, 0), S(13.5, 0, 13.5, 7.8), S(13.5, 7.8, 5, 7.8), S(5, 7.8, 5, 9.8), S(5, 9.8, 0, 9.8), S(0, 9.8, 0, 0));
+    walls.push(S(4.2, 7.8, 5, 7.8));                                    // retour de mur au décroché
+    box(8.8, 2.4, 11.3, 4.0);                                           // meuble central
+    box(0.1, 3.0, 0.6, 5.0);                                            // armoire
+    const legs = [];
+    const nLegs = opt.legs ?? 70;
+    for (let k = 0; k < nLegs; k++) {                                  // pieds de chaises 4 × 4 cm
+      const x = 1 + rng() * 11.5, y = 0.8 + rng() * 6.5;
+      if (x > 8.5 && x < 11.6 && y > 2.1 && y < 4.3) continue;
+      box(x, y, x + 0.04, y + 0.04); legs.push([x + 0.02, y + 0.02]);
+    }
+    const inside = (x, y) => x > 0.3 && y > 0.3 && y < 9.5 && x < 13.2 && !(x > 5 && y > 7.5);
+    const free = (x, y, m = 0.35) => inside(x, y) && !(x > 8.8 - m && x < 11.3 + m && y > 2.4 - m && y < 4.0 + m) &&
+      !(x < 0.6 + m && y > 3.0 - m && y < 5.0 + m) && legs.every(([lx, ly]) => Math.hypot(lx - x, ly - y) > m);
+    return { walls, free, bounds: { x0: 0, y0: 0, x1: 13.5, y1: 9.8 } };
+  }
+  // Scan simulé du LD06 : un point tous les `step` degrés, bruit de distance gaussien, bruit angulaire, pertes
+  function simulateScan(walls, pose, opt = {}, rng = Math.random) {
+    const step = opt.step ?? 0.8, tours = opt.tours ?? 1, sd = opt.noise ?? 0.015, sa = opt.angNoise ?? 0.15;
+    const drop = opt.dropout ?? 0.08, maxR = opt.maxRange ?? 12;
+    const A = [], Dm = [], I = [];
+    for (let t = 0; t < tours; t++) for (let a = rng() * step; a < 360; a += step) {
+      if (rng() < drop) continue;
+      const ang = (pose.th + a) * D2R, dx = Math.cos(ang), dy = Math.sin(ang);
+      let best = Infinity;
+      for (const w of walls) {
+        const ex = w.x2 - w.x1, ey = w.y2 - w.y1, den = dx * ey - dy * ex;
+        if (Math.abs(den) < 1e-12) continue;
+        const qx = w.x1 - pose.x, qy = w.y1 - pose.y;
+        const tt = (qx * ey - qy * ex) / den, u = (qx * dy - qy * dx) / den;
+        if (tt > 0.02 && u >= 0 && u <= 1 && tt < best) best = tt;
+      }
+      if (best > maxR) continue;
+      A.push(+((a + gauss(rng) * sa + 360) % 360).toFixed(2)); Dm.push(Math.round((best + gauss(rng) * sd) * 1000)); I.push(200);
+    }
+    return { a: A, d: Dm, i: I };
+  }
+
+  // ==========================================================================
+  //  1. Grid map : champ de distance et méthodes
+  // ==========================================================================
+  // Transformée de distance euclidienne exacte (Felzenszwalb & Huttenlocher) aux cellules occupées
+  function edt1d(f, n, d, v, z) {
+    let k = 0; v[0] = 0; z[0] = -Infinity; z[1] = Infinity;
+    for (let q = 1; q < n; q++) {
+      let s = ((f[q] + q * q) - (f[v[k]] + v[k] * v[k])) / (2 * q - 2 * v[k]);
+      while (s <= z[k]) { k--; s = ((f[q] + q * q) - (f[v[k]] + v[k] * v[k])) / (2 * q - 2 * v[k]); }
+      k++; v[k] = q; z[k] = s; z[k + 1] = Infinity;
+    }
+    k = 0;
+    for (let q = 0; q < n; q++) { while (z[k + 1] < q) k++; d[q] = (q - v[k]) * (q - v[k]) + f[v[k]]; }
+  }
+  function distanceField(grid, opt = {}) {
+    const occT = opt.occT ?? LC.OCC_T, W = grid.W, H = grid.H, INF = 1e20;
+    const g = new Float64Array(W * H);
+    for (let k = 0; k < W * H; k++) g[k] = grid.data[k] >= occT ? 0 : INF;
+    const n = Math.max(W, H), f = new Float64Array(n), d = new Float64Array(n), v = new Int32Array(n), z = new Float64Array(n + 1);
+    for (let i = 0; i < W; i++) {                                     // colonnes
+      for (let j = 0; j < H; j++) f[j] = g[j * W + i];
+      edt1d(f, H, d, v, z); for (let j = 0; j < H; j++) g[j * W + i] = d[j];
+    }
+    for (let j = 0; j < H; j++) {                                     // lignes
+      for (let i = 0; i < W; i++) f[i] = g[j * W + i];
+      edt1d(f, W, d, v, z); for (let i = 0; i < W; i++) g[j * W + i] = d[i];
+    }
+    const dist = new Float32Array(W * H);
+    for (let k = 0; k < W * H; k++) dist[k] = Math.sqrt(g[k]) * grid.res;
+    return { res: grid.res, x0: grid.x0, y0: grid.y0, W, H, dist, outside: opt.outside ?? 1.0, tables: new Map() };
+  }
+  // distance interpolée (bilinéaire) et son gradient, en un point du monde
+  function fieldSample(F, x, y) {
+    const gx = (x - F.x0) / F.res - 0.5, gy = (y - F.y0) / F.res - 0.5;
+    const i = Math.floor(gx), j = Math.floor(gy), fx = gx - i, fy = gy - j;
+    if (i < 0 || j < 0 || i + 1 >= F.W || j + 1 >= F.H) return [F.outside, 0, 0];
+    const k = j * F.W + i, d00 = F.dist[k], d10 = F.dist[k + 1], d01 = F.dist[k + F.W], d11 = F.dist[k + F.W + 1];
+    const d = d00 * (1 - fx) * (1 - fy) + d10 * fx * (1 - fy) + d01 * (1 - fx) * fy + d11 * fx * fy;
+    const ddx = ((d10 - d00) * (1 - fy) + (d11 - d01) * fy) / F.res, ddy = ((d01 - d00) * (1 - fx) + (d11 - d10) * fx) / F.res;
+    return [d, ddx, ddy];
+  }
+  // table de vraisemblance exp(-d²/2σ²) (mise en cache par σ) pour les recherches rapides
+  function likTable(F, sigma) {
+    const key = Math.round(sigma * 1e4);
+    if (F.tables.has(key)) return F.tables.get(key);
+    const L = new Float32Array(F.dist.length), k2 = 1 / (2 * sigma * sigma);
+    for (let k = 0; k < L.length; k++) L[k] = Math.exp(-F.dist[k] * F.dist[k] * k2);
+    F.tables.set(key, L); return L;
+  }
+  // Recherche sur une fenêtre (x, y, θ) : pour chaque angle, les points tournés sont précalculés en cellules
+  function windowSearch(F, L, pts, cx, cy, cth, o, keep = 1) {
+    const best = [];
+    const nx = Math.round(o.rxy / o.sxy), nth = Math.round(o.rth / o.sth);
+    const PX = new Float64Array(pts.length), PY = new Float64Array(pts.length);
+    for (let a = -nth; a <= nth; a++) {
+      const th = cth + a * o.sth, c = Math.cos(th * D2R), s = Math.sin(th * D2R);
+      for (let k = 0; k < pts.length; k++) { PX[k] = c * pts[k].x - s * pts[k].y; PY[k] = s * pts[k].x + c * pts[k].y; }
+      for (let iy = -nx; iy <= nx; iy++) for (let ix = -nx; ix <= nx; ix++) {
+        const tx = cx + ix * o.sxy, ty = cy + iy * o.sxy;
+        let sum = 0;
+        for (let k = 0; k < pts.length; k++) {
+          const i = Math.floor((tx + PX[k] - F.x0) / F.res), j = Math.floor((ty + PY[k] - F.y0) / F.res);
+          if (i >= 0 && j >= 0 && i < F.W && j < F.H) sum += L[j * F.W + i];
+        }
+        if (best.length < keep || sum > best[best.length - 1].score) {
+          best.push({ x: tx, y: ty, th: th, score: sum });
+          best.sort((p, q) => q.score - p.score); if (best.length > keep) best.pop();
+        }
+      }
+    }
+    best.forEach(b => b.score /= pts.length);
+    return best;
+  }
+  // 1a. Recherche exhaustive (brute force) : fenêtre ±rxy, ±rth autour de la pose initiale, pas fixes
+  // un point sur k pour limiter le coût des recherches exhaustives (les points sont déjà répartis uniformément)
+  const thin = (pts, n) => pts.length <= n ? pts : pts.filter((_, k) => k % Math.ceil(pts.length / n) === 0);
+  function gridBrute(F, pts, init, opt = {}) {
+    const o = { rxy: 1.2, rth: 50, sxy: 0.05, sth: 1, sigma: 0.05, maxPts: 150, ...opt };
+    pts = thin(pts, o.maxPts);
+    const r = windowSearch(F, likTable(F, o.sigma), pts, init.x, init.y, init.th, o, 1)[0];
+    return { x: r.x, y: r.y, th: normDeg(r.th), score: r.score, iters: 1 };
+  }
+  // 1b. Multi-résolution : grille grossière (20 cm / 4°, champ lissé), on garde les K meilleurs, puis on
+  //     raffine chacun autour de lui avec des pas divisés par 2, jusqu'à 2,5 cm / 0,5°
+  function gridMultiRes(F, pts, init, opt = {}) {
+    const o = { rxy: 1.2, rth: 50, keep: 8, levels: [[0.2, 4], [0.1, 2], [0.05, 1], [0.025, 0.5]], ...opt };
+    const [s0, a0] = o.levels[0];
+    let cands = windowSearch(F, likTable(F, Math.max(0.05, s0)), pts, init.x, init.y, init.th,
+                             { rxy: Math.ceil(o.rxy / s0) * s0, rth: Math.ceil(o.rth / a0) * a0, sxy: s0, sth: a0 }, o.keep * 3);
+    cands = distinct(cands, s0 * 1.5, a0 * 1.5).slice(0, o.keep);
+    for (let l = 1; l < o.levels.length; l++) {
+      const [s, a] = o.levels[l], [sp, ap] = o.levels[l - 1], L = likTable(F, Math.max(0.05, s));
+      let next = [];
+      for (const c of cands) next.push(...windowSearch(F, L, pts, c.x, c.y, c.th, { rxy: sp, rth: ap, sxy: s, sth: a }, 2));
+      cands = distinct(next.sort((p, q) => q.score - p.score), s, a).slice(0, Math.max(2, Math.ceil(o.keep / (l + 1))));
+    }
+    const r = cands[0];
+    return { x: r.x, y: r.y, th: normDeg(r.th), score: r.score, iters: o.levels.length };
+  }
+  function distinct(list, dxy, dth) {
+    const out = [];
+    for (const c of list) if (!out.some(o => Math.hypot(o.x - c.x, o.y - c.y) < dxy && Math.abs(normDeg(o.th - c.th)) < dth)) out.push(c);
+    return out;
+  }
+  // 1c. Descente de gradient (Gauss-Newton / Levenberg-Marquardt) sur le champ de distance :
+  //     min Σ d(T(p))², avec le gradient du champ ; points trop loin (> dmax) ignorés (robustesse)
+  function gridGradient(F, pts, init, opt = {}) {
+    const o = { iters: 60, dmax0: 0.5, dmaxMin: 0.2, robust: 0.1, ...opt };   // robust : échelle des poids de Cauchy (m), 0 = sans
+    let x = init.x, y = init.y, th = init.th * D2R, lambda = 1e-3, dmax = o.dmax0, it = 0, cost = Infinity;
+    const evalCost = (X, Y, T) => {
+      const c = Math.cos(T), s = Math.sin(T); let e = 0, n = 0;
+      for (const p of pts) { const [d] = fieldSample(F, X + c * p.x - s * p.y, Y + s * p.x + c * p.y); const dd = Math.min(d, dmax); e += dd * dd; n++; }
+      return e / n;
+    };
+    cost = evalCost(x, y, th);
+    for (; it < o.iters; it++) {
+      const c = Math.cos(th), s = Math.sin(th), A = [[0, 0, 0], [0, 0, 0], [0, 0, 0]], b = [0, 0, 0];
+      for (const p of pts) {
+        const rx = c * p.x - s * p.y, ry = s * p.x + c * p.y;
+        const [d, gx, gy] = fieldSample(F, x + rx, y + ry);
+        if (d > dmax) continue;
+        const w = o.robust > 0 ? 1 / (1 + (d / o.robust) ** 2) : 1;     // les points loin de tout obstacle pèsent moins
+        const J = [gx, gy, -gx * ry + gy * rx];
+        for (let i = 0; i < 3; i++) { b[i] -= w * J[i] * d; for (let j = 0; j < 3; j++) A[i][j] += w * J[i] * J[j]; }
+      }
+      for (let i = 0; i < 3; i++) A[i][i] *= (1 + lambda), A[i][i] += 1e-9;
+      const sol = solve3(A, b); if (!sol) break;
+      const nc = evalCost(x + sol[0], y + sol[1], th + sol[2]);
+      if (nc < cost) { x += sol[0]; y += sol[1]; th += sol[2]; cost = nc; lambda = Math.max(1e-6, lambda / 3); }
+      else { lambda *= 5; if (lambda > 1e4) { if (dmax > o.dmaxMin) { dmax = Math.max(o.dmaxMin, dmax * 0.7); lambda = 1e-3; cost = evalCost(x, y, th); continue; } break; } continue; }
+      if (Math.hypot(sol[0], sol[1]) < 1e-5 && Math.abs(sol[2]) < 1e-6) {
+        if (dmax > o.dmaxMin) { dmax = Math.max(o.dmaxMin, dmax * 0.7); cost = evalCost(x, y, th); } else break;
+      }
+    }
+    return { x, y, th: normDeg(th * R2D), score: -cost, iters: it };
+  }
+
+  // ==========================================================================
+  //  2. Carte vectorielle
+  // ==========================================================================
+  // Index spatial des segments : chaque case (0,5 m) liste les segments qui passent à moins de `reach`
+  function segIndex(segs, cell = 0.5, reach = 0.6) {
+    const map = new Map(), key = (i, j) => i * 100003 + j;
+    segs.forEach((s, k) => {
+      const i0 = Math.floor((Math.min(s.x1, s.x2) - reach) / cell), i1 = Math.floor((Math.max(s.x1, s.x2) + reach) / cell);
+      const j0 = Math.floor((Math.min(s.y1, s.y2) - reach) / cell), j1 = Math.floor((Math.max(s.y1, s.y2) + reach) / cell);
+      for (let i = i0; i <= i1; i++) for (let j = j0; j <= j1; j++) {
+        const cx = (i + 0.5) * cell, cy = (j + 0.5) * cell;
+        if (LC.pointSegDist(cx, cy, s) > reach + cell) continue;
+        const kk = key(i, j); (map.get(kk) || map.set(kk, []).get(kk)).push(k);
+      }
+    });
+    // point le plus proche sur le segment le plus proche
+    function query(x, y) {
+      const l = map.get(key(Math.floor(x / cell), Math.floor(y / cell)));
+      let bd = Infinity, bk = -1, bt = 0;
+      if (l) for (const k of l) {
+        const s = segs[k], dx = s.x2 - s.x1, dy = s.y2 - s.y1, L2 = dx * dx + dy * dy;
+        let t = L2 > 0 ? ((x - s.x1) * dx + (y - s.y1) * dy) / L2 : 0; t = Math.max(0, Math.min(1, t));
+        const d = Math.hypot(x - (s.x1 + t * dx), y - (s.y1 + t * dy));
+        if (d < bd) { bd = d; bk = k; bt = t; }
+      }
+      return { d: bk < 0 ? reach : Math.min(bd, reach), k: bk, t: bt };
+    }
+    return { segs, query, reach };
+  }
+  function vecScore(I, pts, x, y, th, sigma) {
+    const c = Math.cos(th * D2R), s = Math.sin(th * D2R), k2 = 1 / (2 * sigma * sigma); let sum = 0;
+    for (const p of pts) { const q = I.query(x + c * p.x - s * p.y, y + s * p.x + c * p.y); sum += Math.exp(-q.d * q.d * k2); }
+    return sum / pts.length;
+  }
+  // 2a. Recherche exhaustive : pas 10 cm / 2° sur la fenêtre, puis affinage exhaustif local 2,5 cm / 0,5°
+  function vecBrute(I, pts, init, opt = {}) {
+    const o = { rxy: 1.2, rth: 50, sxy: 0.1, sth: 2, fxy: 0.025, fth: 0.5, sigma: 0.08, maxPts: 150, ...opt };
+    pts = thin(pts, o.maxPts);
+    const scan = (cx, cy, cth, rxy, rth, sxy, sth, sig) => {
+      let b = null; const nx = Math.round(rxy / sxy), na = Math.round(rth / sth);
+      for (let a = -na; a <= na; a++) for (let iy = -nx; iy <= nx; iy++) for (let ix = -nx; ix <= nx; ix++) {
+        const x = cx + ix * sxy, y = cy + iy * sxy, th = cth + a * sth, sc = vecScore(I, pts, x, y, th, sig);
+        if (!b || sc > b.score) b = { x, y, th, score: sc };
+      }
+      return b;
+    };
+    let b = scan(init.x, init.y, init.th, o.rxy, o.rth, o.sxy, o.sth, Math.max(o.sigma, o.sxy));
+    b = scan(b.x, b.y, b.th, o.sxy, o.sth, o.fxy, o.fth, o.sigma / 2);
+    return { x: b.x, y: b.y, th: normDeg(b.th), score: b.score, iters: 2 };
+  }
+  // 2b. Descente de gradient : ICP point-à-segment (Gauss-Newton). Résidu = distance au point le plus proche
+  //     du segment, projetée sur la normale du segment (à l'intérieur) ou vers l'extrémité.
+  function vecICP(I, pts, init, opt = {}) {
+    const o = { iters: 60, dmax0: 0.6, dmaxMin: 0.1, trim: 0.85, ...opt };
+    let x = init.x, y = init.y, th = init.th * D2R, dmax = o.dmax0, it = 0, rms = 0;
+    for (; it < o.iters; it++) {
+      const c = Math.cos(th), s = Math.sin(th), R = [];
+      for (const p of pts) {
+        const rx = c * p.x - s * p.y, ry = s * p.x + c * p.y, wx = x + rx, wy = y + ry, q = I.query(wx, wy);
+        if (q.k < 0 || q.d > dmax) continue;
+        const g = I.segs[q.k], qx = g.x1 + q.t * (g.x2 - g.x1), qy = g.y1 + q.t * (g.y2 - g.y1);
+        let nx, ny;
+        if (q.t > 0 && q.t < 1) { const L = Math.hypot(g.x2 - g.x1, g.y2 - g.y1); nx = -(g.y2 - g.y1) / L; ny = (g.x2 - g.x1) / L; }
+        else { const L = Math.hypot(wx - qx, wy - qy) || 1; nx = (wx - qx) / L; ny = (wy - qy) / L; }
+        R.push([rx, ry, nx, ny, nx * (wx - qx) + ny * (wy - qy)]);
+      }
+      if (R.length < 10) break;
+      R.sort((a, b) => Math.abs(a[4]) - Math.abs(b[4]));
+      const Q = R.slice(0, Math.ceil(R.length * o.trim));
+      const A = [[0, 0, 0], [0, 0, 0], [0, 0, 0]], b = [0, 0, 0];
+      for (const [rx, ry, nx, ny, e] of Q) {
+        const J = [nx, ny, -nx * ry + ny * rx];
+        for (let i = 0; i < 3; i++) { b[i] -= J[i] * e; for (let j = 0; j < 3; j++) A[i][j] += J[i] * J[j]; }
+      }
+      for (let i = 0; i < 3; i++) A[i][i] += 1e-6;
+      const sol = solve3(A, b); if (!sol) break;
+      x += sol[0]; y += sol[1]; th += sol[2];
+      rms = Math.sqrt(Q.reduce((a, q) => a + q[4] * q[4], 0) / Q.length);
+      if (Math.hypot(sol[0], sol[1]) < 1e-5 && Math.abs(sol[2]) < 1e-6) { if (dmax <= o.dmaxMin) break; }
+      dmax = Math.max(o.dmaxMin, dmax * 0.8);
+    }
+    return { x, y, th: normDeg(th * R2D), score: -rms, iters: it };
+  }
+  // Caractéristiques « coins » d'une liste de segments : intersection de deux segments longs non parallèles,
+  // proche d'une extrémité de chacun ; orientation = directions des deux segments vers leurs extrémités lointaines
+  function lineFeatures(segs, opt = {}) {
+    const minLen = opt.minLen ?? 0.6, minAng = opt.minAng ?? 40, near = opt.near ?? 0.6, maxN = opt.maxSegs ?? 40;
+    const S = segs.filter(s => LC.segLen(s) >= minLen).sort((a, b) => LC.segLen(b) - LC.segLen(a)).slice(0, maxN), out = [];
+    for (let i = 0; i < S.length; i++) for (let j = i + 1; j < S.length; j++) {
+      const a = S[i], b = S[j]; if (LC.angleBetween(a, b).lines < minAng) continue;
+      const r = LC.intersect(a, b); if (r.type !== 'point' && r.type !== 'lines') continue;
+      const far = f => { const d1 = Math.hypot(f.x1 - r.x, f.y1 - r.y), d2 = Math.hypot(f.x2 - r.x, f.y2 - r.y); return Math.min(d1, d2) > near ? null : (d1 > d2 ? [f.x1, f.y1] : [f.x2, f.y2]); };
+      const fa = far(a), fb = far(b); if (!fa || !fb) continue;
+      const ua = Math.atan2(fa[1] - r.y, fa[0] - r.x), ub = Math.atan2(fb[1] - r.y, fb[0] - r.x);
+      out.push({ x: r.x, y: r.y, ua, ub, w: Math.min(LC.segLen(a), LC.segLen(b)) });
+    }
+    return out;
+  }
+  // 2c. Calcul direct : coins du scan appariés aux coins de la carte -> pose en une formule
+  //     (θ = écart des orientations, t = coin carte − R(θ)·coin scan), chaque hypothèse est notée, la
+  //     meilleure est affinée par ICP. N'utilise PAS la pose initiale (localisation globale), sauf si
+  //     opt.window est donné (hypothèses limitées à la fenêtre).
+  function vecDirect(I, pts, init, opt = {}) {
+    const o = { sigma: 0.08, refine: true, window: null, ...opt };
+    // segments du scan, puis recollage des morceaux d'un même mur coupés par des ombres (fusion de la partie 4)
+    const raw = LC.extractSegments(pts.slice().sort((p, q) => Math.atan2(p.y, p.x) - Math.atan2(q.y, q.x)), { x: 0, y: 0 }, { minLen: 0.4, minPts: 5 });
+    const local = LC.mergeAll(raw, { angTol: 5, distTol: 0.10, gapTol: 2.5 }).segments;
+    const fo = { near: o.featNear ?? 1.5, minLen: o.featMinLen ?? 0.5, minAng: o.featMinAng ?? 35 };
+    const fs = lineFeatures(local, fo), key = JSON.stringify(fo);
+    if (!I.features || I.featKey !== key){ I.features = lineFeatures(LC.mergeAll(I.segs, { angTol: 5, distTol: 0.10, gapTol: 2.5 }).segments, { ...fo, maxSegs: 60 }); I.featKey = key; }
+    const fm = o.mapFeatures || I.features;
+    const sub = pts.length > 150 ? pts.filter((_, k) => k % Math.ceil(pts.length / 150) === 0) : pts;
+    let best = null, nh = 0;
+    for (const a of fs) for (const m of fm) for (const [sa, sb, ma, mb] of [[a.ua, a.ub, m.ua, m.ub], [a.ua, a.ub, m.ub, m.ua]]) {
+      const t1 = normDeg((ma - sa) * R2D), t2 = normDeg((mb - sb) * R2D);
+      if (Math.abs(normDeg(t1 - t2)) > 8) continue;                    // les deux directions doivent concorder
+      const th = normDeg(t1 + normDeg(t2 - t1) / 2), c = Math.cos(th * D2R), s = Math.sin(th * D2R);
+      const x = m.x - (c * a.x - s * a.y), y = m.y - (s * a.x + c * a.y);
+      if (o.window && (Math.hypot(x - init.x, y - init.y) > o.window.rxy || Math.abs(normDeg(th - init.th)) > o.window.rth)) continue;
+      nh++;
+      const sc = vecScore(I, sub, x, y, th, o.sigma);
+      if (!best || sc > best.score) best = { x, y, th, score: sc };
+    }
+    if (!best) return { x: init.x, y: init.y, th: init.th, score: 0, iters: 0, failed: true, hypotheses: 0 };
+    const r = o.refine ? vecICP(I, pts, best, { dmax0: 0.3 }) : best;
+    return { x: r.x, y: r.y, th: normDeg(r.th), score: best.score, iters: nh, hypotheses: nh };
+  }
+
+  // ==========================================================================
+  //  3. Entre scans (référence = un autre scan, pris près du scan à localiser)
+  // ==========================================================================
+  function pointIndex(P, cell = 0.3) {
+    const map = new Map(), key = (i, j) => i * 100003 + j;
+    P.forEach((p, k) => { const kk = key(Math.floor(p.x / cell), Math.floor(p.y / cell)); (map.get(kk) || map.set(kk, []).get(kk)).push(k); });
+    return function nearest(x, y, maxD) {
+      const ci = Math.floor(x / cell), cj = Math.floor(y / cell), r = Math.ceil(maxD / cell);
+      let bd = maxD * maxD, bk = -1;
+      for (let di = -r; di <= r; di++) for (let dj = -r; dj <= r; dj++) {
+        const l = map.get(key(ci + di, cj + dj)); if (!l) continue;
+        for (const k of l) { const d = (P[k].x - x) ** 2 + (P[k].y - y) ** 2; if (d < bd) { bd = d; bk = k; } }
+      }
+      return bk;
+    };
+  }
+  // 3a. ICP point-à-point (solution fermée par décomposition en valeurs singulières, en 2D : atan2)
+  function scanICPPoint(ref, pts, init, opt = {}) {
+    const o = { iters: 80, dmax0: 1.0, dmaxMin: 0.1, trim: 0.8, ...opt };
+    const nearest = ref.nearest || (ref.nearest = pointIndex(ref.pts));
+    let x = init.x, y = init.y, th = init.th * D2R, dmax = o.dmax0, it = 0, rms = 0;
+    for (; it < o.iters; it++) {
+      const c = Math.cos(th), s = Math.sin(th), P = [];
+      for (const p of pts) {
+        const wx = x + c * p.x - s * p.y, wy = y + s * p.x + c * p.y, k = nearest(wx, wy, dmax);
+        if (k >= 0) P.push([wx, wy, ref.pts[k].x, ref.pts[k].y, (ref.pts[k].x - wx) ** 2 + (ref.pts[k].y - wy) ** 2]);
+      }
+      if (P.length < 10) break;
+      P.sort((a, b) => a[4] - b[4]);
+      const Q = P.slice(0, Math.ceil(P.length * o.trim));
+      let mpx = 0, mpy = 0, mqx = 0, mqy = 0;
+      for (const q of Q) { mpx += q[0]; mpy += q[1]; mqx += q[2]; mqy += q[3]; }
+      mpx /= Q.length; mpy /= Q.length; mqx /= Q.length; mqy /= Q.length;
+      let sxx = 0, sxy = 0, syx = 0, syy = 0;
+      for (const q of Q) { const ax = q[0] - mpx, ay = q[1] - mpy, bx = q[2] - mqx, by = q[3] - mqy; sxx += ax * bx; sxy += ax * by; syx += ay * bx; syy += ay * by; }
+      const dth = Math.atan2(sxy - syx, sxx + syy), cd = Math.cos(dth), sd = Math.sin(dth);
+      const tx = mqx - (cd * mpx - sd * mpy), ty = mqy - (sd * mpx + cd * mpy);
+      const nx = cd * x - sd * y + tx, ny = sd * x + cd * y + ty, moved = Math.hypot(nx - x, ny - y);
+      x = nx; y = ny; th += dth;
+      rms = Math.sqrt(Q.reduce((a, q) => a + q[4], 0) / Q.length);
+      if (moved < 1e-5 && Math.abs(dth) < 1e-6) { if (dmax <= o.dmaxMin) break; }
+      dmax = Math.max(o.dmaxMin, dmax * 0.85);
+    }
+    return { x, y, th: normDeg(th * R2D), score: -rms, iters: it };
+  }
+  // normales du scan de référence (ACP des voisins à moins de 20 cm), pour l'ICP point-à-ligne
+  function refNormals(ref) {
+    if (ref.normals) return ref.normals;
+    const P = ref.pts, nearIdx = new Map(), cell = 0.2, key = (i, j) => i * 100003 + j;
+    P.forEach((p, k) => { const kk = key(Math.floor(p.x / cell), Math.floor(p.y / cell)); (nearIdx.get(kk) || nearIdx.set(kk, []).get(kk)).push(k); });
+    ref.normals = P.map(p => {
+      const ci = Math.floor(p.x / cell), cj = Math.floor(p.y / cell), nb = [];
+      for (let di = -1; di <= 1; di++) for (let dj = -1; dj <= 1; dj++) for (const k of nearIdx.get(key(ci + di, cj + dj)) || [])
+        if ((P[k].x - p.x) ** 2 + (P[k].y - p.y) ** 2 < cell * cell) nb.push(P[k]);
+      if (nb.length < 4) return null;
+      const f = LC.fitLine(nb); if (f.rmse > 0.03) return null;
+      return [-f.uy, f.ux];
+    });
+    return ref.normals;
+  }
+  // 3b. ICP point-à-ligne (Gauss-Newton sur la distance aux droites locales du scan de référence)
+  function scanICPLine(ref, pts, init, opt = {}) {
+    const o = { iters: 80, dmax0: 1.0, dmaxMin: 0.1, trim: 0.85, ...opt };
+    const nearest = ref.nearest || (ref.nearest = pointIndex(ref.pts)), N = refNormals(ref);
+    let x = init.x, y = init.y, th = init.th * D2R, dmax = o.dmax0, it = 0, rms = 0;
+    for (; it < o.iters; it++) {
+      const c = Math.cos(th), s = Math.sin(th), R = [];
+      for (const p of pts) {
+        const rx = c * p.x - s * p.y, ry = s * p.x + c * p.y, k = nearest(x + rx, y + ry, dmax);
+        if (k < 0 || !N[k]) continue;
+        const [nx, ny] = N[k]; R.push([rx, ry, nx, ny, nx * (x + rx - ref.pts[k].x) + ny * (y + ry - ref.pts[k].y)]);
+      }
+      if (R.length < 10) break;
+      R.sort((a, b) => Math.abs(a[4]) - Math.abs(b[4]));
+      const Q = R.slice(0, Math.ceil(R.length * o.trim)), A = [[0, 0, 0], [0, 0, 0], [0, 0, 0]], b = [0, 0, 0];
+      for (const [rx, ry, nx, ny, e] of Q) { const J = [nx, ny, -nx * ry + ny * rx]; for (let i = 0; i < 3; i++) { b[i] -= J[i] * e; for (let j = 0; j < 3; j++) A[i][j] += J[i] * J[j]; } }
+      for (let i = 0; i < 3; i++) A[i][i] += 1e-6;
+      const sol = solve3(A, b); if (!sol) break;
+      x += sol[0]; y += sol[1]; th += sol[2];
+      rms = Math.sqrt(Q.reduce((a, q) => a + q[4] * q[4], 0) / Q.length);
+      if (Math.hypot(sol[0], sol[1]) < 1e-5 && Math.abs(sol[2]) < 1e-6) { if (dmax <= o.dmaxMin) break; }
+      dmax = Math.max(o.dmaxMin, dmax * 0.85);
+    }
+    return { x, y, th: normDeg(th * R2D), score: -rms, iters: it };
+  }
+  // 3c. Corrélation multi-résolution : le scan de référence devient une mini grid map, puis multi-résolution
+  //     (méthode 1b) et affinage par gradient (méthode 1c)
+  function scanCorrelative(ref, pts, init, opt = {}) {
+    if (!ref.field) {
+      const { grid } = LC.scanToGrid({ x: 0, y: 0 }, ref.ptsAll || ref.pts, { res: 0.05, margin: 1.5, fillBetween: true });
+      ref.field = distanceField(grid);
+    }
+    const r = gridMultiRes(ref.field, pts, init, opt);
+    const g = gridGradient(ref.field, pts, r, { dmax0: 0.2, dmaxMin: 0.08 });
+    return { ...g, score: r.score, iters: r.iters + g.iters };
+  }
+
+  // ==========================================================================
+  //  Banc d'évaluation (mêmes scans, mêmes poses initiales pour toutes les méthodes)
+  // ==========================================================================
+  const METHODS = {
+    grid: { brute: ['Recherche exhaustive', (R, P, i, o) => gridBrute(R.field, P, i, o)],
+            multires: ['Multi-résolution', (R, P, i, o) => gridMultiRes(R.field, P, i, o)],
+            gradient: ['Descente de gradient (Gauss-Newton)', (R, P, i, o) => gridGradient(R.field, P, i, o)] },
+    vector: { brute: ['Recherche exhaustive', (R, P, i, o) => vecBrute(R.index, P, i, o)],
+              icp: ['Descente de gradient (ICP point-segment)', (R, P, i, o) => vecICP(R.index, P, i, o)],
+              direct: ['Calcul direct (coins) + ICP', (R, P, i, o) => vecDirect(R.index, P, i, o)] },
+    scan: { icpPoint: ['ICP point-à-point', (R, P, i, o) => scanICPPoint(R, P, i, o)],
+            icpLine: ['ICP point-à-ligne', (R, P, i, o) => scanICPLine(R, P, i, o)],
+            correl: ['Corrélation multi-résolution', (R, P, i, o) => scanCorrelative(R, P, i, o)] }
+  };
+  const REF_LABEL = { grid: 'Grid map', vector: 'Carte vectorielle', scan: 'Entre scans' };
+
+  // Perturbation reproductible : distance exacte `dp` dans une direction aléatoire, angle ±`da`
+  function perturb(truth, dp, da, rng) {
+    const dir = rng() * 2 * Math.PI, sg = rng() < 0.5 ? -1 : 1;
+    return { x: truth.x + dp * Math.cos(dir), y: truth.y + dp * Math.sin(dir), th: normDeg(truth.th + sg * da) };
+  }
+
+  // Références pour un jeu de scans placés (poses connues) ; `except` = indice du scan exclu (leave-one-out)
+  function buildReferences(scans, except, opt = {}) {
+    const placed = scans.filter((_, k) => k !== except);
+    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity; const data = [];
+    for (const s of placed) {
+      const P = LC.polarToGlobal(s, s.pose, { dMin: 0.05, dMax: 12 });
+      for (const q of P) { if (q.x < x0) x0 = q.x; if (q.x > x1) x1 = q.x; if (q.y < y0) y0 = q.y; if (q.y > y1) y1 = q.y; }
+      data.push([{ x: s.pose.x, y: s.pose.y }, P]);
+    }
+    const g = LC.createGrid({ xMin: x0 - 1, yMin: y0 - 1, xMax: x1 + 1, yMax: y1 + 1, res: opt.res ?? 0.05 });
+    for (const [r, P] of data) LC.updateGrid(g, r, P, { fillBetween: true });
+    const M = LC.createVectorMap();
+    for (const [r, P] of data) LC.updateVectorMap(M, r, P, { extract: { minLen: 0.3 } });
+    return { grid: g, field: distanceField(g), vmap: M, index: segIndex(M.features) };
+  }
+
+  /**
+   * cfg : {
+   *   scenario: 'sim' | 'real', seed, levels: [[dp (m), da (°)], ...], draws, refs: ['grid','vector','scan'],
+   *   methods: { grid: [...], vector: [...], scan: [...] }, window: { rxy, rth },
+   *   success: { pos, ang }, coarse: { pos, ang },
+   *   sim: { nMap, nTest, legs }, real: { scans: [{ name, a, d, i, pose }], pairMaxDist }
+   * }
+   * onProgress(fraction, texte) peut être async (le navigateur peut ainsi rafraîchir l'affichage).
+   */
+  async function runLocBench(cfg, onProgress) {
+    const C = Object.assign({
+      scenario: 'sim', seed: 7, levels: [[0, 0], [0.1, 5], [0.25, 10], [0.5, 20], [1.0, 45]], draws: 5,
+      refs: ['grid', 'vector', 'scan'], methods: null, window: { rxy: 1.2, rth: 50 },
+      success: { pos: 0.05, ang: 2 }, coarse: { pos: 0.20, ang: 5 }, sim: {}, real: {}
+    }, cfg);
+    const methods = C.methods || Object.fromEntries(C.refs.map(r => [r, Object.keys(METHODS[r])]));
+    const rng = mulberry32(C.seed), rows = [], cases = [];
+    const prep = s => uniformSubsample(localPoints(s), { max: 350 });
+
+    // ---- construction des cas de test : { ref, refObj, pts, truth, name }
+    if (C.scenario === 'sim') {
+      const sc = classroomScene(C.seed, { legs: C.sim.legs }), simR = mulberry32(C.seed + 1);
+      const randFree = () => { for (;;) { const p = { x: 0.6 + simR() * 12.4, y: 0.6 + simR() * 8.8, th: normDeg(simR() * 360) }; if (sc.free(p.x, p.y)) return p; } };
+      const nMap = C.sim.nMap ?? 9, nTest = C.sim.nTest ?? 10;
+      const mapPoses = [];
+      for (let iy = 0; iy < 3; iy++) for (let ix = 0; ix < 3 && mapPoses.length < nMap; ix++) {   // positions de cartographie réparties
+        let p = { x: 1.8 + ix * 4.6, y: 1.4 + iy * 3.1, th: normDeg(simR() * 360) }, tries = 0;
+        while (!sc.free(p.x, p.y) && tries++ < 50) p = { x: p.x + (simR() - 0.5), y: p.y + (simR() - 0.5), th: p.th };
+        mapPoses.push(p);
+      }
+      const mapScans = mapPoses.map(p => Object.assign(simulateScan(sc.walls, p, { tours: 3 }, simR), { pose: p }));
+      const R = buildReferences(mapScans, -1);
+      for (let t = 0; t < nTest; t++) {
+        const truth = randFree(), scan = simulateScan(sc.walls, truth, { tours: 1 }, simR), pts = prep(scan);
+        if (C.refs.includes('grid')) cases.push({ ref: 'grid', R, pts, truth, name: `sim${t + 1}` });
+        if (C.refs.includes('vector')) cases.push({ ref: 'vector', R, pts, truth, name: `sim${t + 1}` });
+        if (C.refs.includes('scan')) {
+          // scan de référence pris près (0,3 à 0,6 m, ±20°) : la vérité est la pose relative
+          let rp; do { const d = 0.3 + simR() * 0.3, a = simR() * 2 * Math.PI; rp = { x: truth.x + d * Math.cos(a), y: truth.y + d * Math.sin(a), th: normDeg(truth.th + (simR() - 0.5) * 40) }; } while (!sc.free(rp.x, rp.y));
+          const rs = simulateScan(sc.walls, rp, { tours: 3 }, simR), all = localPoints(rs);
+          cases.push({ ref: 'scan', R: { pts: uniformSubsample(all, { cell: 0.03, minR: 0.3, max: 3000 }), ptsAll: all }, pts, truth: relPose(rp, truth), name: `sim${t + 1}` });
+        }
+      }
+    } else {
+      const S = C.real.scans, maxD = C.real.pairMaxDist ?? 1.5;
+      for (let k = 0; k < S.length; k++) {
+        await onProgress?.(0, `Construction des références (${k + 1}/${S.length})`);
+        const pts = prep(S[k]);
+        if (C.refs.includes('grid') || C.refs.includes('vector')) {
+          const R = buildReferences(S, k);                            // carte construite SANS le scan testé
+          if (C.refs.includes('grid')) cases.push({ ref: 'grid', R, pts, truth: S[k].pose, name: S[k].name });
+          if (C.refs.includes('vector')) cases.push({ ref: 'vector', R, pts, truth: S[k].pose, name: S[k].name });
+        }
+        if (C.refs.includes('scan')) {
+          // scan de référence = le scan le plus proche (pris à moins de maxD)
+          let bj = -1, bd = Infinity;
+          S.forEach((o, j) => { if (j === k) return; const d = Math.hypot(o.pose.x - S[k].pose.x, o.pose.y - S[k].pose.y); if (d < bd) { bd = d; bj = j; } });
+          if (bj >= 0 && bd <= maxD) {
+            const all = localPoints(S[bj]);
+            cases.push({ ref: 'scan', R: { pts: uniformSubsample(all, { cell: 0.03, minR: 0.3, max: 3000 }), ptsAll: all }, pts,
+                         truth: relPose(S[bj].pose, S[k].pose), name: `${S[k].name}→${S[bj].name}` });
+          }
+        }
+      }
+    }
+
+    // ---- poses initiales : tirées UNE fois par cas et par niveau, partagées par toutes les méthodes
+    for (const cs of cases) cs.inits = C.levels.map(([dp, da]) => Array.from({ length: dp === 0 && da === 0 ? 1 : C.draws }, () => perturb(cs.truth, dp, da, rng)));
+    const total = cases.reduce((a, cs) => a + methods[cs.ref].length * cs.inits.reduce((b, l) => b + l.length, 0), 0);
+    let done = 0;
+    for (const cs of cases) for (const m of methods[cs.ref]) {
+      const [label, fn] = METHODS[cs.ref][m];
+      for (let l = 0; l < C.levels.length; l++) for (const init of cs.inits[l]) {
+        const t0 = now();
+        let r; try { r = fn(cs.R, cs.pts, init, { ...C.window }); } catch (e) { r = { x: NaN, y: NaN, th: NaN, failed: true }; }
+        const ms = now() - t0, e = r.failed ? { pos: NaN, ang: NaN } : poseError(r, cs.truth);
+        // une méthode qui échoue (ex. aucun coin trouvé) compte comme un échec, même si la pose initiale était juste
+        const ok = !r.failed && e.pos <= C.success.pos && e.ang <= C.success.ang, okC = !r.failed && e.pos <= C.coarse.pos && e.ang <= C.coarse.ang;
+        rows.push({ scenario: C.scenario, ref: cs.ref, method: m, label, scan: cs.name, level: l, dp: C.levels[l][0], da: C.levels[l][1],
+                    epos: e.pos, eang: e.ang, ms, ok, okCoarse: okC, failed: !!r.failed, iters: r.iters ?? 0 });
+        if (++done % 10 === 0) await onProgress?.(done / total, `${REF_LABEL[cs.ref]} · ${label} · ${cs.name}`);
+      }
+    }
+    return { cfg: C, rows, summary: summarize(rows, C) };
+  }
+
+  const median = a => { if (!a.length) return NaN; const s = a.slice().sort((p, q) => p - q), m = s.length >> 1; return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2; };
+  function summarize(rows, C) {
+    const groups = new Map();
+    for (const r of rows) {
+      const k = `${r.ref}|${r.method}|${r.level}`;
+      if (!groups.has(k)) groups.set(k, { ref: r.ref, method: r.method, label: r.label, level: r.level, dp: r.dp, da: r.da, R: [] });
+      groups.get(k).R.push(r);
+    }
+    return [...groups.values()].map(g => {
+      const S = g.R.filter(r => r.ok);
+      return { ref: g.ref, method: g.method, label: g.label, level: g.level, dp: g.dp, da: g.da, n: g.R.length,
+               success: S.length / g.R.length, coarse: g.R.filter(r => r.okCoarse).length / g.R.length,
+               failed: g.R.filter(r => r.failed).length / g.R.length,
+               medPos: median(g.R.filter(r => !r.failed).map(r => r.epos)), medAng: median(g.R.filter(r => !r.failed).map(r => r.eang)),
+               medPosOk: median(S.map(r => r.epos)), medAngOk: median(S.map(r => r.eang)),
+               meanMs: g.R.reduce((a, r) => a + r.ms, 0) / g.R.length };
+    });
+  }
+  function benchToCSV(res) {
+    const h = 'scenario,reference,methode,scan,niveau,perturbation_m,perturbation_deg,erreur_position_m,erreur_angle_deg,temps_ms,reussite,reussite_grossiere,iterations';
+    return h + ',echec_methode\n' + res.rows.map(r => [r.scenario, r.ref, r.method, r.scan, r.level, r.dp, r.da, isFinite(r.epos) ? r.epos.toFixed(4) : '', isFinite(r.eang) ? r.eang.toFixed(3) : '', r.ms.toFixed(1), r.ok ? 1 : 0, r.okCoarse ? 1 : 0, r.iters, r.failed ? 1 : 0].join(',')).join('\n') + '\n';
+  }
+  function benchToMarkdown(res, title) {
+    const C = res.cfg, fmt = (v, d) => isFinite(v) ? v.toFixed(d) : '—';
+    let s = `## ${title}\n\nRéussite : erreur ≤ ${C.success.pos * 100} cm **et** ≤ ${C.success.ang}° · réussite grossière : ≤ ${C.coarse.pos * 100} cm et ≤ ${C.coarse.ang}°. ` +
+            `Fenêtre de recherche des méthodes globales : ±${C.window.rxy} m, ±${C.window.rth}°. ${C.draws} tirages par cas et par niveau (1 seul au niveau 0).\n\n`;
+    for (const ref of C.refs) {
+      s += `### ${REF_LABEL[ref]}\n\n| Méthode | Perturbation initiale | Réussite | Réussite grossière | Erreur pos. médiane | Erreur ang. médiane | Temps moyen |\n|---|---|---|---|---|---|---|\n`;
+      // (erreurs médianes calculées sur les essais où la méthode a rendu une pose ; « échec méthode » = aucune pose)
+      for (const g of res.summary.filter(g => g.ref === ref).sort((a, b) => a.method.localeCompare(b.method) || a.level - b.level))
+        s += `| ${g.label} | ${fmt(g.dp, 2)} m / ${g.da}° | ${Math.round(g.success * 100)} %${g.failed ? ` (dont ${Math.round(g.failed * 100)} % sans résultat)` : ''} | ${Math.round(g.coarse * 100)} % | ${fmt(g.medPos * 100, 1)} cm | ${fmt(g.medAng, 2)}° | ${fmt(g.meanMs, 0)} ms |\n`;
+      s += '\n';
+    }
+    return s;
+  }
+
+  return {
+    mulberry32, localPoints, uniformSubsample, transform, relPose, compose, poseError, perturb,
+    classroomScene, simulateScan,
+    distanceField, fieldSample, gridBrute, gridMultiRes, gridGradient,
+    segIndex, vecScore, vecBrute, vecICP, vecDirect, lineFeatures,
+    pointIndex, scanICPPoint, scanICPLine, scanCorrelative,
+    buildReferences, runLocBench, summarize, benchToCSV, benchToMarkdown, METHODS, REF_LABEL
+  };
+});
+
+</script>
+<script>
+/* ============================================================================
+ *  lidar_maptools.js – Traitement des cartes et des obstacles
+ *  Dépend de lidar_core.js (LidarCore) et lidar_loc.js (LidarLoc).
+ *  Navigateur : window.LidarMapTools ; Node : require('./lidar_maptools.js').
+ *
+ *  Reprend les étapes des documents du cours qui n'étaient pas encore outillées :
+ *   - « grid map » §1 et §5 : cellules enrichies (compteur d'impacts, nombre d'observations,
+ *     horodatage), décroissance temporelle, effacement des obstacles obsolètes, lissage spatial,
+ *     cellules d'intérêt (petits obstacles isolés mais sûrs) ;
+ *   - « carte vectorielle » §2 et §3 : prétraitement (points aberrants), segmentation en clusters
+ *     (distance, angle, intensité), reconnaissance géométrique (régression, RANSAC,
+ *     Douglas-Peucker, cercles), §4–§6 : features circulaires fusionnées et suivies
+ *     (confiance, absence), nettoyage (collisions géométriques, redondances) ;
+ *   - « cartographie » §2 et §6–§9 : durée de vie / probabilité de persistance des obstacles
+ *     (objets mobiles), alignement global des scans (correction géométrique des poses).
+ *  Et pour exploiter la carte : carte de coût (obstacles gonflés du rayon du robot) et
+ *  planification de trajet A*, métriques de qualité pour comparer avant / après traitement.
+ *
+ *  Conventions : poses { x, y, th (deg) } ; points { x, y } en mètres ; grilles de lidar_core.js.
+ * ========================================================================== */
+(function (root, factory) {
+  if (typeof module === 'object' && module.exports) module.exports = factory(require('./lidar_core.js'), require('./lidar_loc.js'));
+  else root.LidarMapTools = factory(root.LidarCore, root.LidarLoc);
+})(typeof self !== 'undefined' ? self : this, function (LC, LL) {
+  'use strict';
+  const D2R = Math.PI / 180, R2D = 180 / Math.PI;
+  const { UNKNOWN, FREE_T, OCC_T } = LC;
+  const now = () => (typeof performance !== 'undefined' ? performance.now() : Date.now());
+  const normDeg = a => ((a + 180) % 360 + 360) % 360 - 180;
+  const mod = (a, m) => ((a % m) + m) % m;
+
+  // ==========================================================================
+  //  1. Prétraitement d'un scan (points aberrants)
+  // ==========================================================================
+  const PRE_DEFAULTS = {
+    dMin: 0.10, dMax: 12,          // portée utile (m) ; LD06 : 0,02 à 12 m. Sous dMin : le robot lui-même (châssis, câbles)
+    iMin: 0,                       // intensité minimale (qualité du point, 0..255)
+    isolated: true, isoRadius: 0.08, isoWin: 2,   // point sans voisin à moins de max(isoRadius, 2,5 × écart angulaire)
+    mixed: true, mixedJump: 0.20,  // « points mixtes » : entre un premier plan et un fond (faisceau à cheval)
+    scale: 1
+  };
+  /**
+   * scan { a: [deg], d: [mm], i?: [] }, pose { x, y, th } -> { pts: [{x,y,r}] globaux (ordre angulaire),
+   * local: [{x,y}], removed: { range, intensity, isolated, mixed }, kept, total }
+   */
+  function preprocessScan(scan, pose, opt = {}) {
+    const o = Object.assign({}, PRE_DEFAULTS, opt);
+    const removed = { range: 0, intensity: 0, isolated: 0, mixed: 0 };
+    const idx = [];
+    for (let k = 0; k < scan.a.length; k++) {
+      const r = scan.d[k] / 1000;
+      if (!(r >= o.dMin && r <= o.dMax)) { removed.range++; continue; }
+      if (scan.i && o.iMin > 0 && scan.i[k] < o.iMin) { removed.intensity++; continue; }
+      idx.push(k);
+    }
+    idx.sort((p, q) => scan.a[p] - scan.a[q]);
+    const n = idx.length;
+    const P = idx.map(k => { const r = scan.d[k] / 1000 * o.scale, a = scan.a[k] * D2R; return { x: r * Math.cos(a), y: r * Math.sin(a), r, a: scan.a[k] }; });
+    const keep = new Uint8Array(n).fill(1);
+    const adj = (k, m) => Math.abs(normDeg(P[m].a - P[k].a)) < 3;      // voisins angulaires réels (pas de trou)
+    if (o.mixed && n >= 3) {
+      for (let k = 0; k < n; k++) {
+        const p = (k - 1 + n) % n, q = (k + 1) % n;
+        if (!adj(k, p) || !adj(k, q)) continue;
+        const r = P[k].r, rp = P[p].r, rq = P[q].r;
+        if (Math.abs(r - rp) > o.mixedJump && Math.abs(r - rq) > o.mixedJump && (r - rp) * (rq - r) > 0) { keep[k] = 0; removed.mixed++; }
+      }
+    }
+    if (o.isolated && n >= 3) {
+      const iso = [];
+      for (let k = 0; k < n; k++) {
+        if (!keep[k]) continue;
+        const rad = Math.max(o.isoRadius, 2.5 * P[k].r * 0.8 * D2R);
+        let ok = false;
+        for (let w = 1; w <= o.isoWin && !ok; w++) for (const m of [(k - w + n) % n, (k + w) % n]) {
+          if (m !== k && Math.hypot(P[m].x - P[k].x, P[m].y - P[k].y) <= rad) { ok = true; break; }
+        }
+        if (!ok) iso.push(k);
+      }
+      for (const k of iso) { keep[k] = 0; removed.isolated++; }
+    }
+    const c = Math.cos(pose.th * D2R), s = Math.sin(pose.th * D2R), pts = [], local = [];
+    for (let k = 0; k < n; k++) if (keep[k]) {
+      const p = P[k];
+      local.push({ x: p.x, y: p.y });
+      pts.push({ x: pose.x + c * p.x - s * p.y, y: pose.y + s * p.x + c * p.y, r: p.r });
+    }
+    return { pts, local, removed, kept: pts.length, total: scan.a.length };
+  }
+
+  // ==========================================================================
+  //  2. Segmentation en clusters
+  // ==========================================================================
+  /**
+   * Nouveau cluster quand deux points successifs (ordre angulaire) sont séparés :
+   *  - en distance de plus de gapBase + gapK·r (les points s'espacent avec la distance),
+   *  - ou en angle de plus de angGap (des retours manquent : vitre, surface noire, hors portée),
+   *  - ou (si iJump > 0 et intensités fournies) en intensité de plus de iJump.
+   * Renvoie [[{x,y,...}], ...] ; les clusters de moins de minPts points sont écartés.
+   */
+  function clusterScan(pts, origin, opt = {}) {
+    const o = Object.assign({ gapBase: 0.10, gapK: 0.03, angGap: 4, iJump: 0, minPts: 1 }, opt);
+    const n = pts.length; if (!n) return [];
+    const rng = p => Math.hypot(p.x - origin.x, p.y - origin.y);
+    const brg = p => Math.atan2(p.y - origin.y, p.x - origin.x) * R2D;
+    const brk = (p, q) => {
+      const d = Math.hypot(p.x - q.x, p.y - q.y) - (o.gapBase + o.gapK * Math.max(rng(p), rng(q)));
+      if (d > 0) return d + 1;
+      if (Math.abs(normDeg(brg(q) - brg(p))) > o.angGap) return 1;
+      if (o.iJump > 0 && p.i !== undefined && q.i !== undefined && Math.abs(p.i - q.i) > o.iJump) return 0.5;
+      return 0;
+    };
+    // commencer après la plus forte rupture (évite de couper un objet à l'angle 0°/360°)
+    let start = 0, worst = -1;
+    for (let k = 0; k < n; k++) { const b = brk(pts[k], pts[(k + 1) % n]); if (b > worst) { worst = b; start = (k + 1) % n; } }
+    const out = []; let cur = [pts[start]];
+    for (let m = 1; m < n; m++) {
+      const p = pts[(start + m - 1) % n], q = pts[(start + m) % n];
+      if (brk(p, q) > 0) { out.push(cur); cur = []; }
+      cur.push(q);
+    }
+    out.push(cur);
+    return out.filter(C => C.length >= o.minPts);
+  }
+
+  // ==========================================================================
+  //  3. Reconnaissance géométrique
+  // ==========================================================================
+  function solve3(A, b) {                       // élimination de Gauss avec pivot partiel
+    const M = A.map((r, i) => [...r, b[i]]);
+    for (let c = 0; c < 3; c++) {
+      let p = c; for (let r = c + 1; r < 3; r++) if (Math.abs(M[r][c]) > Math.abs(M[p][c])) p = r;
+      if (Math.abs(M[p][c]) < 1e-14) return null;
+      [M[c], M[p]] = [M[p], M[c]];
+      for (let r = 0; r < 3; r++) if (r !== c) { const f = M[r][c] / M[c][c]; for (let k = c; k < 4; k++) M[r][k] -= f * M[c][k]; }
+    }
+    return [M[0][3] / M[0][0], M[1][3] / M[1][1], M[2][3] / M[2][2]];
+  }
+  /**
+   * Cercle par moindres carrés : solution algébrique (Kåsa) puis affinage géométrique
+   * (Gauss-Newton sur Σ (|p − c| − r)²). Renvoie { x, y, r, rmse } ou null.
+   */
+  function fitCircle(P) {
+    if (P.length < 3) return null;
+    let mx = 0, my = 0; for (const p of P) { mx += p.x; my += p.y; } mx /= P.length; my /= P.length;
+    // Kåsa sur coordonnées centrées : x² + y² + D x + E y + F = 0
+    const A = [[0, 0, 0], [0, 0, 0], [0, 0, 0]], b = [0, 0, 0];
+    for (const p of P) {
+      const x = p.x - mx, y = p.y - my, z = -(x * x + y * y), v = [x, y, 1];
+      for (let i = 0; i < 3; i++) { b[i] += v[i] * z; for (let j = 0; j < 3; j++) A[i][j] += v[i] * v[j]; }
+    }
+    const s = solve3(A, b); if (!s) return null;
+    let cx = -s[0] / 2, cy = -s[1] / 2, r2 = cx * cx + cy * cy - s[2];
+    if (!(r2 > 0)) return null;
+    let r = Math.sqrt(r2);
+    for (let it = 0; it < 20; it++) {
+      const JtJ = [[0, 0, 0], [0, 0, 0], [0, 0, 0]], Jtr = [0, 0, 0];
+      for (const p of P) {
+        const dx = p.x - mx - cx, dy = p.y - my - cy, d = Math.hypot(dx, dy) || 1e-12, res = d - r;
+        const J = [-dx / d, -dy / d, -1];
+        for (let i = 0; i < 3; i++) { Jtr[i] += J[i] * res; for (let j = 0; j < 3; j++) JtJ[i][j] += J[i] * J[j]; }
+      }
+      const st = solve3(JtJ, Jtr.map(v => -v)); if (!st) break;
+      cx += st[0]; cy += st[1]; r += st[2];
+      if (Math.hypot(st[0], st[1], st[2]) < 1e-7) break;
+    }
+    let e2 = 0; for (const p of P) { const d = Math.hypot(p.x - mx - cx, p.y - my - cy) - r; e2 += d * d; }
+    return { x: cx + mx, y: cy + my, r: Math.abs(r), rmse: Math.sqrt(e2 / P.length) };
+  }
+
+  /** Douglas-Peucker : indices des sommets de la polyligne simplifiée (tolérance tol, m) */
+  function douglasPeucker(P, tol) {
+    const n = P.length; if (n <= 2) return n === 2 ? [0, 1] : n ? [0] : [];
+    const keep = new Uint8Array(n); keep[0] = keep[n - 1] = 1;
+    const stack = [[0, n - 1]];
+    while (stack.length) {
+      const [a, b] = stack.pop(); if (b - a < 2) continue;
+      const ch = LC.seg(P[a].x, P[a].y, P[b].x, P[b].y), deg = LC.segLen(ch) < 1e-9;
+      let dm = -1, im = -1;
+      for (let k = a + 1; k < b; k++) {
+        const d = deg ? Math.hypot(P[k].x - P[a].x, P[k].y - P[a].y) : LC.pointLineDist(P[k].x, P[k].y, ch);
+        if (d > dm) { dm = d; im = k; }
+      }
+      if (dm > tol) { keep[im] = 1; stack.push([a, im], [im, b]); }
+    }
+    const out = []; for (let k = 0; k < n; k++) if (keep[k]) out.push(k);
+    return out;
+  }
+  /** Segments d'un cluster par Douglas-Peucker puis régression (moindres carrés totaux) sur chaque morceau */
+  function dpSegments(C, opt = {}) {
+    const o = Object.assign({ tol: 0.04, minPts: 5, minLen: 0.20 }, opt);
+    const v = douglasPeucker(C, o.tol), out = [];
+    for (let k = 0; k + 1 < v.length; k++) {
+      const piece = C.slice(v[k], v[k + 1] + 1);
+      if (piece.length < o.minPts) continue;
+      const s = LC.fitSegment(piece);
+      if (LC.segLen(s) >= o.minLen) out.push(s);
+    }
+    return out;
+  }
+  /**
+   * RANSAC séquentiel : on tire 2 points, on compte les points à moins de tol de la droite,
+   * on garde la meilleure droite, on la réajuste sur ses inliers, on la découpe là où les inliers
+   * sont séparés de plus de gapTol (deux murs alignés = deux segments), on retire ses inliers et
+   * on recommence. Robuste aux points aberrants (chaises devant un mur, reflets).
+   */
+  function ransacLines(P, opt = {}) {
+    const o = Object.assign({ tol: 0.03, minInliers: 8, iters: 150, gapTol: 0.25, minLen: 0.25, maxLines: 40, rng: LL.mulberry32(1) }, opt);
+    let rest = P.slice(); const out = [];
+    for (let L = 0; L < o.maxLines && rest.length >= o.minInliers; L++) {
+      let best = null, bestN = 0;
+      for (let it = 0; it < o.iters; it++) {
+        const a = rest[Math.floor(o.rng() * rest.length)], b = rest[Math.floor(o.rng() * rest.length)];
+        const dx = b.x - a.x, dy = b.y - a.y, l = Math.hypot(dx, dy); if (l < 0.05) continue;
+        const nx = -dy / l, ny = dx / l, c = nx * a.x + ny * a.y;
+        let cnt = 0; for (const p of rest) if (Math.abs(nx * p.x + ny * p.y - c) <= o.tol) cnt++;
+        if (cnt > bestN) { bestN = cnt; best = { nx, ny, c }; }
+      }
+      if (!best || bestN < o.minInliers) break;
+      let inl = rest.filter(p => Math.abs(best.nx * p.x + best.ny * p.y - best.c) <= o.tol);
+      const f = LC.fitLine(inl), nx = -f.uy, ny = f.ux, c = nx * f.mx + ny * f.my;
+      inl = rest.filter(p => Math.abs(nx * p.x + ny * p.y - c) <= o.tol);
+      const inSet = new Set(inl);
+      rest = rest.filter(p => !inSet.has(p));
+      const t = p => (p.x - f.mx) * f.ux + (p.y - f.my) * f.uy;
+      inl.sort((p, q) => t(p) - t(q));
+      let run = [inl[0]];
+      const flush = () => { if (run.length >= Math.max(3, o.minInliers / 2)) { const s = LC.fitSegment(run); if (LC.segLen(s) >= o.minLen) out.push(s); } };
+      for (let k = 1; k < inl.length; k++) { if (t(inl[k]) - t(inl[k - 1]) > o.gapTol) { flush(); run = []; } run.push(inl[k]); }
+      flush();
+    }
+    return out;
+  }
+
+  /** Petit cluster -> cercle approché : on voit la moitié avant de l'objet, dont le barycentre est
+   *  à 2r/π ≈ 0,64 r du centre, côté robot ; le centre est donc reculé d'autant. */
+  function smallObjectCircle(C, origin) {
+    let mx = 0, my = 0; for (const p of C) { mx += p.x; my += p.y; } mx /= C.length; my /= C.length;
+    let ext = 0; for (const p of C) for (const q of C) ext = Math.max(ext, Math.hypot(p.x - q.x, p.y - q.y));
+    const r = Math.max(0.015, ext / 2), dx = mx - origin.x, dy = my - origin.y, l = Math.hypot(dx, dy) || 1;
+    return { x: mx + dx / l * 0.64 * r, y: my + dy / l * 0.64 * r, r, n: C.length, rmse: 0, kind: 'petit' };
+  }
+
+  const FEAT_DEFAULTS = {
+    method: 'split',                              // 'split' (split-and-merge, partie 4), 'dp' (Douglas-Peucker), 'ransac'
+    cluster: { gapBase: 0.10, gapK: 0.03, angGap: 4, minPts: 2 },
+    smallMax: 0.15,                               // cluster plus petit que ça : petit objet (pied de chaise, poteau)
+    circle: { minPts: 6, maxR: 0.30, minR: 0.02, maxRmse: 0.012 },
+    extract: { minLen: 0.25 }, dp: {}, ransac: {}
+  };
+  /**
+   * Extraction complète des features d'un scan (repère de la carte) :
+   * clusters -> petits objets (cercles), objets circulaires (cercle ajusté, convexe face au robot),
+   * sinon segments par la méthode choisie.
+   */
+  function extractFeatures(pts, origin, opt = {}) {
+    const o = Object.assign({}, FEAT_DEFAULTS, opt, { circle: Object.assign({}, FEAT_DEFAULTS.circle, opt.circle), cluster: Object.assign({}, FEAT_DEFAULTS.cluster, opt.cluster) });
+    const clusters = clusterScan(pts, origin, o.cluster);
+    const segments = [], circles = [], stats = { clusters: clusters.length, small: 0, round: 0, linear: 0 };
+    for (const C of clusters) {
+      let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
+      for (const p of C) { if (p.x < x0) x0 = p.x; if (p.x > x1) x1 = p.x; if (p.y < y0) y0 = p.y; if (p.y > y1) y1 = p.y; }
+      const ext = Math.hypot(x1 - x0, y1 - y0);
+      if (ext <= o.smallMax) { circles.push(smallObjectCircle(C, origin)); stats.small++; continue; }
+      if (C.length >= o.circle.minPts && ext <= 2 * o.circle.maxR) {
+        const f = fitCircle(C);
+        if (f && f.r >= o.circle.minR && f.r <= o.circle.maxR && f.rmse <= o.circle.maxRmse) {
+          let mx = 0, my = 0; for (const p of C) { mx += p.x; my += p.y; } mx /= C.length; my /= C.length;
+          // l'objet doit présenter sa face convexe au robot : centre plus loin que les points
+          if (Math.hypot(f.x - origin.x, f.y - origin.y) > Math.hypot(mx - origin.x, my - origin.y)) {
+            circles.push({ ...f, n: C.length, kind: 'cercle' }); stats.round++; continue;
+          }
+        }
+      }
+      const segs = o.method === 'ransac' ? ransacLines(C, o.ransac) : o.method === 'dp' ? dpSegments(C, o.dp) : LC.extractSegments(C, origin, o.extract);
+      if (segs.length) stats.linear++;
+      segments.push(...segs);
+    }
+    return { clusters, segments, circles, stats };
+  }
+
+  // ==========================================================================
+  //  4. Carte d'obstacles ponctuels / circulaires (features « cercle »)
+  // ==========================================================================
+  const OM_DEFAULTS = { assoc: 0.15, hit: 1, miss: 1, confMax: 10, maxAge: 0, absMinRays: 2, absMargin: 0.10, minR: 0.03, mobileMin: 2 };
+  function createObstacleMap() { return { items: [], scans: 0, nextId: 1 }; }
+  /**
+   * Intègre les cercles observés dans un scan :
+   *  absence : un faisceau qui passe à travers un obstacle connu (et s'arrête plus loin) le prouve
+   *            absent -> confiance −, compteur de « vu absent » + (persistance) ;
+   *  association : cercle observé à moins de assoc d'un obstacle -> moyenne pondérée (fusion) ;
+   *  nettoyage : fusion des doublons, durée de vie maxAge, suppression à confiance nulle.
+   * persistance = nObs / (nObs + absences) ; « mobile » si absent au moins mobileMin fois et persistance < 0,5.
+   */
+  function updateObstacleMap(M, robot, pts, circles, opt = {}) {
+    const o = Object.assign({}, OM_DEFAULTS, opt), t = ++M.scans;
+    const st = { scan: t, added: [], merged: [], weakened: [], removed: [], expired: [] };
+    if (M.items.length) {
+      const miss = new Map(), step = Math.max(1, Math.ceil(pts.length / 900));
+      for (let k = 0; k < pts.length; k += step) {
+        const p = pts[k], dx = p.x - robot.x, dy = p.y - robot.y, L = Math.hypot(dx, dy); if (L < 0.1) continue;
+        const ux = dx / L, uy = dy / L;
+        for (const it of M.items) {
+          const re = Math.max(it.r, o.minR), cx = it.x - robot.x, cy = it.y - robot.y, u = cx * ux + cy * uy;
+          if (u <= 0 || u + re + o.absMargin >= L) continue;          // l'impact est sur (ou avant) l'obstacle
+          if (Math.abs(cx * uy - cy * ux) < 0.8 * re) miss.set(it.id, (miss.get(it.id) || 0) + 1);
+        }
+      }
+      for (const [id, c] of miss) {
+        if (c < o.absMinRays) continue;
+        const it = M.items.find(q => q.id === id);
+        it.conf -= o.miss; it.misses++; st.weakened.push(id);
+      }
+      M.items = M.items.filter(it => { if (it.conf <= 0) { st.removed.push(it.id); return false; } return true; });
+    }
+    for (const c of circles) {
+      let best = null, bd = o.assoc;
+      for (const it of M.items) { const d = Math.hypot(it.x - c.x, it.y - c.y); if (d <= bd) { bd = d; best = it; } }
+      if (!best) {
+        const it = { id: M.nextId++, x: c.x, y: c.y, r: c.r, conf: 1, nObs: 1, misses: 0, firstSeen: t, lastSeen: t, kind: c.kind || 'cercle' };
+        M.items.push(it); st.added.push(it.id); continue;
+      }
+      const w = Math.min(best.nObs, 20);
+      best.x = (best.x * w + c.x) / (w + 1); best.y = (best.y * w + c.y) / (w + 1); best.r = (best.r * w + c.r) / (w + 1);
+      if (best.lastSeen !== t) { best.nObs++; best.conf = Math.min(o.confMax, best.conf + o.hit); }
+      best.lastSeen = t;
+      if (c.kind === 'cercle') best.kind = 'cercle';
+      if (!st.merged.includes(best.id) && !st.added.includes(best.id)) st.merged.push(best.id);
+    }
+    // doublons (deux obstacles qui ont convergé au même endroit)
+    for (let i = 0; i < M.items.length; i++) for (let j = M.items.length - 1; j > i; j--) {
+      const a = M.items[i], b = M.items[j];
+      if (Math.hypot(a.x - b.x, a.y - b.y) > o.assoc * 0.5) continue;
+      const wa = a.nObs, wb = b.nObs;
+      Object.assign(a, { x: (a.x * wa + b.x * wb) / (wa + wb), y: (a.y * wa + b.y * wb) / (wa + wb), r: (a.r * wa + b.r * wb) / (wa + wb),
+        nObs: wa + wb, conf: Math.max(a.conf, b.conf), misses: a.misses + b.misses, firstSeen: Math.min(a.firstSeen, b.firstSeen), lastSeen: Math.max(a.lastSeen, b.lastSeen) });
+      M.items.splice(j, 1); st.removed.push(b.id);
+    }
+    if (o.maxAge > 0) M.items = M.items.filter(it => { if (t - it.lastSeen > o.maxAge) { st.expired.push(it.id); return false; } return true; });
+    for (const it of M.items) { it.persistence = it.nObs / (it.nObs + it.misses); it.mobile = it.misses >= o.mobileMin && it.persistence < 0.5; }
+    return st;
+  }
+  /** Un « petit obstacle » posé sur un mur de la carte vectorielle est en fait un morceau de mur trop
+   *  court pour devenir un segment (trou dans les points) : il est retiré de la carte d'obstacles. */
+  function pruneObstaclesOnWalls(M, segs, opt = {}) {
+    const { tol = 0.06 } = opt, removed = [];
+    M.items = M.items.filter(it => {
+      const on = segs.some(f => LC.pointSegDist(it.x, it.y, f) < it.r + tol);
+      if (on) removed.push(it.id);
+      return !on;
+    });
+    return { removed };
+  }
+  function obstaclesToCSV(M) {
+    let s = 'id,type,x_m,y_m,rayon_m,confiance,observations,vu_absent,persistance,mobile,premier_scan,dernier_scan\n';
+    for (const it of M.items) s += [it.id, it.kind, it.x.toFixed(4), it.y.toFixed(4), it.r.toFixed(4), it.conf, it.nObs, it.misses,
+      (it.persistence ?? 1).toFixed(2), it.mobile ? 1 : 0, it.firstSeen, it.lastSeen].join(',') + '\n';
+    return s;
+  }
+
+  // ==========================================================================
+  //  5. Grid map enrichie : couches par cellule
+  // ==========================================================================
+  // hits : nombre de scans où la cellule a été un impact ; seen : nombre de scans où elle a été
+  // observée (libre ou impact) ; last / lastOcc : numéro du dernier scan qui l'a observée / vue occupée.
+  // Mémoire : 12 octets de plus par cellule (le compromis mémoire / information du cours).
+  function createLayers(g) {
+    const n = g.W * g.H;
+    return { W: g.W, H: g.H, hits: new Uint16Array(n), seen: new Uint16Array(n), last: new Int32Array(n).fill(-1), lastOcc: new Int32Array(n).fill(-1), t: 0 };
+  }
+  function updateGridLayered(g, L, robot, pts, p = {}) {
+    const t = ++L.t;
+    return LC.updateGrid(g, robot, pts, Object.assign({}, p, {
+      onCells(F, O) {
+        for (const k of F) { if (L.seen[k] < 65535) L.seen[k]++; L.last[k] = t; }
+        for (const k of O) { if (L.hits[k] < 65535) L.hits[k]++; if (L.seen[k] < 65535) L.seen[k]++; L.last[k] = t; L.lastOcc[k] = t; }
+      }
+    }));
+  }
+  const cloneGrid = g => Object.assign({}, g, { data: g.data.slice() });
+  const cloneLayers = L => ({ W: L.W, H: L.H, hits: L.hits.slice(), seen: L.seen.slice(), last: L.last.slice(), lastOcc: L.lastOcc.slice(), t: L.t });
+
+  /** Carte couvrant tous les scans ; data : [{ robot, pts }] (repère carte) */
+  function buildLayeredGrid(data, opt = {}) {
+    const o = Object.assign({ res: 0.05, margin: 0.5, fillBetween: true }, opt);
+    let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
+    for (const { robot, pts } of data) for (const q of [robot, ...pts]) { if (q.x < x0) x0 = q.x; if (q.x > x1) x1 = q.x; if (q.y < y0) y0 = q.y; if (q.y > y1) y1 = q.y; }
+    const g = LC.createGrid({ xMin: x0 - o.margin, yMin: y0 - o.margin, xMax: x1 + o.margin, yMax: y1 + o.margin, res: o.res });
+    const L = createLayers(g);
+    for (const { robot, pts } of data) updateGridLayered(g, L, robot, pts, o);
+    return { grid: g, layers: L };
+  }
+
+  // ==========================================================================
+  //  6. Nettoyage de la grid map (document « grid map » §5)
+  // ==========================================================================
+  /** Décroissance temporelle : cellules non observées depuis plus de `age` scans -> rapprochées de « inconnu » de `step` */
+  function decayGrid(g, L, opt = {}) {
+    const { age = 10, step = 16 } = opt; let n = 0;
+    for (let k = 0; k < g.data.length; k++) {
+      if (L.last[k] < 0 || L.t - L.last[k] <= age) continue;
+      const v = g.data[k];
+      if (v > UNKNOWN) { g.data[k] = Math.max(UNKNOWN, v - step); n++; } else if (v < UNKNOWN) { g.data[k] = Math.min(UNKNOWN, v + step); n++; }
+    }
+    return { changed: n };
+  }
+  /** Obstacles obsolètes : cellule occupée qui n'a plus été un impact depuis `age` scans.
+   *  Revue libre depuis -> libre ; jamais réobservée -> inconnue. */
+  function clearObsolete(g, L, opt = {}) {
+    const { age = 10 } = opt; let freed = 0, unknown = 0;
+    for (let k = 0; k < g.data.length; k++) {
+      if (g.data[k] < OCC_T || L.lastOcc[k] < 0 || L.t - L.lastOcc[k] <= age) continue;
+      if (L.last[k] > L.lastOcc[k]) { g.data[k] = FREE_T - 25; freed++; } else { g.data[k] = UNKNOWN; unknown++; }
+    }
+    return { freed, unknown };
+  }
+  /** Obstacles mobiles (probabilité de persistance) : cellule observée au moins minSeen fois, mais
+   *  impact dans moins de maxPersist de ces observations (une personne, une chaise déplacée, une porte).
+   *  Elle est rendue libre ; le masque `mobile` les garde pour l'affichage. */
+  //  Une cellule vue comme impact dans au moins keepHits scans est gardée : un objet fin (pied de chaise
+  //  de 2 cm dans une cellule de 5 cm) est souvent « traversé » par les faisceaux venus d'ailleurs.
+  function removeMobile(g, L, opt = {}) {
+    const { minSeen = 3, maxPersist = 0.34, keepHits = 3 } = opt, mobile = new Uint8Array(g.data.length);
+    let n = 0, wasOcc = 0, wasUnk = 0;
+    for (let k = 0; k < g.data.length; k++) {
+      const h = L.hits[k], s = L.seen[k];
+      if (!h || h >= keepHits || s < minSeen || h / s > maxPersist) continue;
+      mobile[k] = 1; n++;
+      const v = g.data[k];
+      if (v >= OCC_T) wasOcc++; else if (v > FREE_T) wasUnk++;
+      if (v > FREE_T - 25) g.data[k] = FREE_T - 25;
+    }
+    return { removed: n, wasOcc, wasUnk, mobile };
+  }
+  /** Étiquetage des composantes connexes (8-connexité) des cellules occupées */
+  function labelComponents(g, opt = {}) {
+    const occT = opt.occT ?? OCC_T, W = g.W, H = g.H, lab = new Int32Array(W * H).fill(-1), comps = [];
+    const stack = [];
+    for (let k0 = 0; k0 < W * H; k0++) {
+      if (lab[k0] >= 0 || g.data[k0] < occT) continue;
+      const id = comps.length, cells = []; lab[k0] = id; stack.push(k0);
+      while (stack.length) {
+        const k = stack.pop(); cells.push(k);
+        const i = k % W, j = (k - i) / W;
+        for (let dj = -1; dj <= 1; dj++) for (let di = -1; di <= 1; di++) {
+          if (!di && !dj) continue;
+          const a = i + di, b = j + dj; if (a < 0 || b < 0 || a >= W || b >= H) continue;
+          const m = b * W + a; if (lab[m] >= 0 || g.data[m] < occT) continue;
+          lab[m] = id; stack.push(m);
+        }
+      }
+      comps.push({ id, cells });
+    }
+    return { labels: lab, comps };
+  }
+  /** Petites taches isolées et peu confirmées (bruit) -> inconnues. Une tache isolée mais vue souvent
+   *  (pied de chaise, poteau) est une cellule d'intérêt : elle est gardée. */
+  function removeSpeckles(g, L, opt = {}) {
+    const { maxCells = 2, minHits = 2 } = opt, { comps } = labelComponents(g); let n = 0, kept = 0;
+    for (const c of comps) {
+      if (c.cells.length > maxCells) continue;
+      const support = L ? Math.max(...c.cells.map(k => L.hits[k])) : 0;
+      if (L && support >= minHits) { kept++; continue; }
+      for (const k of c.cells) g.data[k] = UNKNOWN; n += c.cells.length;
+    }
+    return { removed: n, keptInterest: kept };
+  }
+  /** Lissage spatial. 'majority' : une cellule inconnue prend l'état majoritaire de ses 8 voisines
+   *  si au moins minVotes sont d'accord (trous et stries comblés, murs fins préservés).
+   *  'mean' : moyenne des voisines dans un rayon, sauf pour les cellules occupées (sinon les murs
+   *  d'une cellule d'épaisseur disparaîtraient). */
+  function smoothGrid(g, opt = {}) {
+    const { mode = 'majority', radius = 1, minVotes = 5 } = opt, W = g.W, H = g.H, src = g.data.slice(); let n = 0;
+    for (let j = 0; j < H; j++) for (let i = 0; i < W; i++) {
+      const k = j * W + i, v = src[k];
+      if (mode === 'majority') {
+        if (v <= FREE_T || v >= OCC_T) continue;
+        let f = 0, o = 0;
+        for (let dj = -1; dj <= 1; dj++) for (let di = -1; di <= 1; di++) {
+          if (!di && !dj) continue;
+          const a = i + di, b = j + dj; if (a < 0 || b < 0 || a >= W || b >= H) continue;
+          const w = src[b * W + a]; if (w <= FREE_T) f++; else if (w >= OCC_T) o++;
+        }
+        if (f >= minVotes) { g.data[k] = FREE_T - 5; n++; } else if (o >= minVotes) { g.data[k] = OCC_T + 5; n++; }
+      } else {
+        if (v >= OCC_T) continue;
+        let s = 0, c = 0;
+        for (let dj = -radius; dj <= radius; dj++) for (let di = -radius; di <= radius; di++) {
+          const a = i + di, b = j + dj; if (a < 0 || b < 0 || a >= W || b >= H) continue;
+          s += src[b * W + a]; c++;
+        }
+        const m = Math.round(s / c); if (m !== v) { g.data[k] = Math.min(OCC_T - 1, m); n++; }
+      }
+    }
+    return { changed: n };
+  }
+  /** Fermeture morphologique des obstacles (dilatation puis érosion, carré de rayon r) :
+   *  bouche les trous d'une ou deux cellules dans les murs. Les cellules franchement libres
+   *  (valeur < protectFree, traversées plusieurs fois) ne sont jamais bouchées. */
+  function closeGaps(g, opt = {}) {
+    const { radius = 1, protectFree = 30 } = opt, W = g.W, H = g.H, occ = new Uint8Array(W * H);
+    for (let k = 0; k < W * H; k++) occ[k] = g.data[k] >= OCC_T ? 1 : 0;
+    const morph = (src, dil) => {
+      const out = new Uint8Array(W * H);
+      for (let j = 0; j < H; j++) for (let i = 0; i < W; i++) {
+        let v = dil ? 0 : 1;
+        for (let dj = -radius; dj <= radius && (dil ? !v : v); dj++) for (let di = -radius; di <= radius; di++) {
+          const a = i + di, b = j + dj, x = a < 0 || b < 0 || a >= W || b >= H ? 0 : src[b * W + a];
+          if (dil && x) { v = 1; break; } if (!dil && !x) { v = 0; break; }
+        }
+        out[j * W + i] = v;
+      }
+      return out;
+    };
+    const closed = morph(morph(occ, true), false); let n = 0;
+    for (let k = 0; k < W * H; k++) if (closed[k] && !occ[k] && g.data[k] >= protectFree) { g.data[k] = OCC_T + 30; n++; }
+    return { filled: n };
+  }
+
+  // ==========================================================================
+  //  7. Obstacles de la grid map : composantes, mesures, classes
+  // ==========================================================================
+  const OBST_DEFAULTS = { smallMax: 0.15, mediumMax: 1.0 };
+  /** Chaque composante connexe d'obstacle -> { id, cells, area (m²), cx, cy, len, wid (m, ACP), angle, cls, support }.
+   *  Classes par encombrement : 'petit' (pied de chaise, poteau), 'objet' (chaise, sac, poubelle),
+   *  'structure' (mur, meuble). Le lidar ne voit que le contour des objets : on classe donc sur la taille. */
+  function gridObstacles(g, L, opt = {}) {
+    const o = Object.assign({}, OBST_DEFAULTS, opt), { labels, comps } = labelComponents(g), out = [];
+    for (const c of comps) {
+      let sx = 0, sy = 0; const P = c.cells.map(k => LC.cellCenter(g, k % g.W, Math.floor(k / g.W)));
+      for (const [x, y] of P) { sx += x; sy += y; }
+      const cx = sx / P.length, cy = sy / P.length;
+      let a = 0, b = 0, d = 0; for (const [x, y] of P) { a += (x - cx) ** 2; b += (y - cy) ** 2; d += (x - cx) * (y - cy); }
+      a /= P.length; b /= P.length; d /= P.length;
+      const tr = (a + b) / 2, df = Math.sqrt(((a - b) / 2) ** 2 + d * d), l1 = tr + df, l2 = Math.max(0, tr - df);
+      const len = Math.sqrt(12 * l1) + g.res, wid = Math.sqrt(12 * l2) + g.res, ext = Math.max(len, wid);
+      const cls = ext <= o.smallMax ? 'petit' : ext <= o.mediumMax ? 'objet' : 'structure';
+      const support = L ? Math.max(...c.cells.map(k => L.hits[k])) : 0;
+      out.push({ id: c.id, cells: c.cells.length, area: c.cells.length * g.res * g.res, cx, cy, len, wid,
+                 angle: 0.5 * Math.atan2(2 * d, a - b) * R2D, cls, support });
+    }
+    return { labels, obstacles: out };
+  }
+
+  // ==========================================================================
+  //  8. Carte vectorielle : régularisation et nettoyage géométrique
+  // ==========================================================================
+  /** Direction dominante (mod 90°) pondérée par la longueur : dans une salle, les murs sont parallèles ou perpendiculaires */
+  function dominantDirection(segs) {
+    const h = new Float64Array(90);
+    for (const s of segs) h[Math.floor(mod(LC.segAngle(s) * R2D, 90)) % 90] += LC.segLen(s);
+    let best = 0, bv = -1;
+    for (let b = 0; b < 90; b++) { let v = 0; for (let d = -2; d <= 2; d++) v += h[mod(b + d, 90)]; if (v > bv) { bv = v; best = b; } }
+    // moyenne circulaire (période 90° -> angle × 4) autour du pic
+    let cx = 0, cy = 0;
+    for (const s of segs) {
+      const a = mod(LC.segAngle(s) * R2D, 90);
+      if (Math.abs(normDeg((a - best - 0.5) * 4) / 4) > 8) continue;
+      const w = LC.segLen(s); cx += w * Math.cos(a * 4 * D2R); cy += w * Math.sin(a * 4 * D2R);
+    }
+    return cx || cy ? mod(Math.atan2(cy, cx) * R2D / 4, 90) : best + 0.5;
+  }
+  const rotateAbout = (s, mx, my, dth) => {
+    const c = Math.cos(dth), sn = Math.sin(dth), r = (x, y) => [mx + c * (x - mx) - sn * (y - my), my + sn * (x - mx) + c * (y - my)];
+    const [x1, y1] = r(s.x1, s.y1), [x2, y2] = r(s.x2, s.y2); return Object.assign({}, s, { x1, y1, x2, y2 });
+  };
+  /** Redresse les segments à moins de angTol d'une direction dominante (rotation autour de leur milieu) */
+  function snapDirections(segs, opt = {}) {
+    const theta0 = opt.theta0 ?? dominantDirection(segs), angTol = opt.angTol ?? 6; let n = 0;
+    const out = segs.map(s => {
+      const a = LC.segAngle(s) * R2D;
+      let bestD = Infinity;
+      for (const t of [theta0, theta0 + 90]) { const d = normDeg(2 * (t - a)) / 2; if (Math.abs(d) < Math.abs(bestD)) bestD = d; }
+      if (Math.abs(bestD) > angTol || Math.abs(bestD) < 1e-9) return s;
+      n++; return rotateAbout(s, (s.x1 + s.x2) / 2, (s.y1 + s.y2) / 2, bestD * D2R);
+    });
+    return { segments: out, snapped: n, theta0 };
+  }
+  /** Segments parallèles (à angTol près) dont les droites sont à moins de distTol : ramenés sur une
+   *  même droite (décalage moyen pondéré par la longueur). Un mur vu par plusieurs scans devient droit. */
+  function alignCollinear(segs, opt = {}) {
+    const { angTol = 1.5, distTol = 0.06 } = opt, out = segs.map(s => Object.assign({}, s)), used = new Uint8Array(out.length); let n = 0;
+    for (let i = 0; i < out.length; i++) {
+      if (used[i]) continue;
+      const a = LC.segAngle(out[i]), nx = -Math.sin(a), ny = Math.cos(a), off = s => nx * (s.x1 + s.x2) / 2 + ny * (s.y1 + s.y2) / 2;
+      const grp = [i]; used[i] = 1;
+      for (let j = i + 1; j < out.length; j++) {
+        if (used[j]) continue;
+        if (LC.angleBetween(out[i], out[j]).lines > angTol) continue;
+        if (Math.abs(off(out[j]) - off(out[i])) > distTol) continue;
+        grp.push(j); used[j] = 1;
+      }
+      if (grp.length < 2) continue;
+      let sw = 0, so = 0; for (const k of grp) { const w = LC.segLen(out[k]) * (out[k].conf ?? 1); sw += w; so += w * off(out[k]); }
+      const target = so / sw;
+      for (const k of grp) {
+        const s = out[k], d = target - off(s);
+        // on garde l'orientation propre de chaque segment ; seule la position latérale change
+        Object.assign(s, { x1: s.x1 + nx * d, y1: s.y1 + ny * d, x2: s.x2 + nx * d, y2: s.y2 + ny * d });
+      }
+      n += grp.length;
+    }
+    return { segments: out, aligned: n };
+  }
+  /** Fusion des segments proches en gardant les propriétés (confiance max, observations cumulées) */
+  function mergeKeepProps(segs, tol) {
+    let list = segs.map(s => Object.assign({}, s)), n = 0, changed = true;
+    while (changed) {
+      changed = false;
+      outer: for (let i = 0; i < list.length; i++) for (let j = i + 1; j < list.length; j++) {
+        const a = list[i], b = list[j];
+        if (!LC.areClose(a, b, tol).close) continue;
+        const g = LC.mergeSegments(a, b, LC.segLen(a) * (a.conf ?? 1), LC.segLen(b) * (b.conf ?? 1));
+        list[i] = Object.assign({}, a, { x1: g.x1, y1: g.y1, x2: g.x2, y2: g.y2, conf: Math.max(a.conf ?? 1, b.conf ?? 1),
+          nObs: (a.nObs ?? 1) + (b.nObs ?? 1), firstSeen: Math.min(a.firstSeen ?? 0, b.firstSeen ?? 0), lastSeen: Math.max(a.lastSeen ?? 0, b.lastSeen ?? 0) });
+        list.splice(j, 1); n++; changed = true; break outer;
+      }
+    }
+    return { segments: list, merged: n };
+  }
+  /** Coins propres : deux segments à plus de minAng dont l'intersection des droites est à moins de
+   *  maxExt d'une extrémité -> cette extrémité est déplacée sur l'intersection (prolongement ou
+   *  rognage). Si l'intersection tombe dans l'autre segment : jonction en T, seul le premier bouge. */
+  function joinCorners(segs, opt = {}) {
+    const { maxExt = 0.25, minAng = 60 } = opt, out = segs.map(s => Object.assign({}, s)); let n = 0;
+    for (let i = 0; i < out.length; i++) for (let j = i + 1; j < out.length; j++) {
+      const a = out[i], b = out[j];
+      if (LC.angleBetween(a, b).lines < minAng) continue;
+      const r = LC.intersect(a, b); if (r.type !== 'point' && r.type !== 'lines') continue;
+      const end = s => { const d1 = Math.hypot(s.x1 - r.x, s.y1 - r.y), d2 = Math.hypot(s.x2 - r.x, s.y2 - r.y); return d1 <= d2 ? [1, d1] : [2, d2]; };
+      const [ea, da] = end(a), [eb, db] = end(b);
+      const tIn = (s, tt) => tt >= -1e-9 && tt <= 1 + 1e-9;
+      const aNear = da <= maxExt, bNear = db <= maxExt;
+      if (!aNear && !bNear) continue;
+      // les deux bouts proches : vrai coin ; un seul : jonction en T si l'intersection est dans l'autre
+      if (aNear && bNear) {
+        if (da > 1e-9) { a['x' + ea] = r.x; a['y' + ea] = r.y; n++; }
+        if (db > 1e-9) { b['x' + eb] = r.x; b['y' + eb] = r.y; n++; }
+      } else if (aNear && tIn(b, r.u) && da > 1e-9) { a['x' + ea] = r.x; a['y' + ea] = r.y; n++; }
+      else if (bNear && tIn(a, r.t) && db > 1e-9) { b['x' + eb] = r.x; b['y' + eb] = r.y; n++; }
+    }
+    return { segments: out, joined: n };
+  }
+  /** Collisions géométriques : deux segments qui se croisent avec un petit dépassement (< overhang)
+   *  -> le dépassement est rogné (artefact d'extraction, deux murs ne se traversent pas). */
+  function trimCollisions(segs, opt = {}) {
+    const { overhang = 0.12, minAng = 20 } = opt, out = segs.map(s => Object.assign({}, s)); let n = 0;
+    for (let i = 0; i < out.length; i++) for (let j = 0; j < out.length; j++) {
+      if (i === j) continue;
+      const a = out[i], b = out[j];
+      if (LC.angleBetween(a, b).lines < minAng) continue;
+      const r = LC.intersect(a, b); if (r.type !== 'point') continue;
+      const L = LC.segLen(a), d1 = r.t * L, d2 = (1 - r.t) * L;
+      if (d1 > 1e-6 && d1 < overhang && d2 > overhang) { a.x1 = r.x; a.y1 = r.y; n++; }
+      else if (d2 > 1e-6 && d2 < overhang && d1 > overhang) { a.x2 = r.x; a.y2 = r.y; n++; }
+    }
+    return { segments: out, trimmed: n };
+  }
+  const REG_DEFAULTS = { minConf: 1, minLen: 0.30, snapTol: 6, alignTol: 0.06, merge: { angTol: 3, distTol: 0.06, gapTol: 0.30 },
+                         maxExt: 0.25, cornerMin: 60, overhang: 0.12, orthogonal: true };
+  /** Chaîne de régularisation d'une carte vectorielle -> nouvelle carte + compte rendu */
+  function regularizeVectorMap(map, opt = {}) {
+    const o = Object.assign({}, REG_DEFAULTS, opt), rep = { before: map.features.length };
+    let S = map.features.filter(f => (f.conf ?? 1) >= o.minConf && LC.segLen(f) >= o.minLen).map(f => Object.assign({}, f));
+    rep.weak = rep.before - S.length;
+    if (o.orthogonal && S.length) { const r = snapDirections(S, { angTol: o.snapTol }); S = r.segments; rep.snapped = r.snapped; rep.theta0 = r.theta0; }
+    { const r = alignCollinear(S, { distTol: o.alignTol }); S = r.segments; rep.aligned = r.aligned; }
+    { const r = mergeKeepProps(S, o.merge); S = r.segments; rep.merged = r.merged; }
+    { const r = joinCorners(S, { maxExt: o.maxExt, minAng: o.cornerMin }); S = r.segments; rep.joined = r.joined; }
+    { const r = trimCollisions(S, { overhang: o.overhang }); S = r.segments; rep.trimmed = r.trimmed; }
+    S = S.filter(f => LC.segLen(f) >= o.minLen);
+    let id = 1; S.forEach(f => { f.id = id++; });
+    const out = { features: S, corners: LC.computeCorners(S, LC.VM_DEFAULTS), scans: map.scans, nextId: id };
+    rep.after = S.length; rep.corners = out.corners.length;
+    rep.lenBefore = map.features.reduce((a, f) => a + LC.segLen(f), 0); rep.lenAfter = S.reduce((a, f) => a + LC.segLen(f), 0);
+    return { map: out, report: rep };
+  }
+
+  // ==========================================================================
+  //  9. Exploitation : carte de coût et trajet
+  // ==========================================================================
+  // Valeurs (convention costmap ROS) : 0 libre, 1..252 proche d'un obstacle, 253 « inscrit » (le centre
+  // du robot à cette place = collision), 254 obstacle, 255 inconnu.
+  const COST = { LETHAL: 254, INSCRIBED: 253, UNKNOWN: 255 };
+  function costmap(g, opt = {}) {
+    const o = Object.assign({ robotRadius: 0.15, inflation: 0.35, decay: 3 }, opt);
+    const F = LL.distanceField(g), n = g.W * g.H, cost = new Uint8Array(n);
+    let free = 0, inscribed = 0;
+    for (let k = 0; k < n; k++) {
+      const v = g.data[k], d = F.dist[k];
+      if (v >= OCC_T) { cost[k] = COST.LETHAL; continue; }
+      if (d <= o.robotRadius) { cost[k] = COST.INSCRIBED; inscribed++; continue; }
+      if (v > FREE_T) { cost[k] = COST.UNKNOWN; continue; }
+      cost[k] = d <= o.robotRadius + o.inflation ? Math.max(1, Math.round(252 * Math.exp(-o.decay * (d - o.robotRadius) / o.inflation))) : 0;
+      free++;
+    }
+    return { W: g.W, H: g.H, res: g.res, x0: g.x0, y0: g.y0, cost, dist: F.dist, robotRadius: o.robotRadius,
+             stats: { navigable: free * g.res * g.res, inscribed: inscribed * g.res * g.res } };
+  }
+  function costmapToPGM(cm, name = 'costmap') {
+    const header = `P5\n# ${name} res=${cm.res} 0=libre 254=obstacle 253=inscrit 255=inconnu\n${cm.W} ${cm.H}\n255\n`;
+    const out = new Uint8Array(header.length + cm.W * cm.H);
+    for (let k = 0; k < header.length; k++) out[k] = header.charCodeAt(k);
+    let p = header.length;
+    for (let j = cm.H - 1; j >= 0; j--) for (let i = 0; i < cm.W; i++) out[p++] = cm.cost[j * cm.W + i];
+    return out;
+  }
+  /**
+   * A* 8-connexe sur la carte de coût : cellules ≥ 253 interdites (et inconnues sauf allowUnknown),
+   * coût d'un pas = longueur × (1 + w·coût/252) : le trajet s'écarte des obstacles quand c'est possible.
+   * Puis lissage : on saute les points intermédiaires tant que la ligne droite reste sans collision.
+   * Renvoie { ok, path: [{x,y}], raw, length, expanded } (raison si échec).
+   */
+  function planPath(cm, start, goal, opt = {}) {
+    const o = Object.assign({ w: 3, allowUnknown: false, maxExpand: 2e6 }, opt), W = cm.W, H = cm.H;
+    const toCell = p => [Math.floor((p.x - cm.x0) / cm.res), Math.floor((p.y - cm.y0) / cm.res)];
+    const blocked = k => cm.cost[k] === COST.LETHAL || cm.cost[k] === COST.INSCRIBED || (!o.allowUnknown && cm.cost[k] === COST.UNKNOWN);
+    const [si, sj] = toCell(start), [gi, gj] = toCell(goal);
+    const inside = (i, j) => i >= 0 && j >= 0 && i < W && j < H;
+    if (!inside(si, sj) || !inside(gi, gj)) return { ok: false, reason: 'départ ou arrivée hors carte' };
+    const S = sj * W + si, G = gj * W + gi;
+    if (blocked(G)) {
+      if (cm.cost[G] === COST.LETHAL) return { ok: false, reason: 'arrivée sur un obstacle' };
+      if (cm.cost[G] === COST.UNKNOWN) return { ok: false, reason: 'arrivée en zone inconnue (cocher « autoriser les zones inconnues »)' };
+      const d = cm.dist ? cm.dist[G] : 0;
+      return { ok: false, reason: `arrivée à ${(d * 100).toFixed(0)} cm d'un obstacle, moins que le rayon du robot (${(cm.robotRadius * 100).toFixed(0)} cm)` };
+    }
+    const gs = new Float64Array(W * H).fill(Infinity), from = new Int32Array(W * H).fill(-1), closed = new Uint8Array(W * H);
+    const h = k => { const i = k % W, j = (k - i) / W, dx = Math.abs(i - gi), dy = Math.abs(j - gj); return Math.max(dx, dy) + (Math.SQRT2 - 1) * Math.min(dx, dy); };
+    // tas binaire
+    const heap = [], push = (k, f) => { heap.push([f, k]); let c = heap.length - 1; while (c) { const p = (c - 1) >> 1; if (heap[p][0] <= heap[c][0]) break; [heap[p], heap[c]] = [heap[c], heap[p]]; c = p; } };
+    const pop = () => { const top = heap[0], last = heap.pop(); if (heap.length) { heap[0] = last; let c = 0; for (;;) { const l = 2 * c + 1, r = l + 1; let m = c; if (l < heap.length && heap[l][0] < heap[m][0]) m = l; if (r < heap.length && heap[r][0] < heap[m][0]) m = r; if (m === c) break; [heap[m], heap[c]] = [heap[c], heap[m]]; c = m; } } return top; };
+    gs[S] = 0; push(S, h(S)); let expanded = 0;
+    while (heap.length) {
+      const [, k] = pop(); if (closed[k]) continue; closed[k] = 1;
+      if (k === G) break;
+      if (++expanded > o.maxExpand) return { ok: false, reason: 'recherche trop longue' };
+      const i = k % W, j = (k - i) / W;
+      for (let dj = -1; dj <= 1; dj++) for (let di = -1; di <= 1; di++) {
+        if (!di && !dj) continue;
+        const a = i + di, b = j + dj; if (!inside(a, b)) continue;
+        const m = b * W + a; if (closed[m] || (blocked(m) && m !== S)) continue;
+        if (di && dj && (blocked(j * W + a) || blocked(b * W + i))) continue;      // pas de coupe en diagonale entre deux obstacles
+        const c = (di && dj ? Math.SQRT2 : 1) * (1 + o.w * (cm.cost[m] === COST.UNKNOWN ? 1 : cm.cost[m] / 252));
+        if (gs[k] + c < gs[m]) { gs[m] = gs[k] + c; from[m] = k; push(m, gs[m] + h(m)); }
+      }
+    }
+    if (from[G] < 0 && G !== S) return { ok: false, reason: 'aucun passage assez large pour le robot', expanded };
+    const cells = []; for (let k = G; k >= 0; k = k === S ? -1 : from[k]) cells.push(k);
+    cells.reverse();
+    const ctr = k => { const i = k % W, j = (k - i) / W; return { x: cm.x0 + (i + 0.5) * cm.res, y: cm.y0 + (j + 0.5) * cm.res, i, j }; };
+    const raw = cells.map(ctr);
+    // lissage par visibilité (ligne droite sans cellule bloquée ni trop coûteuse)
+    const clear = (p, q) => { let ok = true; LC.bresenham(p.i, p.j, q.i, q.j, (a, b) => { const c = cm.cost[b * W + a]; if (c >= COST.INSCRIBED || c > 128) ok = false; }); return ok; };
+    const path = [raw[0]]; let a = 0;
+    while (a < raw.length - 1) { let b = raw.length - 1; while (b > a + 1 && !clear(raw[a], raw[b])) b--; path.push(raw[b]); a = b; }
+    path[0] = { x: start.x, y: start.y, i: si, j: sj }; path[path.length - 1] = { x: goal.x, y: goal.y, i: gi, j: gj };
+    let length = 0; for (let k = 1; k < path.length; k++) length += Math.hypot(path[k].x - path[k - 1].x, path[k].y - path[k - 1].y);
+    return { ok: true, path, raw, length, expanded };
+  }
+
+  // ==========================================================================
+  //  10. Qualité d'une carte
+  // ==========================================================================
+  /**
+   *  - points sur obstacle : part des points des scans (avec leur pose) à moins de 1,5 cellule
+   *    d'une cellule occupée -> cohérence de la superposition ;
+   *  - distance moyenne des points à l'obstacle le plus proche (plafonnée à 50 cm) ;
+   *  - netteté : part des cellules observées dont l'état est tranché (libre ou occupé) ;
+   *  - conflits : cellules vues souvent, tantôt libres tantôt occupées (persistance entre 25 et 75 %).
+   */
+  function mapQuality(g, data, L) {
+    const F = LL.distanceField(g); let n = 0, on = 0, sd = 0;
+    for (const { pts } of data) for (let k = 0; k < pts.length; k += 2) {
+      const d = Math.min(0.5, LL.fieldSample(F, pts[k].x, pts[k].y)[0]); n++; sd += d; if (d <= 1.5 * g.res) on++;
+    }
+    const st = LC.gridStats(g); let observed = 0, conflicts = 0;
+    for (let k = 0; k < g.data.length; k++) {
+      if (L ? L.seen[k] > 0 : g.data[k] !== UNKNOWN) observed++;
+      if (L && L.seen[k] >= 3 && L.hits[k]) { const p = L.hits[k] / L.seen[k]; if (p > 0.25 && p < 0.75) conflicts++; }
+    }
+    return { pointsOnObstacle: n ? on / n : 0, meanDist: n ? sd / n : 0, occCells: st.occ, freeArea: st.free * g.res * g.res,
+             unknownPct: st.unk / st.cells, sharpness: observed ? (st.free + st.occ) / observed : 0, conflicts };
+  }
+
+  // ==========================================================================
+  //  11. Recalage global des poses (alignement de tous les scans entre eux)
+  // ==========================================================================
+  /**
+   * Correction géométrique (document « cartographie » §6 et §9) : chaque scan est relocalisé sur la
+   * carte construite avec tous les AUTRES scans (multi-résolution sur la grid map, puis ICP
+   * point-segment sur la carte vectorielle, méthodes du Jour 2), en partant de sa pose actuelle.
+   * Les poses sont mises à jour au fur et à mesure (Gauss-Seidel) et on refait passes fois.
+   * Garde-fous : correction refusée si elle dépasse maxCorr / maxRot, ou si le score diminue.
+   * scans : [{ name, a, d, i, pose }]. onProgress(fraction, texte) peut être async.
+   */
+  async function refinePoses(scans, opt = {}, onProgress) {
+    const o = Object.assign({ passes: 4, rxy: 0.3, rth: 8, maxCorr: 0.30, maxRot: 8, growing: true, stopPos: 0.005, stopAng: 0.1 }, opt);
+    const poses = scans.map(s => Object.assign({}, s.pose)), log = [], N = scans.length;
+    const pts = scans.map(s => LL.uniformSubsample(LL.localPoints(s)));
+    const total = o.passes * N; let done = 0;
+    // un essai : relocaliser le scan k sur la carte des scans `refIdx` (poses actuelles)
+    const attempt = (k, refIdx, pass) => {
+      const R = LL.buildReferences(refIdx.map(j => Object.assign({}, scans[j], { pose: poses[j] })), -1);
+      const P = pts[k], before = LL.vecScore(R.index, P, poses[k].x, poses[k].y, poses[k].th, 0.05);
+      const r1 = LL.gridMultiRes(R.field, P, poses[k], { rxy: o.rxy, rth: o.rth }), r2 = LL.vecICP(R.index, P, r1);
+      const after = LL.vecScore(R.index, P, r2.x, r2.y, r2.th, 0.05), e = LL.poseError(r2, poses[k]);
+      const ok = e.pos <= o.maxCorr && e.ang <= o.maxRot && after >= before - 1e-3;
+      log.push({ pass, name: scans[k].name, refs: refIdx.length, dx: r2.x - poses[k].x, dy: r2.y - poses[k].y, dth: normDeg(r2.th - poses[k].th), before, after, accepted: ok });
+      if (ok) poses[k] = { x: r2.x, y: r2.y, th: normDeg(r2.th) };
+      return ok ? e : { pos: 0, ang: 0 };
+    };
+    for (let pass = 1; pass <= o.passes; pass++) {
+      let maxPos = 0, maxAng = 0;
+      // passe 1 « progressive » : le scan 1 fixe le repère, les autres sont recalés du plus proche au plus
+      // loin, chacun sur les scans DÉJÀ recalés (référence cohérente) ; passes suivantes : sur tous les autres
+      const order = [...Array(N).keys()].slice(1);
+      if (pass === 1 && o.growing) order.sort((a, b) => Math.hypot(poses[a].x - poses[0].x, poses[a].y - poses[0].y) - Math.hypot(poses[b].x - poses[0].x, poses[b].y - poses[0].y));
+      const doneSet = [0];
+      for (const k of order) {
+        if (onProgress) await onProgress(done / total, `passe ${pass} · ${scans[k].name || 'scan ' + (k + 1)}`);
+        done++;
+        const refIdx = pass === 1 && o.growing ? doneSet.slice() : [...Array(N).keys()].filter(j => j !== k);
+        const e = attempt(k, refIdx, pass);
+        maxPos = Math.max(maxPos, e.pos); maxAng = Math.max(maxAng, e.ang);
+        doneSet.push(k);
+      }
+      if (pass > 1 && maxPos < o.stopPos && maxAng < o.stopAng) { done = total; break; }   // convergé
+    }
+    if (onProgress) await onProgress(1, 'terminé');
+    return { poses, log };
+  }
+
+  // ==========================================================================
+  //  12. Chaîne complète
+  // ==========================================================================
+  const PIPE_DEFAULTS = {
+    refine: false, refineOpt: {},
+    pre: {}, res: 0.05,
+    mobile: true, mobileOpt: {},
+    obsolete: false, obsoleteOpt: { age: 10 },
+    decay: false, decayOpt: { age: 10, step: 16 },
+    speckles: true, speckleOpt: {},
+    smooth: true, smoothOpt: {},
+    close: true, closeOpt: {},
+    features: {}, obstacleOpt: {}, vmOpt: { extract: { minLen: 0.3 } },
+    regularize: true, regOpt: {},
+    cost: { robotRadius: 0.15, inflation: 0.35 }
+  };
+  /**
+   * scans : [{ name, a, d, i, pose, scale? }] -> tout ce qu'il faut pour afficher et exporter :
+   * { poses, refineLog, pre, gridRaw, grid, layers, mobile, obstacles, labels, omap, vmapRaw, vmap,
+   *   regReport, cost, quality: { raw, clean }, steps: [{ step, detail, ms }] }
+   */
+  async function processMap(scans, opt = {}, onProgress) {
+    const o = Object.assign({}, PIPE_DEFAULTS, opt), steps = [], T = () => now();
+    const prog = async (f, t) => { if (onProgress) await onProgress(f, t); };
+    let t0, poses = scans.map(s => Object.assign({}, s.pose)), refineLog = null;
+    if (o.refine && scans.length > 1) {
+      t0 = T();
+      const r = await refinePoses(scans, o.refineOpt, (f, t) => prog(0.6 * f, 'Recalage des poses : ' + t));
+      poses = r.poses; refineLog = r.log;
+      const acc = r.log.filter(l => l.accepted && (Math.hypot(l.dx, l.dy) > 0.005 || Math.abs(l.dth) > 0.2));
+      steps.push({ step: 'Recalage global des poses', detail: `${acc.length} corrections acceptées sur ${r.log.length} essais`, ms: T() - t0 });
+    }
+    const base = o.refine ? 0.6 : 0;
+    await prog(base, 'Prétraitement des scans');
+    t0 = T();
+    const pre = scans.map((s, k) => Object.assign({ name: s.name }, preprocessScan(s, poses[k], Object.assign({ scale: s.scale ?? 1 }, o.pre))));
+    const data = pre.map((p, k) => ({ robot: { x: poses[k].x, y: poses[k].y }, pts: p.pts }));
+    const rm = pre.reduce((a, p) => { for (const k in p.removed) a[k] = (a[k] || 0) + p.removed[k]; return a; }, {});
+    const tot = pre.reduce((a, p) => a + p.total, 0);
+    steps.push({ step: 'Prétraitement', detail: `${tot - pre.reduce((a, p) => a + p.kept, 0)} points écartés sur ${tot} : hors portée ${rm.range}, intensité ${rm.intensity}, isolés ${rm.isolated}, mixtes ${rm.mixed}`, ms: T() - t0 });
+
+    await prog(base + 0.1 * (1 - base), 'Grid map enrichie');
+    t0 = T();
+    const { grid: gridRaw, layers } = buildLayeredGrid(data, { res: o.res });
+    steps.push({ step: 'Grid map enrichie (impacts, observations, horodatage)', detail: `${gridRaw.W} × ${gridRaw.H} cellules, ${data.length} scans`, ms: T() - t0 });
+    const qRaw = mapQuality(gridRaw, data, layers);
+
+    const grid = cloneGrid(gridRaw); let mobile = new Uint8Array(grid.data.length);
+    const stepG = (name, fn) => { const t = T(), r = fn(); steps.push({ step: name, detail: r.detail, ms: T() - t }); return r; };
+    if (o.decay) stepG('Décroissance temporelle', () => { const r = decayGrid(grid, layers, o.decayOpt); return { detail: `${r.changed} cellules rapprochées de « inconnu »` }; });
+    if (o.obsolete) stepG('Obstacles obsolètes', () => { const r = clearObsolete(grid, layers, o.obsoleteOpt); return { detail: `${r.freed} cellules libérées, ${r.unknown} remises à inconnu` }; });
+    if (o.mobile) stepG('Obstacles mobiles (persistance)', () => { const r = removeMobile(grid, layers, o.mobileOpt); mobile = r.mobile; return { detail: `${r.removed} cellules « traces » (impact dans moins d'un tiers des observations) rendues libres, dont ${r.wasOcc} encore occupées et ${r.wasUnk} inconnues` }; });
+    if (o.speckles) stepG('Taches isolées', () => { const r = removeSpeckles(grid, layers, o.speckleOpt); return { detail: `${r.removed} cellules de bruit retirées, ${r.keptInterest} petits obstacles confirmés gardés` }; });
+    if (o.smooth) stepG('Lissage (majoritaire)', () => { const r = smoothGrid(grid, o.smoothOpt); return { detail: `${r.changed} cellules inconnues tranchées` }; });
+    if (o.close) stepG('Fermeture des murs', () => { const r = closeGaps(grid, o.closeOpt); return { detail: `${r.filled} trous bouchés` }; });
+    const qClean = mapQuality(grid, data, layers);
+
+    await prog(base + 0.3 * (1 - base), 'Obstacles de la grille');
+    t0 = T();
+    const { labels, obstacles } = gridObstacles(grid, layers, o.obstacleOpt);
+    const cnt = c => obstacles.filter(x => x.cls === c).length;
+    steps.push({ step: 'Obstacles (composantes connexes)', detail: `${obstacles.length} : ${cnt('structure')} structures, ${cnt('objet')} objets, ${cnt('petit')} petits`, ms: T() - t0 });
+
+    await prog(base + 0.45 * (1 - base), 'Features (segments, cercles)');
+    t0 = T();
+    const vmapRaw = LC.createVectorMap(), omap = createObstacleMap(); let nSeg = 0, nCirc = 0;
+    for (const { robot, pts } of data) {
+      const f = extractFeatures(pts, robot, o.features); nSeg += f.segments.length; nCirc += f.circles.length;
+      LC.updateVectorMap(vmapRaw, robot, pts, Object.assign({}, o.vmOpt, (o.features.method || 'split') !== 'split' ? { segments: f.segments } : {}));
+      updateObstacleMap(omap, robot, pts, f.circles, o.omOpt);
+    }
+    const pr = pruneObstaclesOnWalls(omap, vmapRaw.features, o.pruneOpt);
+    steps.push({ step: 'Carte vectorielle + obstacles circulaires', detail: `${vmapRaw.features.length} segments ; ${nCirc} cercles observés -> ${omap.items.length} obstacles circulaires suivis (${omap.items.filter(i => i.conf >= 3).length} de confiance ≥ 3, ${omap.items.filter(i => i.mobile).length} mobiles), ${pr.removed.length} écartés car posés sur un mur`, ms: T() - t0 });
+
+    let vmap = vmapRaw, regReport = null;
+    if (o.regularize) {
+      t0 = T();
+      const r = regularizeVectorMap(vmapRaw, o.regOpt); vmap = r.map; regReport = r.report;
+      steps.push({ step: 'Régularisation de la carte vectorielle', detail: `${r.report.before} → ${r.report.after} segments ; ${r.report.snapped ?? 0} redressés (axes ${(r.report.theta0 ?? 0).toFixed(1)}° / ${((r.report.theta0 ?? 0) + 90).toFixed(1)}°), ${r.report.aligned} alignés, ${r.report.merged} fusions, ${r.report.joined} coins raccordés, ${r.report.trimmed} dépassements rognés`, ms: T() - t0 });
+    }
+    await prog(base + 0.85 * (1 - base), 'Carte de coût');
+    t0 = T();
+    const cost = costmap(grid, o.cost);
+    steps.push({ step: 'Carte de coût', detail: `robot ${o.cost.robotRadius * 100} cm + marge ${o.cost.inflation * 100} cm ; ${cost.stats.navigable.toFixed(1)} m² accessibles au centre du robot`, ms: T() - t0 });
+    await prog(1, 'terminé');
+    return { poses, refineLog, pre, gridRaw, grid, layers, mobile, obstacles, labels, omap, vmapRaw, vmap, regReport, cost,
+             quality: { raw: qRaw, clean: qClean }, steps };
+  }
+
+  function reportToMarkdown(R) {
+    const q = R.quality, pc = v => (v * 100).toFixed(1) + ' %';
+    let s = '# Traitement de la carte\n\n## Étapes\n\n| Étape | Résultat | Temps |\n|---|---|---|\n';
+    for (const st of R.steps) s += `| ${st.step} | ${st.detail} | ${st.ms.toFixed(0)} ms |\n`;
+    s += '\n## Qualité de la grid map\n\n| Mesure | Brute | Traitée |\n|---|---|---|\n';
+    s += `| Points des scans sur un obstacle (≤ 1,5 cellule) | ${pc(q.raw.pointsOnObstacle)} | ${pc(q.clean.pointsOnObstacle)} |\n`;
+    s += `| Distance moyenne point → obstacle | ${(q.raw.meanDist * 100).toFixed(1)} cm | ${(q.clean.meanDist * 100).toFixed(1)} cm |\n`;
+    s += `| Cellules occupées | ${q.raw.occCells} | ${q.clean.occCells} |\n`;
+    s += `| Surface libre | ${q.raw.freeArea.toFixed(1)} m² | ${q.clean.freeArea.toFixed(1)} m² |\n`;
+    s += `| Netteté (cellules observées tranchées) | ${pc(q.raw.sharpness)} | ${pc(q.clean.sharpness)} |\n`;
+    s += `| Cellules en conflit (persistance 25–75 %) | ${q.raw.conflicts} | ${q.clean.conflicts} |\n`;
+    if (R.refineLog) {
+      s += '\n## Recalage des poses\n\n| Passe | Scan | dx (cm) | dy (cm) | dθ (°) | Score avant | Score après | Acceptée |\n|---|---|---|---|---|---|---|---|\n';
+      for (const l of R.refineLog) s += `| ${l.pass} | ${l.name} | ${(l.dx * 100).toFixed(1)} | ${(l.dy * 100).toFixed(1)} | ${l.dth.toFixed(2)} | ${l.before.toFixed(3)} | ${l.after.toFixed(3)} | ${l.accepted ? 'oui' : 'non'} |\n`;
+    }
+    s += '\n## Obstacles de la grille\n\n| Classe | Nombre | Surface |\n|---|---|---|\n';
+    for (const c of ['structure', 'objet', 'petit']) { const L = R.obstacles.filter(o => o.cls === c); s += `| ${c} | ${L.length} | ${L.reduce((a, o) => a + o.area, 0).toFixed(2)} m² |\n`; }
+    return s;
+  }
+
+  return {
+    PRE_DEFAULTS, FEAT_DEFAULTS, OM_DEFAULTS, REG_DEFAULTS, PIPE_DEFAULTS, COST,
+    preprocessScan, clusterScan, fitCircle, douglasPeucker, dpSegments, ransacLines, smallObjectCircle, extractFeatures,
+    createObstacleMap, updateObstacleMap, pruneObstaclesOnWalls, obstaclesToCSV,
+    createLayers, updateGridLayered, buildLayeredGrid, cloneGrid, cloneLayers,
+    decayGrid, clearObsolete, removeMobile, labelComponents, removeSpeckles, smoothGrid, closeGaps, gridObstacles,
+    dominantDirection, snapDirections, alignCollinear, mergeKeepProps, joinCorners, trimCollisions, regularizeVectorMap,
+    costmap, costmapToPGM, planPath, mapQuality, refinePoses, processMap, reportToMarkdown
+  };
+});
+
+</script>
+<script>
+/* ============================================================================
  *  Tests de lidar_core.js – lancer :  node test_lidar_core.js
  *  (les mêmes tests sont exécutables dans lidar_viewer.html, onglet Segments)
  * ========================================================================== */
@@ -1092,7 +2840,10 @@
   if (typeof module === 'object' && module.exports) {
     module.exports = factory();
     if (require.main === module) {
-      const res = module.exports.runTests(require('./lidar_core.js'));
+      let LL = null, LM = null;
+      try { LL = require('./lidar_loc.js'); } catch (e) { /* localisation absente */ }
+      try { LM = require('./lidar_maptools.js'); } catch (e) { /* traitement absent */ }
+      const res = module.exports.runTests(require('./lidar_core.js'), LL, LM);
       for (const r of res.results) console.log(`${r.ok ? '  OK ' : 'ÉCHEC'}  [${r.group}] ${r.name}${r.ok ? '' : '  -> ' + r.msg}`);
       console.log(`\n${res.passed}/${res.total} tests réussis`);
       process.exit(res.passed === res.total ? 0 : 1);
@@ -1101,7 +2852,7 @@
 })(typeof self !== 'undefined' ? self : this, function () {
   'use strict';
 
-  function runTests(LC) {
+  function runTests(LC, LL, LM) {
     const { seg, EPS } = LC;
     const results = []; let group = '';
     const near = (a, b, tol = 1e-9) => Math.abs(a - b) <= tol;
@@ -1492,6 +3243,204 @@
       return expect(left.length === 1 && left[0].nObs === 2 && st.merged.length >= 3, `${left.length} murs gauches, fusions ${st.merged.length}`);
     });
 
+    // ------------------------------------------------------------------ localisation (Jour 2)
+    if (LL) {
+      group = 'Localisation';
+      test('pose relative et composition : a ∘ (a⁻¹ ∘ b) = b', () => {
+        const a = { x: 1, y: 2, th: 30 }, b = { x: -0.5, y: 4, th: -100 }, c = LL.compose(a, LL.relPose(a, b));
+        return expect(near(c.x, b.x, 1e-9) && near(c.y, b.y, 1e-9) && near(c.th, b.th, 1e-9), JSON.stringify(c));
+      });
+      test('perturbation : distance et angle exacts, reproductible avec la même graine', () => {
+        const t = { x: 0, y: 0, th: 0 }, p1 = LL.perturb(t, 0.5, 20, LL.mulberry32(3)), p2 = LL.perturb(t, 0.5, 20, LL.mulberry32(3));
+        return expect(near(Math.hypot(p1.x, p1.y), 0.5, 1e-12) && near(Math.abs(p1.th), 20, 1e-12) && p1.x === p2.x && p1.th === p2.th, JSON.stringify(p1));
+      });
+      test('champ de distance : distance euclidienne exacte à une cellule occupée', () => {
+        const g = LC.createGrid({ xMin: 0, yMin: 0, xMax: 2, yMax: 2, res: 0.1 }); g.data[5 * g.W + 5] = 255;
+        const F = LL.distanceField(g);
+        return expect(near(F.dist[5 * g.W + 5], 0) && near(F.dist[8 * g.W + 9], 0.5, 1e-6) && near(F.dist[5 * g.W + 15], 1.0, 1e-6), F.dist[8 * g.W + 9]);
+      });
+      // scène simulée commune : carte construite avec 7 scans à poses exactes, un scan à localiser
+      const sim = (() => {
+        const sc = LL.classroomScene(3), rng = LL.mulberry32(5);
+        const mp = [{ x: 2, y: 1.5, th: 10 }, { x: 6.5, y: 1.5, th: 80 }, { x: 11, y: 1.2, th: -30 }, { x: 2, y: 5.5, th: 170 }, { x: 6.5, y: 5, th: -100 }, { x: 12, y: 6, th: 45 }, { x: 2.5, y: 8.5, th: 0 }];
+        const R = LL.buildReferences(mp.map(p => Object.assign(LL.simulateScan(sc.walls, p, { tours: 3 }, rng), { pose: p })), -1);
+        const truth = { x: 7.3, y: 3.2, th: 33 }, pts = LL.uniformSubsample(LL.localPoints(LL.simulateScan(sc.walls, truth, { tours: 1 }, rng)), { max: 350 });
+        const rp = { x: 7.7, y: 3.4, th: 18 }, all = LL.localPoints(LL.simulateScan(sc.walls, rp, { tours: 3 }, rng));
+        return { R, truth, pts, ref: { pts: LL.uniformSubsample(all, { cell: 0.03, minR: 0.3, max: 3000 }), ptsAll: all }, rel: LL.relPose(rp, truth) };
+      })();
+      const ok = (r, t, tp = 0.05, ta = 2) => { const e = LL.poseError(r, t); return expect(e.pos <= tp && e.ang <= ta, `${(e.pos * 100).toFixed(1)} cm, ${e.ang.toFixed(2)}°`); };
+      const near1 = LL.perturb(sim.truth, 0.2, 8, LL.mulberry32(1)), far1 = LL.perturb(sim.truth, 1.0, 40, LL.mulberry32(2));
+      test('grid map · recherche exhaustive (départ à 1 m / 40°)', () => ok(LL.gridBrute(sim.R.field, sim.pts, far1), sim.truth));
+      test('grid map · multi-résolution (départ à 1 m / 40°)', () => ok(LL.gridMultiRes(sim.R.field, sim.pts, far1), sim.truth));
+      test('grid map · descente de gradient (départ à 20 cm / 8°)', () => ok(LL.gridGradient(sim.R.field, sim.pts, near1), sim.truth));
+      test('carte vectorielle · recherche exhaustive (départ à 1 m / 40°)', () => ok(LL.vecBrute(sim.R.index, sim.pts, far1), sim.truth));
+      test('carte vectorielle · ICP point-segment (départ à 20 cm / 8°)', () => ok(LL.vecICP(sim.R.index, sim.pts, near1), sim.truth));
+      test('carte vectorielle · calcul direct (sans pose initiale)', () => ok(LL.vecDirect(sim.R.index, sim.pts, { x: 0, y: 0, th: 0 }), sim.truth));
+      const relNear = LL.perturb(sim.rel, 0.2, 8, LL.mulberry32(4)), relFar = LL.perturb(sim.rel, 1.0, 40, LL.mulberry32(6));
+      test('entre scans · ICP point-à-point (départ à 20 cm / 8°)', () => ok(LL.scanICPPoint(sim.ref, sim.pts, relNear), sim.rel));
+      test('entre scans · ICP point-à-ligne (départ à 20 cm / 8°)', () => ok(LL.scanICPLine(sim.ref, sim.pts, relNear), sim.rel));
+      test('entre scans · corrélation multi-résolution (départ à 1 m / 40°)', () => ok(LL.scanCorrelative(sim.ref, sim.pts, relFar), sim.rel));
+      test('méthode locale hors de son domaine : le gradient ne converge pas depuis 1 m / 40° (attendu)', () => {
+        const e = LL.poseError(LL.gridGradient(sim.R.field, sim.pts, far1), sim.truth); return expect(e.pos > 0.05 || e.ang > 2, 'a convergé quand même');
+      });
+      test('banc : mêmes poses initiales pour toutes les méthodes, un essai par cas et par niveau', () => {
+        // (exécution synchrone d'une mini configuration via la fonction résumé)
+        const rows = [{ ref: 'grid', method: 'a', label: 'A', level: 0, dp: 0, da: 0, epos: 0.01, eang: 0.1, ms: 1, ok: true, okCoarse: true },
+                      { ref: 'grid', method: 'a', label: 'A', level: 0, dp: 0, da: 0, epos: 0.3, eang: 9, ms: 3, ok: false, okCoarse: false }];
+        const S = LL.summarize(rows);
+        return expect(S.length === 1 && S[0].success === 0.5 && near(S[0].meanMs, 2), JSON.stringify(S[0]));
+      });
+    }
+
+
+    if (LM && LL) {
+      group = 'Traitement';
+      const S = LC.seg;
+      // scan synthétique : un point par degré sur un cercle de rayon r autour du lidar
+      const ring = (r, extra = []) => { const a = [], d = []; for (let k = 0; k < 360; k++) { a.push(k); d.push(r * 1000); } for (const [aa, dd] of extra) { a.push(aa); d.push(dd); } return { a, d }; };
+      test('prétraitement : portée, point isolé et point mixte retirés, le reste gardé', () => {
+        const sc = { a: [], d: [] };
+        for (let k = 0; k < 360; k++) { sc.a.push(k); sc.d.push(k >= 100 && k < 110 ? 1000 : 3000); }  // objet à 1 m devant un mur à 3 m
+        sc.a.push(200.4); sc.d.push(1500);                // point isolé (rien autour)
+        sc.a.push(0.5); sc.d.push(30);                    // trop proche : le robot lui-même
+        const i110 = sc.a.indexOf(110); sc.d[i110] = 2000; // point mixte entre l'objet (1 m) et le mur (3 m)
+        const r = LM.preprocessScan(sc, { x: 0, y: 0, th: 0 });
+        return expect(r.removed.range === 1 && r.removed.isolated === 1 && r.removed.mixed === 1 && r.kept === 360 - 1, JSON.stringify(r.removed) + ' gardés ' + r.kept);
+      });
+      test('segmentation en clusters : rupture de distance et trou angulaire', () => {
+        const pts = [];
+        for (let k = 0; k < 40; k++) pts.push({ x: 2, y: -1 + k * 0.025 });          // mur A
+        for (let k = 0; k < 20; k++) pts.push({ x: 1, y: 0.6 + k * 0.025 });         // objet plus proche : rupture de distance
+        for (let k = 0; k < 20; k++) pts.push({ x: 1 - k * 0.02, y: 1.5 });          // après un trou angulaire (points à 1,5 m)
+        const C = LM.clusterScan(pts, { x: 0, y: 0 }, { angGap: 4 });
+        return expect(C.length === 3 && C.map(c => c.length).sort((a, b) => a - b).join() === '20,20,40', C.map(c => c.length).join());
+      });
+      test('cercle : ajustement exact sur un quart d’arc, et sur des points bruités (±5 mm)', () => {
+        const P = [], Q = [], rng = LL.mulberry32(9);
+        for (let k = 0; k <= 30; k++) { const t = (200 + k * 3) * Math.PI / 180; P.push({ x: 1 + 0.3 * Math.cos(t), y: 2 + 0.3 * Math.sin(t) }); Q.push({ x: P[k].x + (rng() - 0.5) * 0.01, y: P[k].y + (rng() - 0.5) * 0.01 }); }
+        const a = LM.fitCircle(P), b = LM.fitCircle(Q);
+        return expect(Math.hypot(a.x - 1, a.y - 2) < 1e-6 && near(a.r, 0.3, 1e-6) && Math.hypot(b.x - 1, b.y - 2) < 0.02 && Math.abs(b.r - 0.3) < 0.02, JSON.stringify([a, b]));
+      });
+      test('Douglas-Peucker : une polyligne en L garde ses 3 sommets', () => {
+        const P = []; for (let k = 0; k <= 20; k++) P.push({ x: k * 0.05, y: 0 }); for (let k = 1; k <= 20; k++) P.push({ x: 1, y: k * 0.05 });
+        const v = LM.douglasPeucker(P, 0.02); return expect(v.join() === '0,20,40', v.join());
+      });
+      test('RANSAC : deux murs perpendiculaires retrouvés malgré 25 % de points aberrants', () => {
+        const P = [], rng = LL.mulberry32(4);
+        for (let k = 0; k < 60; k++) P.push({ x: k * 0.05, y: (rng() - 0.5) * 0.01 });
+        for (let k = 0; k < 60; k++) P.push({ x: 3 + (rng() - 0.5) * 0.01, y: 0.2 + k * 0.05 });
+        for (let k = 0; k < 40; k++) P.push({ x: rng() * 3, y: 0.3 + rng() * 2.5 });
+        const segs = LM.ransacLines(P, { tol: 0.03, minInliers: 15, rng: LL.mulberry32(1) }).filter(s => LC.segLen(s) > 1.5);
+        return expect(segs.length === 2 && Math.abs(LC.angleBetween(segs[0], segs[1]).lines - 90) < 1, segs.map(fmt).join(' '));
+      });
+      test('features : pied de chaise (petit) et poteau Ø 30 cm (cercle) reconnus, mur en segment', () => {
+        const walls = [S(-3, 2, 3, 2), S(0.98, 0.98, 1.02, 0.98), S(1.02, 0.98, 1.02, 1.02), S(1.02, 1.02, 0.98, 1.02), S(0.98, 1.02, 0.98, 0.98)];
+        const sc = LL.simulateScan(walls, { x: 0, y: 0, th: 0 }, { tours: 2, noise: 0.003, angNoise: 0, dropout: 0, step: 0.5 }, LL.mulberry32(2));
+        // poteau : on remplace par des points exacts sur un cercle centré (−1,5 ; 0,8), r = 0,15 (face visible)
+        const pts = LC.polarToGlobal(sc, { x: 0, y: 0, th: 0 });
+        const c0 = { x: -1.5, y: 0.8 }, bear = Math.atan2(c0.y, c0.x);
+        for (let k = -60; k <= 60; k += 3) { const t = bear + Math.PI + k * Math.PI / 180; pts.push({ x: c0.x + 0.15 * Math.cos(t), y: c0.y + 0.15 * Math.sin(t) }); }
+        pts.sort((p, q) => Math.atan2(p.y, p.x) - Math.atan2(q.y, q.x));
+        const F = LM.extractFeatures(pts, { x: 0, y: 0 });
+        const leg = F.circles.find(c => Math.hypot(c.x - 1, c.y - 1) < 0.05), post = F.circles.find(c => c.kind === 'cercle');
+        const wall = F.segments.find(s => LC.segLen(s) > 3);
+        return expect(leg && leg.kind === 'petit' && post && Math.hypot(post.x - c0.x, post.y - c0.y) < 0.01 && Math.abs(post.r - 0.15) < 0.01 && wall,
+          JSON.stringify({ leg, post, nseg: F.segments.length }));
+      });
+      test('obstacles circulaires : fusion des observations, puis absence (faisceaux qui traversent) -> mobile puis supprimé', () => {
+        const M = LM.createObstacleMap(), robot = { x: 0, y: 0 };
+        LM.updateObstacleMap(M, robot, [], [{ x: 1, y: 0, r: 0.05, kind: 'petit' }]);
+        LM.updateObstacleMap(M, robot, [], [{ x: 1.02, y: 0, r: 0.05, kind: 'petit' }]);
+        const it = M.items[0], ok1 = M.items.length === 1 && it.nObs === 2 && it.conf === 2 && near(it.x, 1.01, 1e-9);
+        const through = []; for (let k = -2; k <= 2; k++) through.push({ x: 3, y: k * 0.01 });   // le mur à 3 m est vu à travers
+        LM.updateObstacleMap(M, robot, through, []);
+        const ok2 = M.items.length === 1 && M.items[0].misses === 1 && M.items[0].conf === 1;
+        LM.updateObstacleMap(M, robot, through, []);
+        return expect(ok1 && ok2 && M.items.length === 0, JSON.stringify(M.items));
+      });
+      test('grid map enrichie : impacts, observations et horodatage par cellule', () => {
+        const g = LC.createGrid({ xMin: -1, yMin: -1, xMax: 3, yMax: 1, res: 0.1 }), L = LM.createLayers(g);
+        LM.updateGridLayered(g, L, { x: 0, y: 0 }, [{ x: 2.05, y: 0.05 }]);
+        LM.updateGridLayered(g, L, { x: 0, y: 0 }, [{ x: 2.55, y: 0.05 }]);       // 2e scan : la cellule à 2 m est traversée
+        const [i, j] = LC.worldToCell(g, 2.05, 0.05), k = j * g.W + i, [i2, j2] = LC.worldToCell(g, 2.55, 0.05), k2 = j2 * g.W + i2;
+        return expect(L.hits[k] === 1 && L.seen[k] === 2 && L.lastOcc[k] === 1 && L.last[k] === 2 && L.hits[k2] === 1 && L.seen[k2] === 1 && L.t === 2, [L.hits[k], L.seen[k], L.lastOcc[k], L.last[k]].join());
+      });
+      test('obstacle mobile : impact dans 1 scan sur 4 -> trace effacée ; pied vu 3 fois gardé', () => {
+        const g = LC.createGrid({ xMin: -1, yMin: -1, xMax: 3, yMax: 1, res: 0.1 }), L = LM.createLayers(g), R = { x: 0, y: 0 };
+        LM.updateGridLayered(g, L, R, [{ x: 1.05, y: 0.05 }, { x: 0.05, y: 0.55 }]);
+        for (let n = 0; n < 3; n++) LM.updateGridLayered(g, L, R, [{ x: 2.05, y: 0.05 }, { x: 0.05, y: 0.55 }]);
+        const [i, j] = LC.worldToCell(g, 1.05, 0.05), [a, b] = LC.worldToCell(g, 0.05, 0.55), r = LM.removeMobile(g, L);
+        return expect(r.mobile[j * g.W + i] === 1 && g.data[j * g.W + i] <= LC.FREE_T && r.mobile[b * g.W + a] === 0 && g.data[b * g.W + a] >= LC.OCC_T, JSON.stringify(r.removed));
+      });
+      test('taches isolées : bruit vu une fois retiré, petit obstacle vu 3 fois gardé', () => {
+        const g = LC.createGrid({ xMin: 0, yMin: 0, xMax: 1, yMax: 1, res: 0.1 }), L = LM.createLayers(g);
+        g.data[2 * g.W + 2] = 200; L.hits[2 * g.W + 2] = 1; g.data[7 * g.W + 7] = 230; L.hits[7 * g.W + 7] = 3;
+        const r = LM.removeSpeckles(g, L);
+        return expect(g.data[2 * g.W + 2] === LC.UNKNOWN && g.data[7 * g.W + 7] === 230 && r.keptInterest === 1, JSON.stringify(r));
+      });
+      test('lissage majoritaire : trou inconnu au milieu du libre comblé, mur d’une cellule préservé', () => {
+        const g = LC.createGrid({ xMin: 0, yMin: 0, xMax: 1, yMax: 1, res: 0.1, init: 0 });
+        for (let i = 0; i < 10; i++) g.data[5 * g.W + i] = 255;        // mur horizontal d'une cellule
+        g.data[2 * g.W + 2] = LC.UNKNOWN;
+        LM.smoothGrid(g); let wall = true; for (let i = 0; i < 10; i++) wall = wall && g.data[5 * g.W + i] === 255;
+        return expect(g.data[2 * g.W + 2] <= LC.FREE_T && wall, g.data[2 * g.W + 2]);
+      });
+      test('fermeture : trou d’une cellule dans un mur bouché, passage franchement libre respecté', () => {
+        const g = LC.createGrid({ xMin: 0, yMin: 0, xMax: 2, yMax: 1, res: 0.1, init: LC.UNKNOWN });
+        for (let i = 0; i < 20; i++) g.data[5 * g.W + i] = 255;
+        g.data[5 * g.W + 6] = 120;                                     // trou d'une cellule, état incertain
+        g.data[5 * g.W + 14] = 10;                                     // cellule traversée plusieurs fois (porte ouverte)
+        const r = LM.closeGaps(g);
+        return expect(g.data[5 * g.W + 6] >= LC.OCC_T && g.data[5 * g.W + 14] === 10, JSON.stringify(r));
+      });
+      test('obstacles de la grille : composantes et classes (petit, objet, structure)', () => {
+        const g = LC.createGrid({ xMin: 0, yMin: 0, xMax: 4, yMax: 2, res: 0.05, init: 0 });
+        g.data[5 * g.W + 5] = g.data[5 * g.W + 6] = 255;                          // 10 cm : petit
+        for (let i = 20; i < 30; i++) g.data[10 * g.W + i] = 255;                 // 50 cm : objet
+        for (let i = 35; i < 75; i++) g.data[30 * g.W + i] = 255;                 // 2 m : structure
+        const { obstacles: O } = LM.gridObstacles(g, null), cls = O.map(o => o.cls).sort().join();
+        const big = O.find(o => o.cls === 'structure');
+        return expect(O.length === 3 && cls === 'objet,petit,structure' && Math.abs(big.len - 2) < 0.06 && Math.abs(big.angle) < 1e-6, cls + ' ' + (big && big.len));
+      });
+      test('régularisation : murs redressés exactement parallèles / perpendiculaires, coins raccordés exactement', () => {
+        const rot = (s, d) => { const mx = (s.x1 + s.x2) / 2, my = (s.y1 + s.y2) / 2, c = Math.cos(d * Math.PI / 180), n = Math.sin(d * Math.PI / 180);
+          const r = (x, y) => [mx + c * (x - mx) - n * (y - my), my + n * (x - mx) + c * (y - my)]; const [a, b] = r(s.x1, s.y1), [e, f] = r(s.x2, s.y2); return S(a, b, e, f); };
+        const room = [rot(S(0.1, 0, 3.9, 0), 2), rot(S(4, 0.1, 4, 2.9), -3), rot(S(3.9, 3, 0.1, 3), 1.5), rot(S(0, 2.9, 0, 0.1), -2)];
+        const map = { features: room.map((s, k) => Object.assign(s, { id: k + 1, conf: 3, nObs: 3, firstSeen: 1, lastSeen: 1 })), corners: [], scans: 1, nextId: 5 };
+        const { map: M, report } = LM.regularizeVectorMap(map);
+        // les axes sont la direction dominante mesurée (pas forcément 0°) : tous les murs y sont exactement parallèles ou perpendiculaires
+        const angOk = M.features.every(f => { const a = (((LC.segAngle(f) * 180 / Math.PI - report.theta0) % 90) + 90) % 90; return Math.min(a, 90 - a) < 1e-6; });
+        const ends = M.features.flatMap(f => [[f.x1, f.y1], [f.x2, f.y2]]);
+        const joined = ends.every(([x, y]) => ends.filter(([u, v]) => Math.hypot(u - x, v - y) < 1e-9).length === 2);
+        return expect(M.features.length === 4 && angOk && joined && M.corners.length === 4, JSON.stringify(report));
+      });
+      test('alignement : deux morceaux d’un même mur décalés de 3 cm ramenés sur une droite', () => {
+        const r = LM.alignCollinear([Object.assign(S(0, 0, 2, 0), { conf: 1 }), Object.assign(S(2.5, 0.03, 4, 0.03), { conf: 1 })]);
+        const [a, b] = r.segments; return expect(near(a.y1, b.y1, 1e-12) && a.y1 > 0 && a.y1 < 0.03, JSON.stringify(r.segments.map(fmt)));
+      });
+      test('collision : dépassement de 5 cm d’un mur à travers un autre rogné', () => {
+        const r = LM.trimCollisions([S(0, -0.05, 0, 2), S(-1, 0, 1, 0)]);
+        return expect(r.trimmed === 1 && sameSeg(r.segments[0], 0, 0, 0, 2, 1e-12), fmt(r.segments[0]));
+      });
+      test('carte de coût et trajet A* : contourne un mur, garde ses distances, refuse une arrivée dans l’obstacle', () => {
+        const g = LC.createGrid({ xMin: 0, yMin: 0, xMax: 4, yMax: 3, res: 0.05, init: 0 });
+        for (let j = 0; j < 45; j++) g.data[j * g.W + 40] = 255;                  // mur x = 2 m, de y = 0 à 2,25 m
+        const cm = LM.costmap(g, { robotRadius: 0.15, inflation: 0.3 });
+        const k = (x, y) => { const [i, j] = LC.worldToCell(g, x, y); return cm.cost[j * g.W + i]; };
+        const costOk = k(2.02, 1) === 254 && k(2.14, 1) === 253 && k(3.5, 1) === 0 && k(2.3, 1) > 0 && k(2.3, 1) < 253;
+        const r = LM.planPath(cm, { x: 1, y: 0.5 }, { x: 3, y: 0.5 });
+        let clear = r.ok; if (r.ok) for (const c of r.raw) clear = clear && cm.cost[c.j * g.W + c.i] < 253;
+        const bad = LM.planPath(cm, { x: 1, y: 0.5 }, { x: 2.02, y: 1 });
+        return expect(costOk && clear && r.length > 3.5 && Math.max(...r.path.map(p => p.y)) > 2.25 + 0.15 && !bad.ok, JSON.stringify({ costOk, len: r.length, bad: bad.reason }));
+      });
+      test('qualité : scans simulés à poses exactes -> plus de 90 % des points sur un obstacle', () => {
+        const sc = LL.classroomScene(3, { legs: 0 }), rng = LL.mulberry32(8), poses = [{ x: 2, y: 2, th: 0 }, { x: 6, y: 5, th: 90 }, { x: 11, y: 6, th: 200 }];
+        const data = poses.map(p => ({ robot: p, pts: LM.preprocessScan(LL.simulateScan(sc.walls, p, { tours: 2 }, rng), p).pts }));
+        const { grid, layers } = LM.buildLayeredGrid(data), q = LM.mapQuality(grid, data, layers);
+        return expect(q.pointsOnObstacle > 0.9 && q.meanDist < 0.03, JSON.stringify(q));
+      });
+    }
+
     const passed = results.filter(r => r.ok).length;
     return { results, passed, total: results.length };
   }
@@ -1830,7 +3779,8 @@ function render(){
   ctx.fillStyle = '#0f1216'; ctx.fillRect(0, 0, W, H);
   if (S.opt.grid) drawGrid();
   if (typeof drawGridMap === 'function') drawGridMap();
-  const hidePts = (TAB === 'grid' && GRID.g && $('gShow').checked && !$('gPts').checked) || (TAB === 'seg' && $('sHidePts').checked) || (TAB === 'vec' && $('vHidePts').checked);
+  if (typeof drawProcUnder === 'function' && TAB === 'proc') drawProcUnder();
+  const hidePts = (TAB === 'proc' && typeof PROC !== 'undefined' && PROC.res && !$('pShowPts').checked) || (TAB === 'grid' && GRID.g && $('gShow').checked && !$('gPts').checked) || (TAB === 'seg' && $('sHidePts').checked) || (TAB === 'vec' && $('vHidePts').checked);
   const order = S.scans.map((s, k) => k).filter(k => k !== S.sel);
   if (S.sel >= 0) order.push(S.sel);
   const r = S.opt.ptSize;
@@ -1840,6 +3790,7 @@ function render(){
     let alpha = (S.opt.dim && S.sel >= 0 && k !== S.sel) ? 0.55 : 1;
     if (SER.live && SER.liveScan) alpha *= 0.35;           // l'aperçu direct passe au premier plan
     if ((TAB === 'seg' && SEG.list.length) || (TAB === 'vec' && VEC.map.features.length)) alpha *= 0.45;   // les segments passent au premier plan
+    if (autoBusy && !s.locked) alpha *= 0.12;              // superposition auto : les scans pas encore placés s'effacent
     ctx.globalAlpha = alpha;
     if (!hidePts) drawCloud(s, c, sn, s.pose.x, s.pose.y, s.color, r, S.opt.fill ? 0.07 : 0);
     ctx.globalAlpha = 1;
@@ -1848,6 +3799,7 @@ function render(){
   const ss = selScan(); if (TAB === 'scans' && ss && ss.visible && !ss.locked) drawRotHandle(ss);
   if (typeof drawSegments === 'function' && TAB === 'seg') drawSegments();
   if (typeof drawVectorMap === 'function') drawVectorMap();
+  if (typeof drawProcOver === 'function' && TAB === 'proc') drawProcOver();
   if (SER.live && SER.liveScan) drawLive(SER.liveScan, r);
   // axes de la carte
   const [ox, oy] = w2s(0, 0);
@@ -2028,6 +3980,10 @@ cv.addEventListener('contextmenu', e => e.preventDefault());
 cv.addEventListener('pointerdown', e => {
   const r = cv.getBoundingClientRect(), mx = e.clientX - r.left, my = e.clientY - r.top;
   cv.setPointerCapture(e.pointerId);
+  if (TAB === 'proc'){
+    if (procPointerDown(e, mx, my)) return;
+    drag = { mode: 'pan', m0: [mx, my], v0: { ...S.view } }; cv.style.cursor = 'grabbing'; return;
+  }
   if (TAB === 'vec'){
     if (vecPointerDown(e, mx, my)) return;
     drag = { mode: 'pan', m0: [mx, my], v0: { ...S.view } }; cv.style.cursor = 'grabbing'; return;
@@ -2062,7 +4018,7 @@ cv.addEventListener('pointerdown', e => {
 cv.addEventListener('pointermove', e => {
   const r = cv.getBoundingClientRect(), mx = e.clientX - r.left, my = e.clientY - r.top;
   const [wx, wy] = s2w(mx, my);
-  $('hud').textContent = `x ${wx.toFixed(3)} m   y ${wy.toFixed(3)} m   ·   ${(100/S.view.s*100).toFixed(1)} cm / 100 px` + (TAB === 'grid' ? gridHud(wx, wy) : '');
+  $('hud').textContent = `x ${wx.toFixed(3)} m   y ${wy.toFixed(3)} m   ·   ${(100/S.view.s*100).toFixed(1)} cm / 100 px` + (TAB === 'grid' ? gridHud(wx, wy) : TAB === 'proc' ? procHud(wx, wy) : '');
   if (TAB === 'seg' && segPointerMove(mx, my)) return;
   if (!drag){ cv.style.cursor = TAB === 'scans' && onRotHandle(mx, my) ? 'grab' : TAB === 'seg' && SEG.tool === 'select' && segHit(mx, my) >= 0 ? 'pointer' : 'crosshair'; return; }
   if (drag.mode === 'pan'){
@@ -2174,9 +4130,24 @@ function buildRef(refScans){
   return { TX, TY, NX, NY, OK, nearest };
 }
 // ICP point-à-ligne : pose = {x, y, th (rad)} -> pose affinée
+// Points utilisés pour le recalage : répartis uniformément dans l'espace (1 par case de 8 cm) et à plus de
+// 40 cm du lidar. Sans cela, les obstacles très proches (pieds de table, meuble contre le robot), mesurés
+// tous les 0,8°, comptent jusqu'à 30 fois plus de points par mètre que les murs et faussent le recalage.
+function matchPts(s){
+  if (s._mp && s._mp.src === s.lx) return s._mp;
+  const seen = new Set(), X = [], Y = [], cell = 0.08;
+  for (let k = 0; k < s.lx.length; k++){
+    if (Math.hypot(s.lx[k], s.ly[k]) < 0.4) continue;
+    const key = Math.floor(s.lx[k] / cell) * 100003 + Math.floor(s.ly[k] / cell);
+    if (seen.has(key)) continue;
+    seen.add(key); X.push(s.lx[k]); Y.push(s.ly[k]);
+  }
+  if (X.length < 30){ X.length = 0; Y.length = 0; for (let k = 0; k < s.lx.length; k++){ X.push(s.lx[k]); Y.push(s.ly[k]); } }
+  return (s._mp = { src: s.lx, X: Float32Array.from(X), Y: Float32Array.from(Y) });
+}
 function icpCore(ref, s, pose, maxD0 = 0.6){
-  const stepS = Math.max(1, Math.ceil(s.lx.length / 1200)), SX = [], SY = [];
-  for (let k = 0; k < s.lx.length; k += stepS){ SX.push(s.lx[k]); SY.push(s.ly[k]); }
+  const M = matchPts(s), stepS = Math.max(1, Math.ceil(M.X.length / 1200)), SX = [], SY = [];
+  for (let k = 0; k < M.X.length; k += stepS){ SX.push(M.X[k]); SY.push(M.Y[k]); }
   let { x, y, th } = pose, maxD = maxD0, err = 0, used = 0;
   for (let it = 0; it < 80; it++){
     const c = Math.cos(th), sn = Math.sin(th), P = [];
@@ -2243,25 +4214,32 @@ function buildLik(refScans, cell, sigma, margin){
   return { g, W, H, x0, y0, cell, bx0: x0 + margin, by0: y0 + margin, bx1: x1 - margin, by1: y1 - margin };
 }
 function likScore(L, s, pose, nmax){
-  const step = Math.max(1, Math.floor(s.lx.length / nmax)), c = Math.cos(pose.th), sn = Math.sin(pose.th);
+  const M = matchPts(s), step = Math.max(1, Math.floor(M.X.length / nmax)), c = Math.cos(pose.th), sn = Math.sin(pose.th);
   let sum = 0, n = 0;
-  for (let k = 0; k < s.lx.length; k += step){
-    const X = Math.round((pose.x + c*s.lx[k] - sn*s.ly[k] - L.x0) / L.cell), Y = Math.round((pose.y + sn*s.lx[k] + c*s.ly[k] - L.y0) / L.cell);
+  for (let k = 0; k < M.X.length; k += step){
+    const X = Math.round((pose.x + c*M.X[k] - sn*M.Y[k] - L.x0) / L.cell), Y = Math.round((pose.y + sn*M.X[k] + c*M.Y[k] - L.y0) / L.cell);
     n++; if (X >= 0 && Y >= 0 && X < L.W && Y < L.H) sum += L.g[Y * L.W + X];
   }
   return n ? sum / n : 0;
 }
 // Recherche globale de la pose d'un scan sur les références (sans tenir compte de sa pose actuelle)
-async function globalMatch(s, refScans, onProgress){
+// near (optionnel) : { x, y, th (°) } -> recherche limitée à ±1,5 m et ±35° autour de cette pose
+async function globalMatch(s, refScans, onProgress, near){
   const coarse = buildLik(refScans, 0.1, 0.2, 1.0), fine = buildLik(refScans, 0.04, 0.05, 0.5), ref = buildRef(refScans);
-  // points échantillonnés, de préférence répartis (en évitant les zones trop denses)
-  const step = Math.max(1, Math.floor(s.lx.length / 160)), LX = [], LY = [];
-  for (let k = 0; k < s.lx.length; k += step){ LX.push(s.lx[k]); LY.push(s.ly[k]); }
+  // points répartis uniformément dans l'espace (voir matchPts)
+  const Mp = matchPts(s), step = Math.max(1, Math.floor(Mp.X.length / 200)), LX = [], LY = [];
+  for (let k = 0; k < Mp.X.length; k += step){ LX.push(Mp.X[k]); LY.push(Mp.Y[k]); }
   const n = LX.length, C = coarse, tStep = 2;                          // translation : 2 cellules = 20 cm
-  const tx0 = Math.floor((C.bx0 - 0.5 - C.x0) / C.cell), tx1 = Math.ceil((C.bx1 + 0.5 - C.x0) / C.cell);
-  const ty0 = Math.floor((C.by0 - 0.5 - C.y0) / C.cell), ty1 = Math.ceil((C.by1 + 0.5 - C.y0) / C.cell);
+  let tx0 = Math.floor((C.bx0 - 0.5 - C.x0) / C.cell), tx1 = Math.ceil((C.bx1 + 0.5 - C.x0) / C.cell);
+  let ty0 = Math.floor((C.by0 - 0.5 - C.y0) / C.cell), ty1 = Math.ceil((C.by1 + 0.5 - C.y0) / C.cell);
+  let a0 = 0, a1 = 357;
+  if (near){
+    tx0 = Math.floor((near.x - 1.5 - C.x0) / C.cell); tx1 = Math.ceil((near.x + 1.5 - C.x0) / C.cell);
+    ty0 = Math.floor((near.y - 1.5 - C.y0) / C.cell); ty1 = Math.ceil((near.y + 1.5 - C.y0) / C.cell);
+    a0 = Math.round(near.th) - 36; a1 = Math.round(near.th) + 36;
+  }
   const cands = [], PX = new Int32Array(n), PY = new Int32Array(n);
-  for (let a = 0; a < 360; a += 3){
+  for (let a = a0; a <= a1; a += 3){
     const th = a * D2R, c = Math.cos(th), sn = Math.sin(th);
     for (let k = 0; k < n; k++){ PX[k] = Math.round((c*LX[k] - sn*LY[k]) / C.cell); PY[k] = Math.round((sn*LX[k] + c*LY[k]) / C.cell); }
     const best = [];                                                   // 3 meilleures translations pour cet angle
@@ -2277,30 +4255,72 @@ async function globalMatch(s, refScans, onProgress){
       }
     }
     cands.push(...best);
-    if (a % 30 === 0){ onProgress && onProgress(a / 360 * 0.7); await sleep(0); }
+    if (a % 30 === 0){ onProgress && onProgress((a - a0) / (a1 - a0 + 3) * 0.7); await sleep(0); }
   }
   cands.sort((p, q) => q.sc - p.sc);
   // garder des candidats différents (plus de 0,5 m ou 8° d'écart)
   const keep = [];
   for (const c of cands){
     if (keep.some(k => Math.hypot(k.x - c.x, k.y - c.y) < 0.5 && Math.abs(normDeg((k.th - c.th) / D2R)) < 8)) continue;
-    keep.push(c); if (keep.length >= 8) break;
+    keep.push(c); if (keep.length >= AUTO_CFG.keep) break;
   }
+  // murs des références (segments longs, partie 4) : sert à vérifier qu'on ne « voit pas à travers les murs »
+  const G = buildRefWalls(refScans);
   const refined = [];
   for (let i = 0; i < keep.length; i++){
     const r = icpCore(ref, s, keep[i], 0.5);
-    refined.push({ ...r, sc: likScore(fine, s, r, 800) });
+    const fit = likScore(fine, s, r, 800), see = seeThrough(G, s, r);
+    // score final = points qui retombent sur la carte − faisceaux qui traversent un mur connu
+    refined.push({ ...r, fit, see, sc: Math.max(0, fit - AUTO_CFG.seeW * see) });
     onProgress && onProgress(0.7 + 0.3 * (i + 1) / keep.length); await sleep(0);
   }
   refined.sort((p, q) => q.sc - p.sc);
+  if (AUTO_CFG.debug) AUTO_CFG.last = refined.map(r => ({ x: +r.x.toFixed(2), y: +r.y.toFixed(2), th: +(r.th / D2R).toFixed(1), fit: +r.fit.toFixed(2), see: +r.see.toFixed(2), sc: +r.sc.toFixed(2) }));
   const bestR = refined[0];
   // meilleure solution nettement différente (> 1 m ou > 20°) : sert à détecter les ambiguïtés (pièce symétrique…)
   const alt = refined.find(r => Math.hypot(r.x - bestR.x, r.y - bestR.y) > 1 || Math.abs(normDeg((r.th - bestR.th) / D2R)) > 20);
   bestR.sc2 = alt ? alt.sc : 0;
-  bestR.ambiguous = bestR.sc2 >= 0.9 * bestR.sc;
+  bestR.ambiguous = bestR.sc2 >= 0.8 * bestR.sc;
   return bestR;   // sc ~ proportion des points qui retombent sur la carte (0..1)
 }
 
+// Murs des scans de référence : segments d'au moins 1 m extraits (partie 4). Les pieds de chaises et petits
+// objets, vus différemment d'un point de vue à l'autre, ne produisent pas de segments longs : ils ne comptent pas.
+function buildRefWalls(refScans){
+  const walls = [];
+  for (const o of refScans){
+    const [X, Y] = toWorldPts(o), pts = [];
+    for (let k = 0; k < X.length; k++) pts.push({ x: X[k], y: Y[k] });
+    for (const g of LC.extractSegments(pts, { x: o.pose.x, y: o.pose.y }, { minLen: 1.0, minPts: 10 })){
+      g.bx0 = Math.min(g.x1, g.x2); g.bx1 = Math.max(g.x1, g.x2); g.by0 = Math.min(g.y1, g.y2); g.by1 = Math.max(g.y1, g.y2);
+      walls.push(g);
+    }
+  }
+  return walls;
+}
+// Proportion des faisceaux du scan (à cette pose) qui traversent un mur connu plus de 25 cm avant leur impact.
+// Une pose fausse « voit à travers les murs ».
+function seeThrough(walls, s, pose){
+  if (!walls.length) return 0;
+  const M = matchPts(s), step = Math.max(1, Math.floor(M.X.length / 250)), c = Math.cos(pose.th), sn = Math.sin(pose.th);
+  let n = 0, bad = 0;
+  for (let k = 0; k < M.X.length; k += step){
+    const L = Math.hypot(M.X[k], M.Y[k]); if (L < 0.6) continue;
+    const f = (L - 0.25) / L;
+    const ex = pose.x + (c * M.X[k] - sn * M.Y[k]) * f, ey = pose.y + (sn * M.X[k] + c * M.Y[k]) * f;
+    const ray = LC.seg(pose.x, pose.y, ex, ey);
+    const rx0 = Math.min(pose.x, ex), rx1 = Math.max(pose.x, ex), ry0 = Math.min(pose.y, ey), ry1 = Math.max(pose.y, ey);
+    let hit = false;
+    for (const w of walls){
+      if (w.bx1 < rx0 || w.bx0 > rx1 || w.by1 < ry0 || w.by0 > ry1) continue;
+      if (LC.intersect(ray, w).type === 'point'){ hit = true; break; }
+    }
+    n++; if (hit) bad++;
+  }
+  return n ? bad / n : 0;
+}
+
+const AUTO_CFG = { seeW: 0.3, keep: 24 };   // poids de la pénalité « voir à travers les murs »
 let autoBusy = false;
 async function autoPlaceSelected(){
   const s = selScan(); if (!canMove(s) || autoBusy) return;
@@ -2308,63 +4328,89 @@ async function autoPlaceSelected(){
   if (!refs.length) return toast('Il faut au moins un autre scan visible comme référence (de préférence verrouillé 🔒)');
   autoBusy = true; setAutoUI(true);
   try {
-    const r = await globalMatch(s, refs, f => setAutoStatus(`Recherche de « ${s.name} »… ${Math.round(f*100)} %`));
+    // déplacé à la main (pose ≠ 0) : recherche autour de sa position actuelle ; sinon : recherche globale
+    const local = Math.hypot(s.pose.x, s.pose.y) > 1e-6 || Math.abs(s.pose.th) > 1e-6;
+    const r = await globalMatch(s, refs, f => setAutoStatus(`Recherche ${local ? 'autour de la position actuelle' : 'globale'} de « ${s.name} »… ${Math.round(f*100)} %`, f),
+                                local ? { ...s.pose } : null);
     pushUndo(s);
     s.pose = { x: r.x, y: r.y, th: normDeg(r.th / D2R) }; updateInputs(s); draw();
-    toast(`« ${s.name} » placé : ${Math.round(r.sc * 100)} % des points retombent sur la carte` +
+    toast(`« ${s.name} » placé${local ? ' (recherche autour de sa position)' : ''} : score ${Math.round(r.sc * 100)} %` +
           (r.ambiguous ? `. ⚠ Ambigu : une autre pose obtient ${Math.round(r.sc2 * 100)} %, vérifie visuellement (Ctrl+Z pour annuler).` :
            r.sc < 0.35 ? '. Recouvrement faible : vérifie visuellement (Ctrl+Z pour annuler).' : ' (Ctrl+Z pour annuler)'));
   } finally { autoBusy = false; setAutoUI(false); }
 }
+let autoCancel = false;
 async function autoPlaceAll(){
   if (autoBusy) return;
   const vis = S.scans.filter(s => s.visible);
   if (vis.length < 2) return toast('Il faut au moins 2 scans visibles');
+  if (!vis.some(s => !s.locked)) return toast('Tous les scans visibles sont verrouillés 🔒 : déverrouille ceux à placer (seule la référence doit rester verrouillée).');
   if (!vis.some(s => s.locked)){
     const r = selScan() && selScan().visible ? selScan() : vis.reduce((a, b) => b.lx.length > a.lx.length ? b : a);
     r.locked = true; renderList();
     toast(`« ${r.name} » verrouillé comme référence`);
   }
-  autoBusy = true; setAutoUI(true);
+  autoBusy = true; autoCancel = false; setAutoUI(true);
   S.undo.push({ multi: S.scans.map(s => ({ id: s.id, pose: { ...s.pose }, locked: s.locked })) });
   const thr = +$('autoThr').value / 100;
-  let todo = vis.filter(s => !s.locked), placed = [], round = 0;
+  let todo = vis.filter(s => !s.locked), placed = [], round = 0, best0 = null, ambiguous = [];
+  const total = todo.length;
+  const place = (s, r, flag = '') => {
+    s.pose = { x: r.x, y: r.y, th: normDeg(r.th / D2R) }; s.locked = true; updateInputs(s);
+    placed.push(`${s.name} ${Math.round(r.sc * 100)} %${flag}`);
+    renderList(); fitView();                                // la carte se construit sous les yeux
+  };
   try {
-    while (todo.length){
+    while (todo.length && !autoCancel){
       round++;
-      const refs = S.scans.filter(o => o.visible && o.locked), res = [];
-      for (let i = 0; i < todo.length; i++){
-        const s = todo[i];
-        const r = await globalMatch(s, refs, f => setAutoStatus(`Passe ${round} · ${s.name} (${i+1}/${todo.length}) · ${Math.round(f*100)} %`));
-        res.push([s, r]);
+      const deferred = []; let placedNow = 0;
+      for (let i = 0; i < todo.length && !autoCancel; i++){
+        const s = todo[i], refs = S.scans.filter(o => o.visible && o.locked);   // inclut ceux placés pendant cette passe
+        const r = await globalMatch(s, refs, f => setAutoStatus(
+          `Passe ${round} · « ${s.name} » (${i + 1}/${todo.length}) · ${Math.round(f * 100)} %`, (placed.length + f * 0.9) / total, `${placed.length}/${total} placés`));
+        if (!best0 || r.sc > best0.sc) best0 = { name: s.name, sc: r.sc };
+        // un scan sans ambiguïté (meilleure pose au moins 2 fois meilleure que toute pose nettement différente)
+        // est placé tout de suite et sert aussitôt de référence aux suivants
+        if (r.sc >= Math.max(thr, 0.3) && r.sc2 <= 0.5 * r.sc){ place(s, r); placedNow++; }
+        else deferred.push([s, r]);
       }
-      res.sort((a, b) => b[1].sc - a[1].sc);
-      // les scans ambigus (deux poses très différentes presque aussi bonnes) attendent que la carte se complète
-      let ok = res.filter(([, r]) => r.sc >= thr && !r.ambiguous), flag = '';
-      if (!ok.length){
-        ok = res.filter(([, r]) => r.sc >= thr).slice(0, 1);       // en dernier recours : le meilleur, signalé
-        flag = ' ⚠ ambigu';
-      }
-      if (!ok.length) break;
-      // on place le meilleur, puis les autres seulement s'ils sont très sûrs ; ils servent de référence à la passe suivante
-      ok.forEach(([s, r], k) => {
-        if (k > 0 && r.sc < Math.max(thr, 0.8)) return;            // les moins sûrs attendent une carte plus complète
-        s.pose = { x: r.x, y: r.y, th: normDeg(r.th / D2R) }; s.locked = true; updateInputs(s);
-        placed.push(`${s.name} ${Math.round(r.sc*100)} %${flag}`);
-      });
+      if (autoCancel) break;
       todo = todo.filter(s => !s.locked);
-      renderList(); draw();
+      if (placedNow) continue;                              // la carte a grandi : on réévalue les autres
+      // sinon : on place celui dont la meilleure pose se détache le plus de la suivante (marge sc − sc2),
+      // les ambigus en dernier recours (signalés)
+      deferred.sort((a, b) => (b[1].sc - b[1].sc2) - (a[1].sc - a[1].sc2));
+      // un scan ambigu n'est pas placé : une pose fausse gâcherait la carte (et les scans placés ensuite)
+      const ok = deferred.filter(([, r]) => r.sc >= thr && !r.ambiguous);
+      if (!ok.length){ ambiguous = deferred.filter(([, r]) => r.sc >= thr && r.ambiguous).map(([s]) => s.name); break; }
+      place(ok[0][0], ok[0][1]);
+      todo = todo.filter(s => !s.locked);
     }
   } finally { autoBusy = false; setAutoUI(false); }
   renderList(); fitView();
   const left = todo.map(s => s.name);
-  $('autoReport').innerHTML = `<b>${placed.length} scan(s) placé(s)</b> et verrouillé(s) : ${placed.join(', ') || '—'}.` +
-    (left.length ? `<br><b>Non placés</b> (recouvrement < ${Math.round(thr*100)} %) : ${left.join(', ')}. Place-les à la main près de leur position, puis <i>Affiner (ICP)</i>.` : '') +
+  $('autoReport').innerHTML = (autoCancel ? '<b>Arrêtée.</b> ' : '') +
+    `<b>${placed.length} scan(s) placé(s)</b> et verrouillé(s) : ${placed.join(', ') || '—'}.` +
+    (left.length ? `<br><b>Non placés</b> : ${left.join(', ')}.` +
+      (ambiguous.length ? ` <b>⚠ Ambigus</b> (plusieurs poses très différentes conviennent presque aussi bien) : ${ambiguous.join(', ')}.` : '') +
+      (left.length > ambiguous.length ? ` Recouvrement insuffisant (< ${Math.round(thr * 100)} %) pour les autres.` : '') +
+      `<br>Pour chacun : le glisser à peu près à sa place (et l’orienter), puis <i>Affiner (ICP)</i> ; ou le déposer près de sa place et cliquer sur <i>Placer automatiquement</i>.` : '') +
     '<br>Ctrl+Z annule toute la superposition.';
-  toast(`Superposition terminée : ${placed.length} placé(s), ${left.length} restant(s)`);
+  toast(placed.length ? `Superposition ${autoCancel ? 'arrêtée' : 'terminée'} : ${placed.length} placé(s), ${left.length} restant(s)`
+                      : `Aucun scan placé : meilleur score ${best0 ? Math.round(best0.sc * 100) : 0} % < seuil ${Math.round(thr * 100)} %. Voir le compte rendu.`);
 }
-function setAutoUI(on){ ['autoAll', 'autoOne', 'icp'].forEach(id => $(id).disabled = on); if (!on) setAutoStatus(''); }
-function setAutoStatus(t){ $('autoStatus').textContent = t; }
+function setAutoUI(on){
+  ['autoAll', 'autoOne', 'icp'].forEach(id => $(id).disabled = on);
+  $('autoOverlay').style.display = on ? 'flex' : 'none';
+  if (!on) setAutoStatus('');
+}
+// progression affichée dans le panneau ET sur la carte (barre + bouton Arrêter)
+function setAutoStatus(t, frac, sub){
+  $('autoStatus').textContent = t;
+  $('aoText').textContent = t || 'Superposition automatique…';
+  if (frac !== undefined) $('aoBar').style.width = Math.round(Math.max(0, Math.min(1, frac)) * 100) + '%';
+  $('aoSub').textContent = sub || '';
+}
 
 function solve3(A, b){
   const M = A.map((r, i) => [...r, b[i]]);
@@ -2910,6 +4956,7 @@ $('demo').onclick = makeDemo;
 $('fit').onclick = fitView;
 $('icp').onclick = runICP;
 $('autoAll').onclick = autoPlaceAll;
+$('aoStop').onclick = () => { autoCancel = true; setAutoStatus('Arrêt après le scan en cours…'); };
 $('autoOne').onclick = autoPlaceSelected;
 $('autoThr').oninput = e => $('autoThrV').textContent = e.target.value + ' %';
 $('undo').onclick = undo;
@@ -3025,7 +5072,7 @@ function gridImage(){
   GRID.img = c; GRID.dirty = false; return c;
 }
 function drawGridMap(){
-  if (!GRID.g || !$('gShow').checked) return;
+  if (!GRID.g || !$('gShow').checked || TAB === 'proc') return;
   const g = GRID.g, [sx, sy] = w2s(g.x0, g.y0 + g.H * g.res);
   ctx.save(); ctx.imageSmoothingEnabled = false; ctx.globalAlpha = numVal('gAlpha');
   ctx.drawImage(gridImage(), sx, sy, g.W * g.res * S.view.s, g.H * g.res * S.view.s);
@@ -3283,7 +5330,7 @@ $('sFile').onchange = async e => {
 ['sAng', 'sLat', 'sGap'].forEach(id => $(id).addEventListener('input', segRefresh));
 $('sColor').onchange = draw; $('sHidePts').onchange = draw;
 $('sTests').onclick = () => {
-  const r = window.LidarTests.runTests(LC), box = $('sTestOut');
+  const r = window.LidarTests.runTests(LC, window.LidarLoc, window.LidarMapTools), box = $('sTestOut');
   let html = `<b class="${r.passed === r.total ? 'ok' : 'ko'}">${r.passed}/${r.total} tests réussis</b>`, grp = '';
   for (const t of r.results){
     if (t.group !== grp){ grp = t.group; html += `<div class="tg">${grp}</div>`; }
@@ -3443,6 +5490,446 @@ $('vToSeg').onclick = () => {
 ['vConfCol', 'vCorners', 'vHl', 'vLabels', 'vHidePts'].forEach(id => $(id).onchange = draw);
 $('vMinConf').oninput = () => { $('vMinConfV').textContent = $('vMinConf').value; vecRefresh(); };
 vecRefresh();
+
+// ---------------------------------------------------------------- LOCALISATION (Jour 2)
+const LL = window.LidarLoc;
+const LOC = { refPoses: new Map(), cache: null, cacheKey: '', bench: null, stop: false, busy: false };
+// poses de référence : celles des scans au moment où on les mémorise (après superposition)
+function locMemorize(quiet){
+  LOC.refPoses = new Map(S.scans.map(s => [s.id, { ...s.pose }]));
+  if (!quiet) toast(`Poses de référence mémorisées pour ${S.scans.length} scans`);
+  locRefresh();
+}
+function rawScan(s){ return { name: s.name, a: s.a, d: s.d, i: s.i, pose: { ...s.pose } }; }
+function locMethodsFor(ref){ return Object.entries(LL.METHODS[ref]).map(([k, [label]]) => [k, label]); }
+function locFillMethods(){
+  const ref = $('locRef').value, sel = $('locMethod'), prev = sel.value;
+  sel.innerHTML = locMethodsFor(ref).map(([k, l]) => `<option value="${k}">${l}</option>`).join('');
+  if ([...sel.options].some(o => o.value === prev)) sel.value = prev;
+  $('locScanRefRow').style.display = ref === 'scan' ? '' : 'none';
+  const sc = $('locScanRef'), pv = sc.value;
+  sc.innerHTML = S.scans.map(s => `<option value="${s.id}">${s.name}</option>`).join('');
+  if ([...sc.options].some(o => o.value === pv)) sc.value = pv;
+}
+function locRefresh(){
+  locFillMethods();
+  const s = selScan(), rp = s && LOC.refPoses.get(s.id);
+  $('locTarget').textContent = s ? `« ${s.name} » · pose actuelle (${s.pose.x.toFixed(2)} ; ${s.pose.y.toFixed(2)} ; ${s.pose.th.toFixed(1)}°)` +
+    (rp ? ` · référence (${rp.x.toFixed(2)} ; ${rp.y.toFixed(2)} ; ${rp.th.toFixed(1)}°)` : ' · pas de pose de référence mémorisée') : 'aucun scan sélectionné';
+}
+async function locRun(){
+  const s = selScan(); if (!s) return toast('Sélectionne le scan à localiser');
+  if (!LOC.refPoses.size) locMemorize(true);
+  const ref = $('locRef').value, m = $('locMethod').value, [label, fn] = LL.METHODS[ref][m];
+  const pts = LL.uniformSubsample(LL.localPoints(rawScan(s)), { max: 350 });
+  let R, init, toWorld = p => p;
+  if (ref === 'scan'){
+    const rs = S.scans.find(o => String(o.id) === $('locScanRef').value);
+    if (!rs || rs === s) return toast('Choisis un scan de référence différent du scan à localiser');
+    const all = LL.localPoints(rawScan(rs));
+    R = { pts: LL.uniformSubsample(all, { cell: 0.03, minR: 0.3, max: 3000 }), ptsAll: all };
+    init = LL.relPose(rs.pose, s.pose); toWorld = p => LL.compose(rs.pose, p);
+  } else {
+    // carte construite avec les scans visibles SAUF celui à localiser (sinon il se retrouverait lui-même)
+    const others = S.scans.filter(o => o.visible && o !== s);
+    if (!others.length) return toast('Il faut d’autres scans visibles pour construire la carte de référence');
+    const key = others.map(o => `${o.id}:${o.pose.x.toFixed(4)},${o.pose.y.toFixed(4)},${o.pose.th.toFixed(3)}`).join('|');
+    if (LOC.cacheKey !== key){ setStatusLoc('Construction de la carte de référence…'); await sleep(20); LOC.cache = LL.buildReferences(others.map(rawScan), -1); LOC.cacheKey = key; }
+    R = LOC.cache; init = { ...s.pose };
+  }
+  setStatusLoc(`${label}…`); await sleep(20);
+  const t0 = performance.now(); let r;
+  try { r = fn(R, pts, init, { rxy: numVal('locRxy'), rth: numVal('locRth') }); } catch (e){ setStatusLoc(''); return toast('Erreur : ' + e.message); }
+  const ms = performance.now() - t0;
+  if (r.failed){ setStatusLoc(''); return toast(`${label} : aucun résultat (pas assez de coins visibles)`); }
+  const w = toWorld(r), rp = LOC.refPoses.get(s.id);
+  pushUndo(s); s.pose = { x: w.x, y: w.y, th: normDeg(w.th) }; updateInputs(s); draw();
+  const e = rp ? LL.poseError(s.pose, rp) : null;
+  $('locResult').innerHTML = `<b>${label}</b> · ${ms.toFixed(0)} ms · ${r.iters ?? '—'} itérations${r.hypotheses !== undefined ? ` · ${r.hypotheses} hypothèses` : ''}<br>` +
+    `pose trouvée (${s.pose.x.toFixed(3)} ; ${s.pose.y.toFixed(3)} ; ${s.pose.th.toFixed(2)}°)` +
+    (e ? `<br>écart à la référence : <b class="${e.pos <= numVal('benchPos') && e.ang <= numVal('benchAng') ? 'ok' : 'ko'}">${(e.pos * 100).toFixed(1)} cm, ${e.ang.toFixed(2)}°</b>` : '');
+  setStatusLoc('');
+}
+function setStatusLoc(t){ $('locStatus').textContent = t; }
+function locPerturb(){
+  const s = selScan(); if (!s) return toast('Sélectionne un scan');
+  if (!LOC.refPoses.has(s.id)) locMemorize(true);
+  const p = LL.perturb(LOC.refPoses.get(s.id), numVal('locPd'), numVal('locPa'), Math.random);
+  pushUndo(s); s.pose = p; updateInputs(s); draw(); locRefresh();
+  toast(`« ${s.name} » déplacé de ${numVal('locPd')} m et ${numVal('locPa')}° : à toi de le relocaliser`);
+}
+function locRestore(){
+  const s = selScan(), rp = s && LOC.refPoses.get(s.id); if (!rp) return;
+  pushUndo(s); s.pose = { ...rp }; updateInputs(s); draw(); locRefresh();
+}
+
+// ---- banc d'évaluation
+function benchCfg(){
+  const levels = $('benchLevels').value.split(/[;\n]/).map(t => t.trim()).filter(Boolean).map(t => t.split(/[\/, ]+/).map(Number)).filter(v => v.length >= 2 && v.every(isFinite));
+  const methods = {}, refs = [];
+  document.querySelectorAll('#benchMethods input:checked').forEach(c => { const [r, m] = c.value.split('.'); (methods[r] ||= []).push(m); if (!refs.includes(r)) refs.push(r); });
+  return { levels, methods, refs: ['grid', 'vector', 'scan'].filter(r => refs.includes(r)), draws: Math.max(1, Math.round(numVal('benchDraws'))), seed: Math.round(numVal('benchSeed')),
+           success: { pos: numVal('benchPos') / 100, ang: numVal('benchAng') }, coarse: { pos: 0.2, ang: 5 }, window: { rxy: numVal('locRxy'), rth: numVal('locRth') },
+           sim: { nTest: Math.max(1, Math.round(numVal('benchNSim'))) } };
+}
+async function benchRun(){
+  if (LOC.busy) return;
+  const cfg = benchCfg(); if (!cfg.refs.length) return toast('Coche au moins une méthode');
+  if (!cfg.levels.length) return toast('Niveaux de perturbation invalides');
+  const doSim = $('benchSim').checked, doReal = $('benchReal').checked;
+  if (!doSim && !doReal) return toast('Choisis simulation et/ou scans réels');
+  const real = S.scans.filter(s => s.visible);
+  if (doReal && real.length < 3) return toast('Il faut au moins 3 scans visibles et superposés pour le banc réel');
+  LOC.busy = true; LOC.stop = false; $('benchGo').disabled = true; $('autoOverlay').style.display = 'flex';
+  $('aoStop').onclick = () => { LOC.stop = true; };
+  const results = [];
+  const prog = async (label) => async (f, t) => {
+    if (LOC.stop) throw new Error('arrêt');
+    $('aoText').textContent = `${label} · ${t}`; $('aoBar').style.width = Math.round(f * 100) + '%'; $('aoSub').textContent = `${Math.round(f * 100)} %`;
+    await sleep(0);
+  };
+  document.querySelector('#autoOverlay .ao-title').textContent = 'Banc de localisation en cours';
+  try {
+    if (doSim) results.push(['Simulation', await LL.runLocBench({ ...cfg, scenario: 'sim' }, await prog('Simulation'))]);
+    if (doReal){
+      if (!LOC.refPoses.size) locMemorize(true);
+      const scans = real.map(s => ({ ...rawScan(s), pose: { ...(LOC.refPoses.get(s.id) || s.pose) } }));
+      results.push([`Scans réels (${scans.length})`, await LL.runLocBench({ ...cfg, scenario: 'real', real: { scans } }, await prog('Scans réels'))]);
+    }
+    LOC.bench = results; benchShow();
+  } catch (e){ toast(e.message === 'arrêt' ? 'Banc arrêté' : 'Erreur : ' + e.message); }
+  finally {
+    LOC.busy = false; $('benchGo').disabled = false; $('autoOverlay').style.display = 'none';
+    document.querySelector('#autoOverlay .ao-title').textContent = 'Superposition automatique en cours';
+    $('aoStop').onclick = () => { autoCancel = true; setAutoStatus('Arrêt après le scan en cours…'); };
+  }
+}
+const BENCH_COLORS = ['#4da3ff', '#4cd97b', '#ffb347', '#c77dff', '#ff6b6b', '#3ee6e6'];
+function benchShow(){
+  if (!LOC.bench) return toast('Lance d’abord le banc');
+  let html = '';
+  LOC.bench.forEach(([title, res], bi) => {
+    const C = res.cfg;
+    html += `<h3>${title}</h3><div class="help">Réussite : ≤ ${C.success.pos * 100} cm et ≤ ${C.success.ang}° · ${C.draws} tirages par niveau · fenêtre des méthodes globales ±${C.window.rxy} m / ±${C.window.rth}°. ` +
+            `Chaque case : taux de réussite, puis erreur médiane (position / angle) et temps moyen.</div>`;
+    for (const ref of C.refs){
+      const G = res.summary.filter(g => g.ref === ref), meths = [...new Set(G.map(g => g.method))];
+      html += `<h4>${LL.REF_LABEL[ref]}</h4><div class="bench-wrap"><table class="bench"><tr><th>Méthode \\ perturbation</th>` +
+              C.levels.map(([dp, da]) => `<th>${dp} m / ${da}°</th>`).join('') + '</tr>';
+      for (const m of meths){
+        html += `<tr><td>${G.find(g => g.method === m).label}</td>` + C.levels.map((_, l) => {
+          const g = G.find(x => x.method === m && x.level === l); if (!g) return '<td>—</td>';
+          const col = g.success >= 0.9 ? '#4cd97b' : g.success >= 0.5 ? '#ffb347' : '#ff6b6b';
+          return `<td><b style="color:${col}">${Math.round(g.success * 100)} %</b><br><span class="mono">${isFinite(g.medPos) ? (g.medPos * 100).toFixed(1) + ' cm' : '—'} / ${isFinite(g.medAng) ? g.medAng.toFixed(2) + '°' : '—'}<br>${g.meanMs.toFixed(0)} ms</span></td>`;
+        }).join('') + '</tr>';
+      }
+      html += `</table><canvas class="bench-chart" data-b="${bi}" data-ref="${ref}" width="1120" height="400"></canvas></div>`;
+    }
+  });
+  $('benchBody').innerHTML = html; $('benchModal').style.display = 'flex';
+  document.querySelectorAll('.bench-chart').forEach(cv2 => benchChart(cv2, LOC.bench[+cv2.dataset.b][1], cv2.dataset.ref));
+}
+// courbe de sensibilité : taux de réussite en fonction de la perturbation initiale
+function benchChart(c, res, ref){
+  const x = c.getContext('2d'); x.setTransform(2, 0, 0, 2, 0, 0);          // dessin en 560 × 200, rendu net (×2)
+  const W2 = 560, H2 = 200, L = res.cfg.levels, G = res.summary.filter(g => g.ref === ref);
+  const meths = [...new Set(G.map(g => g.method))], left = 44, right = W2 - 190;          // légende à droite
+  const px = l => left + l * (right - left) / Math.max(1, L.length - 1), py = v => H2 - 28 - v * (H2 - 48);
+  x.fillStyle = '#0f1216'; x.fillRect(0, 0, W2, H2);
+  x.strokeStyle = '#2a313b'; x.fillStyle = '#8b95a3'; x.font = '10px system-ui'; x.lineWidth = 1;
+  for (const v of [0, 0.25, 0.5, 0.75, 1]){ x.beginPath(); x.moveTo(left, py(v)); x.lineTo(right, py(v)); x.stroke(); x.fillText(Math.round(v * 100) + ' %', 6, py(v) + 3); }
+  L.forEach(([dp, da], l) => { const t = `${dp} m / ${da}°`; x.fillText(t, px(l) - x.measureText(t).width / 2, H2 - 10); });
+  x.fillText('taux de réussite selon la perturbation initiale', left, 12);
+  meths.forEach((m, k) => {
+    const col = BENCH_COLORS[k % BENCH_COLORS.length];
+    x.strokeStyle = x.fillStyle = col; x.lineWidth = 2; x.beginPath();
+    L.forEach((_, l) => { const g = G.find(q => q.method === m && q.level === l); if (!g) return; l ? x.lineTo(px(l), py(g.success)) : x.moveTo(px(l), py(g.success)); });
+    x.stroke();
+    L.forEach((_, l) => { const g = G.find(q => q.method === m && q.level === l); if (g){ x.beginPath(); x.arc(px(l), py(g.success), 3, 0, 7); x.fill(); } });
+    x.fillRect(right + 14, 30 + k * 18, 12, 3);
+    x.fillStyle = '#e3e7ec'; x.font = '10.5px system-ui';
+    const lab = G.find(g => g.method === m).label; x.fillText(lab.length > 30 ? lab.slice(0, 29) + '…' : lab, right + 32, 34 + k * 18);
+  });
+}
+$('locRef').onchange = locRefresh;
+$('locGo').onclick = locRun;
+$('locMem').onclick = () => locMemorize(false);
+$('locPert').onclick = locPerturb;
+$('locBack').onclick = locRestore;
+$('benchGo').onclick = benchRun;
+$('benchView').onclick = benchShow;
+$('benchClose').onclick = () => { $('benchModal').style.display = 'none'; };
+$('benchCsv').onclick = () => { if (!LOC.bench) return; download('resultats_localisation.csv', LOC.bench.map(([, r], k) => { const t = LL.benchToCSV(r); return k ? t.split('\n').slice(1).join('\n') : t; }).join(''), 'text/csv'); };
+$('benchMd').onclick = () => { if (!LOC.bench) return; download('resultats_localisation.md', '# Résultats du banc de localisation\n\n' + LOC.bench.map(([t, r]) => LL.benchToMarkdown(r, t)).join('\n'), 'text/markdown'); };
+$('benchPng').onclick = () => { const c = document.querySelector('.bench-chart'); if (c) download('sensibilite_localisation.png', c.toDataURL('image/png')); };
+(() => {   // cases à cocher des méthodes
+  const box = $('benchMethods');
+  box.innerHTML = Object.entries(LL.METHODS).map(([ref, ms]) => `<div class="help" style="margin-top:4px"><b>${LL.REF_LABEL[ref]}</b></div>` +
+    Object.entries(ms).map(([k, [l]]) => `<label class="chk"><input type="checkbox" value="${ref}.${k}" checked> ${l}</label>`).join('')).join('');
+})();
+locRefresh();
+
+// ---------------------------------------------------------------- TRAITEMENT (cartes et obstacles)
+const LM = window.LidarMapTools;
+const PROC = { res: null, imgs: {}, scans: [], busy: false, stop: false, planMode: false, plan: { start: null, goal: null, result: null } };
+function procOpt(){
+  const age = Math.round(numVal('pAge'));
+  return {
+    refine: $('pRefine').checked,
+    pre: { dMin: numVal('pDMin'), dMax: numVal('pDMax'), iMin: numVal('pIMin'), isolated: $('pIso').checked, mixed: $('pMixed').checked },
+    res: numVal('pRes'),
+    mobile: $('pMobile').checked, mobileOpt: { maxPersist: numVal('pPersist') / 100 },
+    speckles: $('pSpeck').checked, smooth: $('pSmooth').checked, close: $('pClose').checked,
+    obsolete: $('pObsolete').checked, obsoleteOpt: { age }, decay: $('pDecay').checked, decayOpt: { age, step: 16 },
+    features: { method: $('pMethod').value, smallMax: numVal('pSmall') },
+    obstacleOpt: { smallMax: numVal('pSmall') },
+    vmOpt: { extract: Object.assign(segExtractOpt(), { minLen: 0.3 }) },
+    regularize: $('pReg').checked, regOpt: { snapTol: numVal('pSnap'), orthogonal: numVal('pSnap') > 0 },
+    cost: { robotRadius: numVal('pRobotR'), inflation: numVal('pInfl') }
+  };
+}
+async function procRun(){
+  if (PROC.busy) return;
+  const vis = S.scans.filter(s => s.visible);
+  if (!vis.length) return toast('Aucun scan visible');
+  const o = procOpt();
+  PROC.busy = true; PROC.stop = false; $('pRun').disabled = true;
+  const overlay = o.refine && vis.length > 1;
+  if (overlay){
+    $('autoOverlay').style.display = 'flex';
+    document.querySelector('#autoOverlay .ao-title').textContent = 'Traitement de la carte';
+    $('aoStop').onclick = () => { PROC.stop = true; };
+  }
+  const prog = async (f, t) => {
+    if (PROC.stop) throw new Error('arrêt');
+    $('pStatus').textContent = `${Math.round(f * 100)} % · ${t}`;
+    if (overlay){ $('aoText').textContent = t; $('aoBar').style.width = Math.round(f * 100) + '%'; $('aoSub').textContent = `${Math.round(f * 100)} %`; }
+    await sleep(0);
+  };
+  try {
+    PROC.scans = vis.map(s => ({ id: s.id, name: s.name, a: s.a, d: s.d, i: s.i, scale: s.scale || 1, pose: { ...s.pose } }));
+    const t0 = performance.now();
+    PROC.res = await LM.processMap(PROC.scans, o, prog);
+    PROC.res.ms = performance.now() - t0;
+    PROC.imgs = {}; PROC.plan = { start: null, goal: null, result: null };
+    $('pStatus').textContent = `terminé en ${(PROC.res.ms / 1000).toFixed(1)} s`;
+    procInfo(); procPlanInfo();
+  } catch (e){ $('pStatus').textContent = ''; toast(e.message === 'arrêt' ? 'Traitement arrêté' : 'Erreur : ' + e.message); console.error(e); }
+  finally {
+    PROC.busy = false; $('pRun').disabled = false;
+    if (overlay){
+      $('autoOverlay').style.display = 'none';
+      document.querySelector('#autoOverlay .ao-title').textContent = 'Superposition automatique en cours';
+      $('aoStop').onclick = () => { autoCancel = true; setAutoStatus('Arrêt après le scan en cours…'); };
+    }
+    draw();
+  }
+}
+function procInfo(){
+  const R = PROC.res; if (!R){ $('pInfo').innerHTML = 'Aucun traitement.'; return; }
+  const q = R.quality, pc = v => (v * 100).toFixed(1) + ' %';
+  const row = (l, a, b) => `<tr><td>${l}</td><td>${a}</td><td>${b}</td></tr>`;
+  let h = `<b>${PROC.scans.length} scans traités</b> en ${(R.ms / 1000).toFixed(1)} s<table class="bench" style="margin-top:6px"><tr><th>Étape</th><th>Résultat</th><th>ms</th></tr>`;
+  for (const st of R.steps) h += `<tr><td>${st.step}</td><td style="text-align:left">${st.detail}</td><td>${st.ms.toFixed(0)}</td></tr>`;
+  h += `</table><table class="bench" style="margin-top:6px"><tr><th>Qualité de la grid map</th><th>brute</th><th>traitée</th></tr>` +
+    row('Points des scans sur un obstacle', pc(q.raw.pointsOnObstacle), pc(q.clean.pointsOnObstacle)) +
+    row('Distance moyenne point → obstacle', (q.raw.meanDist * 100).toFixed(1) + ' cm', (q.clean.meanDist * 100).toFixed(1) + ' cm') +
+    row('Cellules occupées', q.raw.occCells, q.clean.occCells) +
+    row('Surface libre', q.raw.freeArea.toFixed(1) + ' m²', q.clean.freeArea.toFixed(1) + ' m²') +
+    row('Netteté (cellules tranchées)', pc(q.raw.sharpness), pc(q.clean.sharpness)) +
+    row('Cellules en conflit', q.raw.conflicts, q.clean.conflicts) + '</table>';
+  if (R.refineLog){
+    const last = new Map(); R.refineLog.forEach(l => last.set(l.name, l));
+    const moved = R.poses.map((p, k) => ({ n: PROC.scans[k].name, d: Math.hypot(p.x - PROC.scans[k].pose.x, p.y - PROC.scans[k].pose.y), a: Math.abs(((p.th - PROC.scans[k].pose.th + 540) % 360) - 180) }));
+    const mx = moved.reduce((a, m) => m.d > a.d ? m : a, { d: 0 });
+    h += `<div class="res">Recalage : correction médiane ${(median(moved.map(m => m.d)) * 100).toFixed(1)} cm, max ${(mx.d * 100).toFixed(1)} cm (${mx.n || '–'}). « Appliquer les poses recalées » pour les garder.</div>`;
+  }
+  $('pInfo').innerHTML = h;
+}
+function median(a){ const b = a.slice().sort((x, y) => x - y); return b.length ? b[Math.floor(b.length / 2)] : 0; }
+
+// --- images des couches (1 pixel par cellule, mises en cache)
+function procLayerImage(kind){
+  const R = PROC.res; if (!R || kind === 'none') return null;
+  if (PROC.imgs[kind]) return PROC.imgs[kind];
+  const g = R.grid, Wg = g.W, Hg = g.H, c = document.createElement('canvas'); c.width = Wg; c.height = Hg;
+  const cx = c.getContext('2d'), im = cx.createImageData(Wg, Hg), D = im.data, L = R.layers;
+  const CLS = { structure: [227, 231, 236], objet: [255, 179, 71], petit: [255, 92, 138] };
+  const clsOf = R.obstacles.map(o => CLS[o.cls]);
+  for (let j = 0; j < Hg; j++) for (let i = 0; i < Wg; i++){
+    const k = j * Wg + i, o = ((Hg - 1 - j) * Wg + i) * 4;
+    let r, gg, b, a = 255;
+    const gray = v => { const x = 255 - v; return [x, x, x]; };
+    if (kind === 'clean') [r, gg, b] = gray(g.data[k]);
+    else if (kind === 'raw') [r, gg, b] = gray(R.gridRaw.data[k]);
+    else if (kind === 'diff'){
+      const before = R.gridRaw.data[k] >= LC.OCC_T, after = g.data[k] >= LC.OCC_T;
+      if (before && !after) [r, gg, b] = [255, 70, 70];
+      else if (!before && after) [r, gg, b] = [70, 230, 110];
+      else if (R.mobile[k]) [r, gg, b] = [190, 90, 255];
+      else { const x = 255 - g.data[k]; [r, gg, b] = [x * 0.55, x * 0.55, x * 0.55]; }
+    } else if (kind === 'persist'){
+      if (!L.seen[k]) [r, gg, b] = [20, 24, 30];
+      else if (!L.hits[k]) [r, gg, b] = [45, 52, 64];
+      else { const p = L.hits[k] / L.seen[k]; [r, gg, b] = [Math.round(80 + 175 * p), Math.round(60 + 170 * p), Math.round(200 * (1 - p))]; }
+    } else if (kind === 'obst'){
+      const id = R.labels[k];
+      if (id >= 0) [r, gg, b] = clsOf[id];
+      else { const v = g.data[k]; [r, gg, b] = v <= LC.FREE_T ? [70, 76, 86] : [26, 30, 36]; }
+    } else if (kind === 'cost'){
+      const v = R.cost.cost[k];
+      if (v === 254) [r, gg, b] = [0, 0, 0];
+      else if (v === 253) [r, gg, b] = [120, 40, 160];
+      else if (v === 255) [r, gg, b] = [40, 48, 60];
+      else if (v === 0) [r, gg, b] = [235, 240, 235];
+      else { const t = v / 252; [r, gg, b] = [255, Math.round(230 - 180 * t), Math.round(120 - 110 * t)]; }
+    }
+    D[o] = r; D[o + 1] = gg; D[o + 2] = b; D[o + 3] = a;
+  }
+  cx.putImageData(im, 0, 0);
+  return PROC.imgs[kind] = c;
+}
+function drawProcUnder(){
+  const R = PROC.res; if (!R) return;
+  const img = procLayerImage($('pLayer').value); if (!img) return;
+  const g = R.grid, [sx, sy] = w2s(g.x0, g.y0 + g.H * g.res);
+  ctx.save(); ctx.imageSmoothingEnabled = false; ctx.globalAlpha = numVal('pAlpha');
+  ctx.drawImage(img, sx, sy, g.W * g.res * S.view.s, g.H * g.res * S.view.s);
+  ctx.restore();
+}
+function drawProcOver(){
+  const R = PROC.res;
+  ctx.save(); ctx.lineCap = 'round';
+  const line = (f) => { const [x1, y1] = w2s(f.x1, f.y1), [x2, y2] = w2s(f.x2, f.y2); ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke(); };
+  if (R && $('pShowVecRaw').checked){
+    ctx.strokeStyle = 'rgba(255,214,77,.9)'; ctx.lineWidth = 1.5; ctx.setLineDash([5, 4]);
+    R.vmapRaw.features.forEach(line); ctx.setLineDash([]);
+  }
+  if (R && $('pShowVec').checked){
+    ctx.strokeStyle = '#4da3ff'; ctx.lineWidth = 3; R.vmap.features.forEach(line);
+    for (const c of R.vmap.corners){
+      const [x, y] = w2s(c.x, c.y); ctx.strokeStyle = '#ffe14d'; ctx.fillStyle = 'rgba(255,225,77,.3)'; ctx.lineWidth = 1.5;
+      ctx.beginPath(); ctx.rect(x - 4, y - 4, 8, 8); ctx.fill(); ctx.stroke();
+    }
+  }
+  if (R && $('pShowCirc').checked){
+    const mc = numVal('pMinConf');
+    for (const it of R.omap.items){
+      if (it.conf < mc && !it.mobile) continue;
+      const [x, y] = w2s(it.x, it.y), rr = Math.max(3, it.r * S.view.s);
+      ctx.strokeStyle = it.mobile ? '#ff4d4d' : '#ff9b3d'; ctx.lineWidth = it.kind === 'cercle' ? 2.2 : 1.6;
+      ctx.beginPath(); ctx.arc(x, y, rr, 0, 2 * Math.PI); ctx.stroke();
+    }
+  }
+  // trajet
+  const P = PROC.plan, rob = numVal('pRobotR') * S.view.s;
+  const mark = (p, col) => { const [x, y] = w2s(p.x, p.y); ctx.fillStyle = col + '55'; ctx.strokeStyle = col; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(x, y, Math.max(5, rob), 0, 2 * Math.PI); ctx.fill(); ctx.stroke(); };
+  if (P.result && P.result.ok){
+    ctx.strokeStyle = 'rgba(62,230,230,.35)'; ctx.lineWidth = Math.max(2, 2 * rob); ctx.lineJoin = 'round';
+    ctx.beginPath(); P.result.path.forEach((p, k) => { const [x, y] = w2s(p.x, p.y); k ? ctx.lineTo(x, y) : ctx.moveTo(x, y); }); ctx.stroke();
+    ctx.strokeStyle = '#3ee6e6'; ctx.lineWidth = 2.5; ctx.stroke();
+    ctx.fillStyle = '#3ee6e6'; for (const p of P.result.path){ const [x, y] = w2s(p.x, p.y); ctx.beginPath(); ctx.arc(x, y, 3.5, 0, 2 * Math.PI); ctx.fill(); }
+  }
+  if (P.start) mark(P.start, '#4cd97b');
+  if (P.goal) mark(P.goal, '#ff6b6b');
+  ctx.restore();
+}
+function procHud(wx, wy){
+  const R = PROC.res; if (!R) return '';
+  const g = R.grid, [i, j] = LC.worldToCell(g, wx, wy); if (!LC.inGrid(g, i, j)) return '   ·   hors carte';
+  const k = j * g.W + i, L = R.layers, c = R.cost.cost[k];
+  const cs = c === 254 ? 'obstacle' : c === 253 ? 'trop près (inscrit)' : c === 255 ? 'inconnu' : c ? `coût ${c}` : 'libre';
+  const ob = R.labels[k] >= 0 ? ` · obstacle n°${R.labels[k]} (${R.obstacles[R.labels[k]].cls})` : '';
+  return `   ·   cellule ${g.data[k]} (brute ${R.gridRaw.data[k]}) · impacts ${L.hits[k]}/${L.seen[k]} obs.${ob} · ${cs}`;
+}
+function procPointerDown(e, mx, my){
+  if (!PROC.planMode || e.button !== 0) return false;
+  if (!PROC.res) { toast('Lance d’abord le traitement'); return true; }
+  const [x, y] = s2w(mx, my), P = PROC.plan;
+  if (!P.start || P.goal){ P.start = { x, y }; P.goal = null; P.result = null; }
+  else { P.goal = { x, y }; procPlan(); }
+  procPlanInfo(); draw(); return true;
+}
+function procPlan(){
+  const P = PROC.plan; if (!P.start || !P.goal || !PROC.res) return;
+  const t0 = performance.now();
+  P.result = LM.planPath(PROC.res.cost, P.start, P.goal, { allowUnknown: $('pPlanUnk').checked });
+  P.result.ms = performance.now() - t0;
+}
+function procPlanInfo(){
+  const P = PROC.plan, el = $('pPlanInfo');
+  $('pPlanMode').classList.toggle('on', PROC.planMode);
+  if (!PROC.res){ el.textContent = 'Lance d’abord le traitement.'; return; }
+  if (!P.start){ el.textContent = PROC.planMode ? 'Clique le départ.' : 'Active « Placer départ / arrivée » puis clique le départ et l’arrivée.'; return; }
+  if (!P.goal){ el.textContent = `Départ (${P.start.x.toFixed(2)} ; ${P.start.y.toFixed(2)}) m · clique l’arrivée.`; return; }
+  const r = P.result;
+  if (!r.ok){ el.innerHTML = `<span style="color:#ff6b6b">Pas de trajet : ${r.reason}.</span>`; return; }
+  const direct = Math.hypot(P.goal.x - P.start.x, P.goal.y - P.start.y);
+  el.innerHTML = `<b>Trajet : ${r.length.toFixed(2)} m</b> (ligne droite ${direct.toFixed(2)} m), ${r.path.length - 1} tronçon(s) droits, ${r.raw.length} cellules · ${r.expanded} cellules explorées en ${r.ms.toFixed(0)} ms` +
+    `<br><span class="mono">${r.path.map(p => `(${p.x.toFixed(2)} ; ${p.y.toFixed(2)})`).join(' → ')}</span>`;
+}
+$('pRun').onclick = procRun;
+['pLayer'].forEach(id => $(id).onchange = draw);
+['pShowVec', 'pShowVecRaw', 'pShowCirc', 'pShowPts'].forEach(id => $(id).onchange = draw);
+$('pAlpha').oninput = draw;
+$('pMinConf').oninput = () => { $('pMinConfV').textContent = $('pMinConf').value; draw(); };
+$('pPlanMode').onclick = () => { PROC.planMode = !PROC.planMode; procPlanInfo(); };
+$('pPlanClear').onclick = () => { PROC.plan = { start: null, goal: null, result: null }; procPlanInfo(); draw(); };
+$('pPlanUnk').onchange = () => { procPlan(); procPlanInfo(); draw(); };
+['pRobotR', 'pInfl'].forEach(id => $(id).onchange = () => {
+  if (!PROC.res) return;
+  PROC.res.cost = LM.costmap(PROC.res.grid, { robotRadius: numVal('pRobotR'), inflation: numVal('pInfl') });
+  delete PROC.imgs.cost; procPlan(); procPlanInfo(); draw();
+});
+const needProc = () => { if (!PROC.res){ toast('Lance d’abord le traitement'); return false; } return true; };
+$('pApply').onclick = () => {
+  if (!needProc()) return;
+  if (!PROC.res.refineLog) return toast('Coche « Recaler toutes les poses » puis relance le traitement');
+  let n = 0;
+  PROC.scans.forEach((ps, k) => {
+    const s = S.scans.find(x => x.id === ps.id); if (!s) return;
+    const p = PROC.res.poses[k];
+    if (Math.hypot(p.x - s.pose.x, p.y - s.pose.y) < 1e-6 && Math.abs(p.th - s.pose.th) < 1e-6) return;
+    pushUndo(s); s.pose = { x: p.x, y: p.y, th: p.th }; n++;
+  });
+  if (typeof renderList === 'function') renderList();
+  toast(`${n} pose(s) mise(s) à jour`); draw();
+};
+$('pToGrid').onclick = () => { if (!needProc()) return; gridSet(LM.cloneGrid(PROC.res.grid), 'Grid map traitée (onglet Traitement)'); toast('Carte envoyée vers l’onglet Grid map'); };
+$('pToVec').onclick = () => {
+  if (!needProc()) return;
+  vecPush(); VEC.map = JSON.parse(JSON.stringify(PROC.res.vmap)); VEC.last = null; VEC.sel = -1; vecRefresh();
+  toast('Carte envoyée vers l’onglet Vectorielle');
+};
+$('pExpPgm').onclick = () => {
+  if (!needProc()) return;
+  const { pgm, yaml } = LC.gridToPGM(PROC.res.grid, 'carte_traitee');
+  download('carte_traitee.pgm', pgm, 'image/x-portable-graymap'); setTimeout(() => download('carte_traitee.yaml', yaml, 'text/yaml'), 300);
+};
+$('pExpPng').onclick = () => {
+  if (!needProc()) return;
+  const src = procLayerImage($('pLayer').value === 'none' ? 'clean' : $('pLayer').value), k = Math.max(1, Math.min(8, Math.floor(2400 / Math.max(src.width, src.height))));
+  const c = document.createElement('canvas'); c.width = src.width * k; c.height = src.height * k;
+  const x = c.getContext('2d'); x.imageSmoothingEnabled = false; x.drawImage(src, 0, 0, c.width, c.height);
+  // superposition de la carte vectorielle et des obstacles circulaires
+  const g = PROC.res.grid, tw = (X, Y) => [(X - g.x0) / g.res * k, (g.y0 + g.H * g.res - Y) / g.res * k];
+  if ($('pShowVec').checked){ x.strokeStyle = '#4da3ff'; x.lineWidth = Math.max(2, k * 0.8); x.lineCap = 'round';
+    for (const f of PROC.res.vmap.features){ const [a, b] = tw(f.x1, f.y1), [c2, d] = tw(f.x2, f.y2); x.beginPath(); x.moveTo(a, b); x.lineTo(c2, d); x.stroke(); } }
+  if ($('pShowCirc').checked){ for (const it of PROC.res.omap.items){ if (it.conf < numVal('pMinConf') && !it.mobile) continue;
+    const [a, b] = tw(it.x, it.y); x.strokeStyle = it.mobile ? '#ff4d4d' : '#ff9b3d'; x.lineWidth = Math.max(1.5, k * 0.4); x.beginPath(); x.arc(a, b, Math.max(3, it.r / g.res * k), 0, 2 * Math.PI); x.stroke(); } }
+  download(`carte_${$('pLayer').value}.png`, c.toDataURL('image/png'));
+};
+$('pExpVec').onclick = () => { if (!needProc()) return; download('carte_vectorielle_reguliere.txt', LC.vectorMapToText(PROC.res.vmap), 'text/plain'); };
+$('pExpObs').onclick = () => {
+  if (!needProc()) return;
+  let s = '# Obstacles circulaires suivis (features cercle)\n' + LM.obstaclesToCSV(PROC.res.omap);
+  s += '\n# Obstacles de la grid map (composantes connexes)\nid,classe,cellules,surface_m2,cx_m,cy_m,longueur_m,largeur_m,angle_deg,impacts_max\n';
+  for (const o of PROC.res.obstacles) s += [o.id, o.cls, o.cells, o.area.toFixed(4), o.cx.toFixed(3), o.cy.toFixed(3), o.len.toFixed(3), o.wid.toFixed(3), o.angle.toFixed(1), o.support].join(',') + '\n';
+  download('obstacles.csv', s, 'text/csv');
+};
+$('pExpCost').onclick = () => { if (!needProc()) return; download('carte_de_cout.pgm', LM.costmapToPGM(PROC.res.cost), 'image/x-portable-graymap'); };
+$('pExpRep').onclick = () => { if (!needProc()) return; download('rapport_traitement.md', LM.reportToMarkdown(PROC.res), 'text/markdown'); };
+procPlanInfo();
 
 // MAPS-UI:END
 syncOptUI(); renderList(); resize();

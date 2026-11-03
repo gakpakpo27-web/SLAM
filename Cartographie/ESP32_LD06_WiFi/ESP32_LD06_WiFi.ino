@@ -159,8 +159,8 @@ void sendScanBinary(AsyncWebServerRequest* req) {
 // ============================================================
 // USB : commandes série (comme ESP32_LD06_Capture.ino)
 // ============================================================
-enum SerialMode { SER_IDLE, SER_CSV, SER_TELEPLOT };
-SerialMode serialMode = SER_IDLE;
+enum UsbOutMode { SER_IDLE, SER_CSV, SER_TELEPLOT };
+UsbOutMode serialMode = SER_IDLE;
 uint8_t serialToSend = 0;
 uint32_t scanId = 0;
 bool skipNext = false;   // après un envoi série (bloquant), le tour suivant peut être tronqué

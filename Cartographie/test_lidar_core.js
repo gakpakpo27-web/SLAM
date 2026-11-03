@@ -6,7 +6,10 @@
   if (typeof module === 'object' && module.exports) {
     module.exports = factory();
     if (require.main === module) {
-      const res = module.exports.runTests(require('./lidar_core.js'));
+      let LL = null, LM = null;
+      try { LL = require('./lidar_loc.js'); } catch (e) { /* localisation absente */ }
+      try { LM = require('./lidar_maptools.js'); } catch (e) { /* traitement absent */ }
+      const res = module.exports.runTests(require('./lidar_core.js'), LL, LM);
       for (const r of res.results) console.log(`${r.ok ? '  OK ' : 'ÉCHEC'}  [${r.group}] ${r.name}${r.ok ? '' : '  -> ' + r.msg}`);
       console.log(`\n${res.passed}/${res.total} tests réussis`);
       process.exit(res.passed === res.total ? 0 : 1);
@@ -15,7 +18,7 @@
 })(typeof self !== 'undefined' ? self : this, function () {
   'use strict';
 
-  function runTests(LC) {
+  function runTests(LC, LL, LM) {
     const { seg, EPS } = LC;
     const results = []; let group = '';
     const near = (a, b, tol = 1e-9) => Math.abs(a - b) <= tol;
@@ -405,6 +408,204 @@
       const left = findF(M, f => Math.abs(f.x1) < 0.1 && Math.abs(f.x2) < 0.1);
       return expect(left.length === 1 && left[0].nObs === 2 && st.merged.length >= 3, `${left.length} murs gauches, fusions ${st.merged.length}`);
     });
+
+    // ------------------------------------------------------------------ localisation (Jour 2)
+    if (LL) {
+      group = 'Localisation';
+      test('pose relative et composition : a ∘ (a⁻¹ ∘ b) = b', () => {
+        const a = { x: 1, y: 2, th: 30 }, b = { x: -0.5, y: 4, th: -100 }, c = LL.compose(a, LL.relPose(a, b));
+        return expect(near(c.x, b.x, 1e-9) && near(c.y, b.y, 1e-9) && near(c.th, b.th, 1e-9), JSON.stringify(c));
+      });
+      test('perturbation : distance et angle exacts, reproductible avec la même graine', () => {
+        const t = { x: 0, y: 0, th: 0 }, p1 = LL.perturb(t, 0.5, 20, LL.mulberry32(3)), p2 = LL.perturb(t, 0.5, 20, LL.mulberry32(3));
+        return expect(near(Math.hypot(p1.x, p1.y), 0.5, 1e-12) && near(Math.abs(p1.th), 20, 1e-12) && p1.x === p2.x && p1.th === p2.th, JSON.stringify(p1));
+      });
+      test('champ de distance : distance euclidienne exacte à une cellule occupée', () => {
+        const g = LC.createGrid({ xMin: 0, yMin: 0, xMax: 2, yMax: 2, res: 0.1 }); g.data[5 * g.W + 5] = 255;
+        const F = LL.distanceField(g);
+        return expect(near(F.dist[5 * g.W + 5], 0) && near(F.dist[8 * g.W + 9], 0.5, 1e-6) && near(F.dist[5 * g.W + 15], 1.0, 1e-6), F.dist[8 * g.W + 9]);
+      });
+      // scène simulée commune : carte construite avec 7 scans à poses exactes, un scan à localiser
+      const sim = (() => {
+        const sc = LL.classroomScene(3), rng = LL.mulberry32(5);
+        const mp = [{ x: 2, y: 1.5, th: 10 }, { x: 6.5, y: 1.5, th: 80 }, { x: 11, y: 1.2, th: -30 }, { x: 2, y: 5.5, th: 170 }, { x: 6.5, y: 5, th: -100 }, { x: 12, y: 6, th: 45 }, { x: 2.5, y: 8.5, th: 0 }];
+        const R = LL.buildReferences(mp.map(p => Object.assign(LL.simulateScan(sc.walls, p, { tours: 3 }, rng), { pose: p })), -1);
+        const truth = { x: 7.3, y: 3.2, th: 33 }, pts = LL.uniformSubsample(LL.localPoints(LL.simulateScan(sc.walls, truth, { tours: 1 }, rng)), { max: 350 });
+        const rp = { x: 7.7, y: 3.4, th: 18 }, all = LL.localPoints(LL.simulateScan(sc.walls, rp, { tours: 3 }, rng));
+        return { R, truth, pts, ref: { pts: LL.uniformSubsample(all, { cell: 0.03, minR: 0.3, max: 3000 }), ptsAll: all }, rel: LL.relPose(rp, truth) };
+      })();
+      const ok = (r, t, tp = 0.05, ta = 2) => { const e = LL.poseError(r, t); return expect(e.pos <= tp && e.ang <= ta, `${(e.pos * 100).toFixed(1)} cm, ${e.ang.toFixed(2)}°`); };
+      const near1 = LL.perturb(sim.truth, 0.2, 8, LL.mulberry32(1)), far1 = LL.perturb(sim.truth, 1.0, 40, LL.mulberry32(2));
+      test('grid map · recherche exhaustive (départ à 1 m / 40°)', () => ok(LL.gridBrute(sim.R.field, sim.pts, far1), sim.truth));
+      test('grid map · multi-résolution (départ à 1 m / 40°)', () => ok(LL.gridMultiRes(sim.R.field, sim.pts, far1), sim.truth));
+      test('grid map · descente de gradient (départ à 20 cm / 8°)', () => ok(LL.gridGradient(sim.R.field, sim.pts, near1), sim.truth));
+      test('carte vectorielle · recherche exhaustive (départ à 1 m / 40°)', () => ok(LL.vecBrute(sim.R.index, sim.pts, far1), sim.truth));
+      test('carte vectorielle · ICP point-segment (départ à 20 cm / 8°)', () => ok(LL.vecICP(sim.R.index, sim.pts, near1), sim.truth));
+      test('carte vectorielle · calcul direct (sans pose initiale)', () => ok(LL.vecDirect(sim.R.index, sim.pts, { x: 0, y: 0, th: 0 }), sim.truth));
+      const relNear = LL.perturb(sim.rel, 0.2, 8, LL.mulberry32(4)), relFar = LL.perturb(sim.rel, 1.0, 40, LL.mulberry32(6));
+      test('entre scans · ICP point-à-point (départ à 20 cm / 8°)', () => ok(LL.scanICPPoint(sim.ref, sim.pts, relNear), sim.rel));
+      test('entre scans · ICP point-à-ligne (départ à 20 cm / 8°)', () => ok(LL.scanICPLine(sim.ref, sim.pts, relNear), sim.rel));
+      test('entre scans · corrélation multi-résolution (départ à 1 m / 40°)', () => ok(LL.scanCorrelative(sim.ref, sim.pts, relFar), sim.rel));
+      test('méthode locale hors de son domaine : le gradient ne converge pas depuis 1 m / 40° (attendu)', () => {
+        const e = LL.poseError(LL.gridGradient(sim.R.field, sim.pts, far1), sim.truth); return expect(e.pos > 0.05 || e.ang > 2, 'a convergé quand même');
+      });
+      test('banc : mêmes poses initiales pour toutes les méthodes, un essai par cas et par niveau', () => {
+        // (exécution synchrone d'une mini configuration via la fonction résumé)
+        const rows = [{ ref: 'grid', method: 'a', label: 'A', level: 0, dp: 0, da: 0, epos: 0.01, eang: 0.1, ms: 1, ok: true, okCoarse: true },
+                      { ref: 'grid', method: 'a', label: 'A', level: 0, dp: 0, da: 0, epos: 0.3, eang: 9, ms: 3, ok: false, okCoarse: false }];
+        const S = LL.summarize(rows);
+        return expect(S.length === 1 && S[0].success === 0.5 && near(S[0].meanMs, 2), JSON.stringify(S[0]));
+      });
+    }
+
+
+    if (LM && LL) {
+      group = 'Traitement';
+      const S = LC.seg;
+      // scan synthétique : un point par degré sur un cercle de rayon r autour du lidar
+      const ring = (r, extra = []) => { const a = [], d = []; for (let k = 0; k < 360; k++) { a.push(k); d.push(r * 1000); } for (const [aa, dd] of extra) { a.push(aa); d.push(dd); } return { a, d }; };
+      test('prétraitement : portée, point isolé et point mixte retirés, le reste gardé', () => {
+        const sc = { a: [], d: [] };
+        for (let k = 0; k < 360; k++) { sc.a.push(k); sc.d.push(k >= 100 && k < 110 ? 1000 : 3000); }  // objet à 1 m devant un mur à 3 m
+        sc.a.push(200.4); sc.d.push(1500);                // point isolé (rien autour)
+        sc.a.push(0.5); sc.d.push(30);                    // trop proche : le robot lui-même
+        const i110 = sc.a.indexOf(110); sc.d[i110] = 2000; // point mixte entre l'objet (1 m) et le mur (3 m)
+        const r = LM.preprocessScan(sc, { x: 0, y: 0, th: 0 });
+        return expect(r.removed.range === 1 && r.removed.isolated === 1 && r.removed.mixed === 1 && r.kept === 360 - 1, JSON.stringify(r.removed) + ' gardés ' + r.kept);
+      });
+      test('segmentation en clusters : rupture de distance et trou angulaire', () => {
+        const pts = [];
+        for (let k = 0; k < 40; k++) pts.push({ x: 2, y: -1 + k * 0.025 });          // mur A
+        for (let k = 0; k < 20; k++) pts.push({ x: 1, y: 0.6 + k * 0.025 });         // objet plus proche : rupture de distance
+        for (let k = 0; k < 20; k++) pts.push({ x: 1 - k * 0.02, y: 1.5 });          // après un trou angulaire (points à 1,5 m)
+        const C = LM.clusterScan(pts, { x: 0, y: 0 }, { angGap: 4 });
+        return expect(C.length === 3 && C.map(c => c.length).sort((a, b) => a - b).join() === '20,20,40', C.map(c => c.length).join());
+      });
+      test('cercle : ajustement exact sur un quart d’arc, et sur des points bruités (±5 mm)', () => {
+        const P = [], Q = [], rng = LL.mulberry32(9);
+        for (let k = 0; k <= 30; k++) { const t = (200 + k * 3) * Math.PI / 180; P.push({ x: 1 + 0.3 * Math.cos(t), y: 2 + 0.3 * Math.sin(t) }); Q.push({ x: P[k].x + (rng() - 0.5) * 0.01, y: P[k].y + (rng() - 0.5) * 0.01 }); }
+        const a = LM.fitCircle(P), b = LM.fitCircle(Q);
+        return expect(Math.hypot(a.x - 1, a.y - 2) < 1e-6 && near(a.r, 0.3, 1e-6) && Math.hypot(b.x - 1, b.y - 2) < 0.02 && Math.abs(b.r - 0.3) < 0.02, JSON.stringify([a, b]));
+      });
+      test('Douglas-Peucker : une polyligne en L garde ses 3 sommets', () => {
+        const P = []; for (let k = 0; k <= 20; k++) P.push({ x: k * 0.05, y: 0 }); for (let k = 1; k <= 20; k++) P.push({ x: 1, y: k * 0.05 });
+        const v = LM.douglasPeucker(P, 0.02); return expect(v.join() === '0,20,40', v.join());
+      });
+      test('RANSAC : deux murs perpendiculaires retrouvés malgré 25 % de points aberrants', () => {
+        const P = [], rng = LL.mulberry32(4);
+        for (let k = 0; k < 60; k++) P.push({ x: k * 0.05, y: (rng() - 0.5) * 0.01 });
+        for (let k = 0; k < 60; k++) P.push({ x: 3 + (rng() - 0.5) * 0.01, y: 0.2 + k * 0.05 });
+        for (let k = 0; k < 40; k++) P.push({ x: rng() * 3, y: 0.3 + rng() * 2.5 });
+        const segs = LM.ransacLines(P, { tol: 0.03, minInliers: 15, rng: LL.mulberry32(1) }).filter(s => LC.segLen(s) > 1.5);
+        return expect(segs.length === 2 && Math.abs(LC.angleBetween(segs[0], segs[1]).lines - 90) < 1, segs.map(fmt).join(' '));
+      });
+      test('features : pied de chaise (petit) et poteau Ø 30 cm (cercle) reconnus, mur en segment', () => {
+        const walls = [S(-3, 2, 3, 2), S(0.98, 0.98, 1.02, 0.98), S(1.02, 0.98, 1.02, 1.02), S(1.02, 1.02, 0.98, 1.02), S(0.98, 1.02, 0.98, 0.98)];
+        const sc = LL.simulateScan(walls, { x: 0, y: 0, th: 0 }, { tours: 2, noise: 0.003, angNoise: 0, dropout: 0, step: 0.5 }, LL.mulberry32(2));
+        // poteau : on remplace par des points exacts sur un cercle centré (−1,5 ; 0,8), r = 0,15 (face visible)
+        const pts = LC.polarToGlobal(sc, { x: 0, y: 0, th: 0 });
+        const c0 = { x: -1.5, y: 0.8 }, bear = Math.atan2(c0.y, c0.x);
+        for (let k = -60; k <= 60; k += 3) { const t = bear + Math.PI + k * Math.PI / 180; pts.push({ x: c0.x + 0.15 * Math.cos(t), y: c0.y + 0.15 * Math.sin(t) }); }
+        pts.sort((p, q) => Math.atan2(p.y, p.x) - Math.atan2(q.y, q.x));
+        const F = LM.extractFeatures(pts, { x: 0, y: 0 });
+        const leg = F.circles.find(c => Math.hypot(c.x - 1, c.y - 1) < 0.05), post = F.circles.find(c => c.kind === 'cercle');
+        const wall = F.segments.find(s => LC.segLen(s) > 3);
+        return expect(leg && leg.kind === 'petit' && post && Math.hypot(post.x - c0.x, post.y - c0.y) < 0.01 && Math.abs(post.r - 0.15) < 0.01 && wall,
+          JSON.stringify({ leg, post, nseg: F.segments.length }));
+      });
+      test('obstacles circulaires : fusion des observations, puis absence (faisceaux qui traversent) -> mobile puis supprimé', () => {
+        const M = LM.createObstacleMap(), robot = { x: 0, y: 0 };
+        LM.updateObstacleMap(M, robot, [], [{ x: 1, y: 0, r: 0.05, kind: 'petit' }]);
+        LM.updateObstacleMap(M, robot, [], [{ x: 1.02, y: 0, r: 0.05, kind: 'petit' }]);
+        const it = M.items[0], ok1 = M.items.length === 1 && it.nObs === 2 && it.conf === 2 && near(it.x, 1.01, 1e-9);
+        const through = []; for (let k = -2; k <= 2; k++) through.push({ x: 3, y: k * 0.01 });   // le mur à 3 m est vu à travers
+        LM.updateObstacleMap(M, robot, through, []);
+        const ok2 = M.items.length === 1 && M.items[0].misses === 1 && M.items[0].conf === 1;
+        LM.updateObstacleMap(M, robot, through, []);
+        return expect(ok1 && ok2 && M.items.length === 0, JSON.stringify(M.items));
+      });
+      test('grid map enrichie : impacts, observations et horodatage par cellule', () => {
+        const g = LC.createGrid({ xMin: -1, yMin: -1, xMax: 3, yMax: 1, res: 0.1 }), L = LM.createLayers(g);
+        LM.updateGridLayered(g, L, { x: 0, y: 0 }, [{ x: 2.05, y: 0.05 }]);
+        LM.updateGridLayered(g, L, { x: 0, y: 0 }, [{ x: 2.55, y: 0.05 }]);       // 2e scan : la cellule à 2 m est traversée
+        const [i, j] = LC.worldToCell(g, 2.05, 0.05), k = j * g.W + i, [i2, j2] = LC.worldToCell(g, 2.55, 0.05), k2 = j2 * g.W + i2;
+        return expect(L.hits[k] === 1 && L.seen[k] === 2 && L.lastOcc[k] === 1 && L.last[k] === 2 && L.hits[k2] === 1 && L.seen[k2] === 1 && L.t === 2, [L.hits[k], L.seen[k], L.lastOcc[k], L.last[k]].join());
+      });
+      test('obstacle mobile : impact dans 1 scan sur 4 -> trace effacée ; pied vu 3 fois gardé', () => {
+        const g = LC.createGrid({ xMin: -1, yMin: -1, xMax: 3, yMax: 1, res: 0.1 }), L = LM.createLayers(g), R = { x: 0, y: 0 };
+        LM.updateGridLayered(g, L, R, [{ x: 1.05, y: 0.05 }, { x: 0.05, y: 0.55 }]);
+        for (let n = 0; n < 3; n++) LM.updateGridLayered(g, L, R, [{ x: 2.05, y: 0.05 }, { x: 0.05, y: 0.55 }]);
+        const [i, j] = LC.worldToCell(g, 1.05, 0.05), [a, b] = LC.worldToCell(g, 0.05, 0.55), r = LM.removeMobile(g, L);
+        return expect(r.mobile[j * g.W + i] === 1 && g.data[j * g.W + i] <= LC.FREE_T && r.mobile[b * g.W + a] === 0 && g.data[b * g.W + a] >= LC.OCC_T, JSON.stringify(r.removed));
+      });
+      test('taches isolées : bruit vu une fois retiré, petit obstacle vu 3 fois gardé', () => {
+        const g = LC.createGrid({ xMin: 0, yMin: 0, xMax: 1, yMax: 1, res: 0.1 }), L = LM.createLayers(g);
+        g.data[2 * g.W + 2] = 200; L.hits[2 * g.W + 2] = 1; g.data[7 * g.W + 7] = 230; L.hits[7 * g.W + 7] = 3;
+        const r = LM.removeSpeckles(g, L);
+        return expect(g.data[2 * g.W + 2] === LC.UNKNOWN && g.data[7 * g.W + 7] === 230 && r.keptInterest === 1, JSON.stringify(r));
+      });
+      test('lissage majoritaire : trou inconnu au milieu du libre comblé, mur d’une cellule préservé', () => {
+        const g = LC.createGrid({ xMin: 0, yMin: 0, xMax: 1, yMax: 1, res: 0.1, init: 0 });
+        for (let i = 0; i < 10; i++) g.data[5 * g.W + i] = 255;        // mur horizontal d'une cellule
+        g.data[2 * g.W + 2] = LC.UNKNOWN;
+        LM.smoothGrid(g); let wall = true; for (let i = 0; i < 10; i++) wall = wall && g.data[5 * g.W + i] === 255;
+        return expect(g.data[2 * g.W + 2] <= LC.FREE_T && wall, g.data[2 * g.W + 2]);
+      });
+      test('fermeture : trou d’une cellule dans un mur bouché, passage franchement libre respecté', () => {
+        const g = LC.createGrid({ xMin: 0, yMin: 0, xMax: 2, yMax: 1, res: 0.1, init: LC.UNKNOWN });
+        for (let i = 0; i < 20; i++) g.data[5 * g.W + i] = 255;
+        g.data[5 * g.W + 6] = 120;                                     // trou d'une cellule, état incertain
+        g.data[5 * g.W + 14] = 10;                                     // cellule traversée plusieurs fois (porte ouverte)
+        const r = LM.closeGaps(g);
+        return expect(g.data[5 * g.W + 6] >= LC.OCC_T && g.data[5 * g.W + 14] === 10, JSON.stringify(r));
+      });
+      test('obstacles de la grille : composantes et classes (petit, objet, structure)', () => {
+        const g = LC.createGrid({ xMin: 0, yMin: 0, xMax: 4, yMax: 2, res: 0.05, init: 0 });
+        g.data[5 * g.W + 5] = g.data[5 * g.W + 6] = 255;                          // 10 cm : petit
+        for (let i = 20; i < 30; i++) g.data[10 * g.W + i] = 255;                 // 50 cm : objet
+        for (let i = 35; i < 75; i++) g.data[30 * g.W + i] = 255;                 // 2 m : structure
+        const { obstacles: O } = LM.gridObstacles(g, null), cls = O.map(o => o.cls).sort().join();
+        const big = O.find(o => o.cls === 'structure');
+        return expect(O.length === 3 && cls === 'objet,petit,structure' && Math.abs(big.len - 2) < 0.06 && Math.abs(big.angle) < 1e-6, cls + ' ' + (big && big.len));
+      });
+      test('régularisation : murs redressés exactement parallèles / perpendiculaires, coins raccordés exactement', () => {
+        const rot = (s, d) => { const mx = (s.x1 + s.x2) / 2, my = (s.y1 + s.y2) / 2, c = Math.cos(d * Math.PI / 180), n = Math.sin(d * Math.PI / 180);
+          const r = (x, y) => [mx + c * (x - mx) - n * (y - my), my + n * (x - mx) + c * (y - my)]; const [a, b] = r(s.x1, s.y1), [e, f] = r(s.x2, s.y2); return S(a, b, e, f); };
+        const room = [rot(S(0.1, 0, 3.9, 0), 2), rot(S(4, 0.1, 4, 2.9), -3), rot(S(3.9, 3, 0.1, 3), 1.5), rot(S(0, 2.9, 0, 0.1), -2)];
+        const map = { features: room.map((s, k) => Object.assign(s, { id: k + 1, conf: 3, nObs: 3, firstSeen: 1, lastSeen: 1 })), corners: [], scans: 1, nextId: 5 };
+        const { map: M, report } = LM.regularizeVectorMap(map);
+        // les axes sont la direction dominante mesurée (pas forcément 0°) : tous les murs y sont exactement parallèles ou perpendiculaires
+        const angOk = M.features.every(f => { const a = (((LC.segAngle(f) * 180 / Math.PI - report.theta0) % 90) + 90) % 90; return Math.min(a, 90 - a) < 1e-6; });
+        const ends = M.features.flatMap(f => [[f.x1, f.y1], [f.x2, f.y2]]);
+        const joined = ends.every(([x, y]) => ends.filter(([u, v]) => Math.hypot(u - x, v - y) < 1e-9).length === 2);
+        return expect(M.features.length === 4 && angOk && joined && M.corners.length === 4, JSON.stringify(report));
+      });
+      test('alignement : deux morceaux d’un même mur décalés de 3 cm ramenés sur une droite', () => {
+        const r = LM.alignCollinear([Object.assign(S(0, 0, 2, 0), { conf: 1 }), Object.assign(S(2.5, 0.03, 4, 0.03), { conf: 1 })]);
+        const [a, b] = r.segments; return expect(near(a.y1, b.y1, 1e-12) && a.y1 > 0 && a.y1 < 0.03, JSON.stringify(r.segments.map(fmt)));
+      });
+      test('collision : dépassement de 5 cm d’un mur à travers un autre rogné', () => {
+        const r = LM.trimCollisions([S(0, -0.05, 0, 2), S(-1, 0, 1, 0)]);
+        return expect(r.trimmed === 1 && sameSeg(r.segments[0], 0, 0, 0, 2, 1e-12), fmt(r.segments[0]));
+      });
+      test('carte de coût et trajet A* : contourne un mur, garde ses distances, refuse une arrivée dans l’obstacle', () => {
+        const g = LC.createGrid({ xMin: 0, yMin: 0, xMax: 4, yMax: 3, res: 0.05, init: 0 });
+        for (let j = 0; j < 45; j++) g.data[j * g.W + 40] = 255;                  // mur x = 2 m, de y = 0 à 2,25 m
+        const cm = LM.costmap(g, { robotRadius: 0.15, inflation: 0.3 });
+        const k = (x, y) => { const [i, j] = LC.worldToCell(g, x, y); return cm.cost[j * g.W + i]; };
+        const costOk = k(2.02, 1) === 254 && k(2.14, 1) === 253 && k(3.5, 1) === 0 && k(2.3, 1) > 0 && k(2.3, 1) < 253;
+        const r = LM.planPath(cm, { x: 1, y: 0.5 }, { x: 3, y: 0.5 });
+        let clear = r.ok; if (r.ok) for (const c of r.raw) clear = clear && cm.cost[c.j * g.W + c.i] < 253;
+        const bad = LM.planPath(cm, { x: 1, y: 0.5 }, { x: 2.02, y: 1 });
+        return expect(costOk && clear && r.length > 3.5 && Math.max(...r.path.map(p => p.y)) > 2.25 + 0.15 && !bad.ok, JSON.stringify({ costOk, len: r.length, bad: bad.reason }));
+      });
+      test('qualité : scans simulés à poses exactes -> plus de 90 % des points sur un obstacle', () => {
+        const sc = LL.classroomScene(3, { legs: 0 }), rng = LL.mulberry32(8), poses = [{ x: 2, y: 2, th: 0 }, { x: 6, y: 5, th: 90 }, { x: 11, y: 6, th: 200 }];
+        const data = poses.map(p => ({ robot: p, pts: LM.preprocessScan(LL.simulateScan(sc.walls, p, { tours: 2 }, rng), p).pts }));
+        const { grid, layers } = LM.buildLayeredGrid(data), q = LM.mapQuality(grid, data, layers);
+        return expect(q.pointsOnObstacle > 0.9 && q.meanDist < 0.03, JSON.stringify(q));
+      });
+    }
 
     const passed = results.filter(r => r.ok).length;
     return { results, passed, total: results.length };

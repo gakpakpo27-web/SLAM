@@ -157,6 +157,7 @@
       for (const k of freeSet) d[k] = Math.max(0, d[k] - free);
       for (const k of occSet) d[k] = Math.min(255, d[k] + occ);
     }
+    if (p.onCells) p.onCells(freeSet, occSet);         // couches annexes (compteurs, horodatage) : voir lidar_maptools.js
     return { freed: freeSet.size, occupied: occSet.size, outside, robotInside: inGrid(g, ri, rj) };
   }
 
@@ -504,7 +505,7 @@
     const t = ++map.scans;
     const st = { scan: t, extracted: 0, added: [], merged: [], shortened: [], split: [], weakened: [], removed: [], expired: [], fused: 0, ghosts: [] };
 
-    const segs = extractSegments(pts, robot, o.extract);
+    const segs = o.segments || extractSegments(pts, robot, o.extract);   // o.segments : segments déjà extraits (autre méthode)
     st.extracted = segs.length;
 
     if (o.absence && map.features.length) absenceCheck(map, robot, pts, o, st);
