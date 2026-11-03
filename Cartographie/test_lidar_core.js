@@ -449,6 +449,24 @@
       test('méthode locale hors de son domaine : le gradient ne converge pas depuis 1 m / 40° (attendu)', () => {
         const e = LL.poseError(LL.gridGradient(sim.R.field, sim.pts, far1), sim.truth); return expect(e.pos > 0.05 || e.ang > 2, 'a convergé quand même');
       });
+      // robot en direct : carte fixe, aucune pose de départ, puis suivi et robot « kidnappé »
+      const live = (() => { const D = LL.demoScenario(3); return { D, M: LL.prepareMap(D.refs.grid, D.refs.vmap.features) }; })();
+      const lvScan = (p) => LL.uniformSubsample(LL.localPoints(LL.simulateScan(live.D.scene.walls, p, { tours: 1 }, live.D.rng)), { max: 350 });
+      test('robot en direct · localisation globale sans pose de départ (toute la carte, 360°), jugée « sûr »', () => {
+        const truth = { x: 7.3, y: 3.2, th: 123 }, g = LL.globalLocalize(live.M, lvScan(truth)), e = LL.poseError(g.pose, truth);
+        return expect(e.pos <= 0.05 && e.ang <= 2 && g.confidence === 'sûr', `${(e.pos * 100).toFixed(1)} cm ${e.ang.toFixed(2)}° ${g.confidence}`);
+      });
+      test('robot en direct · suivi sur 40 pas, puis robot déplacé à la main : relocalisé au scan suivant', () => {
+        const T = LL.createTracker(live.M), P = live.D.path; let okN = 0;
+        for (let k = 0; k < 40; k++) { LL.trackerUpdate(T, lvScan(P[k]), k ? LL.relPose(P[k - 1], P[k]) : null); const e = LL.poseError(T.pose, P[k]); if (e.pos <= 0.05 && e.ang <= 2) okN++; }
+        const far = P[Math.floor(P.length * 0.7)];
+        const r = LL.trackerUpdate(T, lvScan(far), null), e = LL.poseError(T.pose, far);
+        return expect(okN === 40 && e.pos <= 0.05 && e.ang <= 2 && r.mode === 'relocalisation', `${okN}/40, après kidnapping ${(e.pos * 100).toFixed(1)} cm (${r.mode}, ${r.status})`);
+      });
+      test('robot en direct · la part de points qui collent à la carte chute quand la pose est fausse', () => {
+        const truth = live.D.path[10], pts = lvScan(truth), good = LL.inlierRatio(live.M.field, pts, truth), bad = LL.inlierRatio(live.M.field, pts, { ...truth, x: truth.x + 0.5, th: truth.th + 20 });
+        return expect(good > 0.9 && bad < 0.5, `${good.toFixed(2)} / ${bad.toFixed(2)}`);
+      });
       test('banc : mêmes poses initiales pour toutes les méthodes, un essai par cas et par niveau', () => {
         // (exécution synchrone d'une mini configuration via la fonction résumé)
         const rows = [{ ref: 'grid', method: 'a', label: 'A', level: 0, dp: 0, da: 0, epos: 0.01, eang: 0.1, ms: 1, ok: true, okCoarse: true },
@@ -623,6 +641,33 @@
         const R = { grid: g, vmap: { features: [], corners: [], nextId: 1 }, omap: { items: [{ x: 1.1, y: 1, r: 0.02 }] } };
         const st = LM.filterNearPoses(R, [{ x: 1, y: 1, th: 0 }], 0.2);
         return expect(st.cells === 1 && st.circles === 1 && g.data[20 * g.W + 60] === 255, JSON.stringify(st));
+      });
+      test('murs nets : mur épais et pointillé remplacé par un trait continu ; côté intérieur libre, extérieur inconnu', () => {
+        const g = LC.createGrid({ xMin: 0, yMin: 0, xMax: 3, yMax: 2, res: 0.05, init: LC.UNKNOWN });
+        for (let j = 0; j < 20; j++) for (let i = 0; i < 60; i++) g.data[j * g.W + i] = 10;           // intérieur libre (y < 1 m)
+        for (let i = 0; i < 60; i += 1) { if (i % 4 === 3) continue; g.data[20 * g.W + i] = 230; if (i % 3 === 0) g.data[19 * g.W + i] = 200; }   // mur y = 1 m épais, troué
+        const r = LM.sharpenWalls(g, [S(0.1, 1.025, 2.9, 1.025)]);
+        let line = true; for (let i = 2; i < 58; i++) line = line && g.data[20 * g.W + i] === 255;
+        const inner = g.data[19 * g.W + 3] <= LC.FREE_T;
+        return expect(line && inner && r.walls === 1 && r.drawn > 0, JSON.stringify(r));
+      });
+      test('plan de la salle : contour rectangulaire exact, chaises effacées, fuite par la porte coupée, table (3 côtés vus) gardée', () => {
+        const g = LC.createGrid({ xMin: -1, yMin: -1, xMax: 7, yMax: 6, res: 0.05, init: LC.UNKNOWN });
+        const set = (x, y, v) => { const [i, j] = LC.worldToCell(g, x, y); if (LC.inGrid(g, i, j)) g.data[j * g.W + i] = v; };
+        for (let x = 0; x < 6; x += 0.025) for (let y = 0; y < 4; y += 0.025) set(x, y, 10);                 // sol de la salle 6 × 4 m
+        for (let x = -0.05; x <= 6.05; x += 0.025) { set(x, -0.025, 255); set(x, 4.025, 255); }              // murs
+        for (let y = -0.05; y <= 4.05; y += 0.025) { set(-0.025, y, 255); set(6.025, y, 255); }
+        for (let x = 2.6; x < 3.3; x += 0.025) set(x, 4.025, 10);                                            // porte de 70 cm…
+        for (let x = 2.0; x < 4.0; x += 0.025) for (let y = 4.08; y < 5.5; y += 0.025) set(x, y, 10);         // … et le couloir vu à travers
+        for (const [cx, cy] of [[1, 1], [1.3, 2.5], [4.8, 3.6], [5.5, 0.5]]) for (const [dx, dy] of [[0, 0], [0.4, 0], [0, 0.4], [0.4, 0.4]]) set(cx + dx, cy + dy, 255);   // chaises (4 pieds)
+        for (let x = 2.5; x <= 4.0; x += 0.025) { set(x, 1.5, 255); set(x, 2.5, 255); } for (let y = 1.5; y <= 2.5; y += 0.025) set(2.5, y, 255);   // table : 3 côtés vus
+        const P = LM.roomPlan(g, [{ x: 0.5, y: 0.5 }, { x: 5, y: 2 }], { theta0: 0 });
+        const xs = P.outer.map(p => p[0]), ys = P.outer.map(p => p[1]);
+        const rectOk = P.outer.length === 4 && Math.abs(Math.min(...xs) - 0) < 0.03 && Math.abs(Math.max(...xs) - 6) < 0.03 && Math.abs(Math.min(...ys)) < 0.03 && Math.abs(Math.max(...ys) - 4) < 0.03;
+        const isl = P.islands[0], ix = isl ? isl.map(p => p[0]) : [], iy = isl ? isl.map(p => p[1]) : [];
+        const tableOk = P.islands.length === 1 && Math.abs(Math.min(...ix) - 2.5) < 0.06 && Math.abs(Math.max(...ix) - 4.0) < 0.06 && Math.abs(Math.min(...iy) - 1.5) < 0.06 && Math.abs(Math.max(...iy) - 2.5) < 0.06;
+        const [ci, cj] = LC.worldToCell(P.grid, 1.02, 1.02);
+        return expect(rectOk && tableOk && P.grid.data[cj * P.grid.W + ci] === 0 && P.stats.erased >= 4, JSON.stringify({ outer: P.outer.map(p => p.map(v => +v.toFixed(2))), islands: P.islands.length, st: P.stats }));
       });
       test('qualité : scans simulés à poses exactes -> plus de 90 % des points sur un obstacle', () => {
         const sc = LL.classroomScene(3, { legs: 0 }), rng = LL.mulberry32(8), poses = [{ x: 2, y: 2, th: 0 }, { x: 6, y: 5, th: 90 }, { x: 11, y: 6, th: 200 }];

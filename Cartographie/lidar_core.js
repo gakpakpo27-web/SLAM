@@ -154,7 +154,11 @@
       for (const k of freeSet) d[k] = 0;
       for (const k of occSet) d[k] = 255;
     } else {
-      for (const k of freeSet) d[k] = Math.max(0, d[k] - free);
+      // occFree : décrément appliqué à une cellule DÉJÀ occupée. Un faisceau rasant, ou une pose décalée de
+      // 1–2 cm, traverse souvent la cellule d'un mur vu par un autre scan : sans cette « résistance », les murs
+      // deviennent gris et pointillés. Par défaut = free (comportement d'origine).
+      const occFree = p.occFree ?? free;
+      for (const k of freeSet) d[k] = Math.max(0, d[k] - (d[k] >= OCC_T ? occFree : free));
       for (const k of occSet) d[k] = Math.min(255, d[k] + occ);
     }
     if (p.onCells) p.onCells(freeSet, occSet);         // couches annexes (compteurs, horodatage) : voir lidar_maptools.js

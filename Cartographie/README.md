@@ -9,10 +9,12 @@
 | `lidar_core.js` | Bibliothèque de calcul : grid map (Bresenham, mise à jour, export), segments (extraction, angle, proximité, fusion, intersection, découpe) et carte vectorielle |
 | `lidar_loc.js` | Jour 2 : localisation (grid map, carte vectorielle, entre scans), simulateur et banc d'évaluation |
 | `bench_localisation.js` | Banc d'évaluation en ligne de commande (`node bench_localisation.js --real session.json`) |
+| `bench_suivi.js` | Banc du robot en direct : localisation globale sur les scans réels, suivi simulé (`node bench_suivi.js --real session.json`) |
+| `resultats_suivi.md` | Résultats de `bench_suivi.js` |
 | `lidar_maptools.js` | Traitement des cartes et des obstacles : prétraitement, clusters, cercles / RANSAC / Douglas-Peucker, grid map enrichie et nettoyée, obstacles, régularisation de la carte vectorielle, carte de coût, trajet A*, recalage global des poses |
 | `DEMARCHE_traitement_cartes.md` | Démarche et résultats du traitement des cartes et des obstacles |
 | `resultats_traitement.md` | Rapport de la chaîne de traitement sur les 14 scans réels (avec recalage) |
-| `test_lidar_core.js` | 109 tests automatiques (`node test_lidar_core.js`), dont les cas limites de la découpe |
+| `test_lidar_core.js` | 114 tests automatiques (`node test_lidar_core.js`), dont les cas limites de la découpe |
 | `DEMARCHE_parties_3_4.md` | Démarche des parties 3 et 4 : choix techniques, hypothèses, difficultés, limites |
 | `DEMARCHE_partie_5.md` | Démarche de la partie 5 (carte vectorielle) |
 | `capture_lidar.py` | (Optionnel) capture en ligne de commande, 1 fichier CSV par position |
@@ -234,6 +236,17 @@ référence », on choisit le scan pris à proximité.
   des poses de référence ;
 - résultats en tableaux et courbes, export CSV et Markdown.
 
+## Robot en direct (onglet *Robot en direct*)
+Le robot se repère sur la carte du Jour 1 et la vue le suit comme un GPS :
+1. **Carte** : scans visibles, résultat de l'onglet Traitement, fichiers (.json + .txt) ou salle simulée → *Préparer la carte*.
+2. **Scans** : robot connecté (USB ou WiFi), relecture des scans visibles (carte sans le scan rejoué), ou robot simulé
+   (bouton *Kidnapper* : le robot est déplacé à la main).
+3. **Repérage** : recherche sur toute la carte sans pose de départ (≈ 0,2 s), puis suivi scan après scan (5 à 10 ms),
+   relocalisation automatique si le robot est perdu, plusieurs hypothèses suivies si c'est ambigu,
+   *Indiquer la position à la main* (clic + glisser). Les commandes de pilotage WiFi servent de prédiction.
+4. **Vue** : cap en haut (la carte tourne), nord en haut, ou libre ; molette = zoom ; points verts = collent à la carte,
+   rouges = obstacle nouveau ; trajectoire exportable en CSV.
+
 ## Traitement des cartes et des obstacles (onglet *Traitement*)
 Chaîne complète sur les scans visibles, chaque étape activable, avec un compte rendu par étape et la qualité de la carte
 avant / après :
@@ -246,9 +259,13 @@ avant / après :
 5. **obstacles** : composantes connexes classées petit / objet / structure, et obstacles circulaires suivis
    (confiance, absence, persistance) ;
 6. **carte vectorielle** (split-and-merge, Douglas-Peucker ou RANSAC) puis **régularisation** : murs redressés sur les
-   axes de la salle, alignés, fusionnés, coins raccordés, dépassements rognés ;
+   axes de la salle, alignés, fusionnés, coins raccordés, dépassements rognés ; puis **murs nets** : les murs sont
+   redessinés en trait continu dans la grid map (bord bruité effacé) ;
 7. **carte de coût** (obstacles gonflés du rayon du robot) et **trajet A\*** : clic départ, clic arrivée.
-8. **filtres « distance minimum »** (0 = désactivé) : segments plus courts que L, cercles de diamètre inférieur à D,
+8. **plan de la salle** : contour détecté automatiquement et redessiné (côtés sur les axes, coins exacts), obstacles
+   effacés (taches < 1 m), fuites par les portes coupées (< 90 cm), meubles pleins gardés en rectangles et espaces
+   entourés de tables en cloisons ; exportable (PGM + YAML, .txt, PNG) et envoyable aux onglets Grid map et Vectorielle ;
+9. **filtres « distance minimum »** (0 = désactivé) : segments plus courts que L, cercles de diamètre inférieur à D,
    taches de points plus petites que T, et tout ce qui est à moins de R d'une position du robot ;
    appliqués en fin de chaîne ou à tout moment avec *Appliquer les filtres maintenant*.
 

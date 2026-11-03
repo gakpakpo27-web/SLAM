@@ -18,7 +18,7 @@ const numVal = id => parseFloat($(id).value);
 const GRID = { g: null, img: null, dirty: true, last: null, history: [] };
 function gridParams(){
   return { res: numVal('gRes'), margin: numVal('gMargin'), model: $('gModel').value,
-           free: numVal('gFree'), occ: numVal('gOcc'), init: +$('gInit').value, fillBetween: $('gFill').checked };
+           free: numVal('gFree'), occ: numVal('gOcc'), occFree: numVal('gOccFree'), init: +$('gInit').value, fillBetween: $('gFill').checked };
 }
 function scanForGrid(s){
   const [X, Y] = toWorldPts(s), pts = new Array(X.length);
@@ -128,7 +128,7 @@ $('gClear').onclick = () => { if (GRID.g) GRID.history.push(GRID.g); GRID.g = nu
 $('gShow').onchange = draw; $('gAlpha').oninput = draw;
 $('gThresh').onchange = () => { GRID.dirty = true; draw(); };
 $('gPts').onchange = draw;
-$('gModel').onchange = () => { const b = $('gModel').value === 'binary'; $('gFree').disabled = b; $('gOcc').disabled = b; };
+$('gModel').onchange = () => { const b = $('gModel').value === 'binary'; $('gFree').disabled = b; $('gOcc').disabled = b; $('gOccFree').disabled = b; };
 $('gExpJson').onclick = () => { if (!GRID.g) return toast('Aucune carte'); download('grid_map.json', JSON.stringify(LC.gridToJSON(GRID.g)), 'application/json'); };
 $('gExpPgm').onclick = () => {
   if (!GRID.g) return toast('Aucune carte');
@@ -710,11 +710,14 @@ function procOpt(){
     features: { method: $('pMethod').value, smallMax: numVal('pSmall') },
     obstacleOpt: { smallMax: numVal('pSmall') },
     vmOpt: { extract: Object.assign(segExtractOpt(), { minLen: 0.3 }) },
+    sharpen: $('pSharp').checked, occFree: numVal('gOccFree') || 15,
+    plan: $('pPlan').checked, planOpt: planOpt(),
     regularize: $('pReg').checked, regOpt: { snapTol: numVal('pSnap'), orthogonal: numVal('pSnap') > 0 },
     filters: filterOpt(),
     cost: { robotRadius: numVal('pRobotR'), inflation: numVal('pInfl') }
   };
 }
+function planOpt(){ return { objMax: numVal('pObjMax') || 1, leak: numVal('pLeak') || 0, notch: numVal('pNotch') || 0 }; }
 async function procRun(){
   if (PROC.busy) return;
   const vis = S.scans.filter(s => s.visible);
@@ -740,6 +743,7 @@ async function procRun(){
     PROC.res.ms = performance.now() - t0;
     PROC.imgs = {}; PROC.plan = { start: null, goal: null, result: null }; PROC.undo = [];
     $('pStatus').textContent = `terminé en ${(PROC.res.ms / 1000).toFixed(1)} s`;
+    if (PROC.res.plan) $('pLayer').value = 'plan'; else if ($('pLayer').value === 'plan') $('pLayer').value = 'clean';
     procInfo(); procPlanInfo(); if (typeof procEInfo === 'function') procEInfo();
   } catch (e){ $('pStatus').textContent = ''; toast(e.message === 'arrêt' ? 'Traitement arrêté' : 'Erreur : ' + e.message); console.error(e); }
   finally {
@@ -787,7 +791,8 @@ function procLayerImage(kind){
     const k = j * Wg + i, o = ((Hg - 1 - j) * Wg + i) * 4;
     let r, gg, b, a = 255;
     const gray = v => { const x = 255 - v; return [x, x, x]; };
-    if (kind === 'clean') [r, gg, b] = gray(g.data[k]);
+    if (kind === 'plan') [r, gg, b] = R.plan ? (R.plan.grid.data[k] === 0 ? [246, 247, 249] : R.plan.grid.data[k] === 255 ? [30, 34, 40] : [120, 126, 134]) : [120, 126, 134];
+    else if (kind === 'clean') [r, gg, b] = gray(g.data[k]);
     else if (kind === 'raw') [r, gg, b] = gray(R.gridRaw.data[k]);
     else if (kind === 'diff'){
       const before = R.gridRaw.data[k] >= LC.OCC_T, after = g.data[k] >= LC.OCC_T;
@@ -828,18 +833,27 @@ function drawProcOver(){
   const R = PROC.res;
   ctx.save(); ctx.lineCap = 'round';
   const line = (f) => { const [x1, y1] = w2s(f.x1, f.y1), [x2, y2] = w2s(f.x2, f.y2); ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke(); };
-  if (R && $('pShowVecRaw').checked){
+  const planLayer = R && R.plan && $('pLayer').value === 'plan';
+  if (planLayer){
+    const poly = (pts, col) => { if (!pts.length) return; ctx.strokeStyle = col; ctx.lineWidth = 3.5; ctx.lineJoin = 'miter'; ctx.beginPath();
+      pts.forEach((p, k) => { const [x, y] = w2s(p[0], p[1]); k ? ctx.lineTo(x, y) : ctx.moveTo(x, y); }); ctx.closePath(); ctx.stroke();
+      ctx.fillStyle = '#ffe14d'; for (const p of pts){ const [x, y] = w2s(p[0], p[1]); ctx.fillRect(x - 3, y - 3, 6, 6); } };
+    poly(R.plan.outer, '#4da3ff'); R.plan.islands.forEach(I => poly(I, '#ffb347'));
+    ctx.strokeStyle = '#ffb347'; ctx.lineWidth = 3.5; ctx.lineCap = 'round';
+    for (const [a, b] of R.plan.innerWalls || []){ const p = w2s(a[0], a[1]), q = w2s(b[0], b[1]); ctx.beginPath(); ctx.moveTo(p[0], p[1]); ctx.lineTo(q[0], q[1]); ctx.stroke(); }
+  }
+  if (R && $('pShowVecRaw').checked && !planLayer){
     ctx.strokeStyle = 'rgba(255,214,77,.9)'; ctx.lineWidth = 1.5; ctx.setLineDash([5, 4]);
     R.vmapRaw.features.forEach(line); ctx.setLineDash([]);
   }
-  if (R && $('pShowVec').checked){
+  if (R && $('pShowVec').checked && !planLayer){
     ctx.strokeStyle = '#4da3ff'; ctx.lineWidth = 3; R.vmap.features.forEach(line);
     for (const c of R.vmap.corners){
       const [x, y] = w2s(c.x, c.y); ctx.strokeStyle = '#ffe14d'; ctx.fillStyle = 'rgba(255,225,77,.3)'; ctx.lineWidth = 1.5;
       ctx.beginPath(); ctx.rect(x - 4, y - 4, 8, 8); ctx.fill(); ctx.stroke();
     }
   }
-  if (R && $('pShowCirc').checked){
+  if (R && $('pShowCirc').checked && !planLayer){
     const mc = numVal('pMinConf');
     for (const it of R.omap.items){
       if (it.conf < mc && !it.mobile) continue;
@@ -940,6 +954,12 @@ $('pExpPng').onclick = () => {
   const x = c.getContext('2d'); x.imageSmoothingEnabled = false; x.drawImage(src, 0, 0, c.width, c.height);
   // superposition de la carte vectorielle et des obstacles circulaires
   const g = PROC.res.grid, tw = (X, Y) => [(X - g.x0) / g.res * k, (g.y0 + g.H * g.res - Y) / g.res * k];
+  if ($('pLayer').value === 'plan' && PROC.res.plan){
+    const poly = (pts, col) => { x.strokeStyle = col; x.lineWidth = Math.max(2.5, k); x.beginPath(); pts.forEach((p, n) => { const [a, b2] = tw(p[0], p[1]); n ? x.lineTo(a, b2) : x.moveTo(a, b2); }); x.closePath(); x.stroke(); };
+    poly(PROC.res.plan.outer, '#1e6fff'); PROC.res.plan.islands.forEach(I => poly(I, '#ff8a00'));
+    for (const [a, b] of PROC.res.plan.innerWalls || []){ const [p1, p2] = tw(a[0], a[1]), [q1, q2] = tw(b[0], b[1]); x.strokeStyle = '#ff8a00'; x.beginPath(); x.moveTo(p1, p2); x.lineTo(q1, q2); x.stroke(); }
+    download('plan_salle.png', c.toDataURL('image/png')); return;
+  }
   if ($('pShowVec').checked){ x.strokeStyle = '#4da3ff'; x.lineWidth = Math.max(2, k * 0.8); x.lineCap = 'round';
     for (const f of PROC.res.vmap.features){ const [a, b] = tw(f.x1, f.y1), [c2, d] = tw(f.x2, f.y2); x.beginPath(); x.moveTo(a, b); x.lineTo(c2, d); x.stroke(); } }
   if ($('pShowCirc').checked){ for (const it of PROC.res.omap.items){ if (it.conf < numVal('pMinConf') && !it.mobile) continue;
@@ -1049,3 +1069,437 @@ $('pFApply').onclick = () => {
   toast(`Supprimés : ${a.segments + b.segRemoved} segments (${b.segCut} coupés), ${a.circles + b.circles} cercles, ${a.blobs} taches, ${a.cells + b.cells} cellules`);
 };
 procEInfo();
+
+// ---------------------------------------------------------------- ROBOT EN DIRECT (localisation sur la carte du Jour 1, vue GPS)
+const R2D = 180 / Math.PI;
+const LIVE = { map: null, mapImg: null, mapKey: '', tracker: null, running: false, feed: 'robot', busy: false, pending: null,
+               view: 'head', zoom: 60, free: null, drag: null, hint: false, hintDrag: null, motion: null, cur: null, trail: [],
+               replay: { i: 0, list: [] }, sim: null, simIdx: 0, timer: null, looCache: new Map(), stats: { n: 0, global: 0, reloc: 0 } };
+const lvSetInfo = h => { $('lvMapInfo').innerHTML = h; };
+function lvRaw(s){                         // scan brut avec la convention d'angle de l'affichage (miroir, décalage)
+  const o = S.opt, sg = o.mirror ? -1 : 1, a = s.a.map(v => ((sg * v + (o.aOff || 0)) % 360 + 360) % 360);
+  return { name: s.name, a, d: s.d, i: s.i, pose: s.pose ? { ...s.pose } : null, id: s.id };
+}
+// --- carte de référence
+function livePrepare(silent){
+  const src = $('lvSrc').value, t0 = performance.now();
+  let grid = null, segs = null, label = '';
+  try {
+    if (src === 'scans'){
+      const vis = S.scans.filter(s => s.visible); if (!vis.length) throw new Error('aucun scan visible');
+      const R = LL.buildReferences(vis.map(lvRaw), -1); grid = R.grid; segs = R.vmap.features; label = `${vis.length} scans visibles`;
+    } else if (src === 'plan'){
+      if (!PROC.res || !PROC.res.plan) throw new Error('construis d’abord le plan (onglet Traitement)');
+      grid = PROC.res.plan.grid; segs = PROC.res.plan.segments; label = 'plan de la salle (sans obstacles)';
+    } else if (src === 'proc'){
+      if (!PROC.res) throw new Error('lance d’abord le traitement (onglet Traitement)');
+      grid = PROC.res.grid; segs = PROC.res.vmap.features; label = 'grid map traitée + carte vectorielle régularisée';
+    } else if (src === 'file'){
+      if (!LIVE.fileGrid) throw new Error('charge d’abord la grid map (.json)');
+      grid = LIVE.fileGrid; segs = LIVE.fileVec ? LIVE.fileVec.features : null; label = 'fichiers' + (segs ? '' : ' (sans carte vectorielle)');
+    } else {
+      LIVE.sim = LL.demoScenario(3); grid = LIVE.sim.refs.grid; segs = LIVE.sim.refs.vmap.features; label = 'salle simulée (9 scans)';
+    }
+    LIVE.map = LL.prepareMap(grid, segs); LIVE.map.label = label; LIVE.mapImg = null; LIVE.looCache.clear();
+    liveReset(false);
+    const st = LC.gridStats(grid);
+    lvSetInfo(`<b>Carte prête</b> : ${label}<br>${grid.W} × ${grid.H} cellules de ${(grid.res * 100).toFixed(0)} cm · ${(st.free * grid.res * grid.res).toFixed(0)} m² libres · ` +
+      `${segs ? segs.length + ' segments' : 'pas de segments'} · ${LIVE.map.cands.length} positions candidates · ${(performance.now() - t0).toFixed(0)} ms`);
+    if (!LIVE.pose) liveCenterOnMap();
+    draw(); return true;
+  } catch (e){ if (!silent) toast('Carte : ' + e.message); lvSetInfo('Aucune carte : ' + e.message); return false; }
+}
+function liveReset(clearTrail = true){
+  LIVE.tracker = LIVE.map ? LL.createTracker(LIVE.map) : null; LIVE.cur = null; LIVE.motion = null;
+  if (clearTrail){ LIVE.trail = []; LIVE.stats = { n: 0, global: 0, reloc: 0 }; }
+  liveState();
+}
+function liveCenterOnMap(){
+  const g = LIVE.map && LIVE.map.grid; if (!g) return;
+  LIVE.free = { x: g.x0 + g.W * g.res / 2, y: g.y0 + g.H * g.res / 2, phi: 0 };
+  LIVE.zoom = Math.min(W / (g.W * g.res), H / (g.H * g.res)) * 0.9;
+  if (!LIVE.cur) LIVE.view = 'free', liveViewButtons();
+}
+// --- traitement d'un scan
+function liveFeedScan(b, truth){
+  if (!LIVE.map) return;
+  if (LIVE.busy){ LIVE.pending = [b, truth]; return; }      // on garde seulement le plus récent
+  LIVE.busy = true;
+  try {
+    const raw = b.pose !== undefined && b.name ? b : lvRaw(b);
+    // relecture honnête : carte construite sans ce scan
+    if (LIVE.feed === 'replay' && $('lvLOO').checked && $('lvSrc').value === 'scans' && raw.id !== undefined){
+      let M = LIVE.looCache.get(raw.id);
+      if (!M){
+        const vis = S.scans.filter(s => s.visible && s.id !== raw.id).map(lvRaw);
+        const R = LL.buildReferences(vis, -1); M = LL.prepareMap(R.grid, R.vmap.features); LIVE.looCache.set(raw.id, M);
+      }
+      LIVE.tracker.M = M;
+    } else if (LIVE.tracker) LIVE.tracker.M = LIVE.map;
+    const local = LL.localPoints(raw), pts = LL.uniformSubsample(local, { max: 350 });
+    const motion = $('lvOdom').checked ? LIVE.motion : null; LIVE.motion = null;
+    const r = LL.trackerUpdate(LIVE.tracker, pts, motion);
+    LIVE.stats.n++; if (r.mode === 'global') LIVE.stats.global++; if (r.mode === 'relocalisation') LIVE.stats.reloc++;
+    const T = LIVE.tracker;
+    LIVE.cur = { local, res: r, truth: truth || null, t: Date.now() };
+    if (T.pose){
+      LIVE.trail.push({ x: T.pose.x, y: T.pose.y, th: T.pose.th, inliers: r.inliers, mode: r.mode, status: r.status, ms: r.ms, t: Date.now(),
+                        err: truth ? LL.poseError(T.pose, truth) : null });
+      if (LIVE.trail.length > 5000) LIVE.trail.shift();
+      if ($('lvSendPose').checked && SER.wifi && (r.status === 'localisé' || r.status === 'relocalisé')){
+        const mm = v => Math.max(-32768, Math.min(32767, Math.round(v * 1000)));
+        robotCmd(`/pose?x=${mm(T.pose.x)}&y=${mm(T.pose.y)}&z=${Math.round(((T.pose.th % 360) + 360) % 360 * 100) % 36000}`);
+      }
+    }
+    liveState(); draw();
+  } catch (e){ console.error(e); toast('Localisation : ' + e.message); }
+  finally {
+    LIVE.busy = false;
+    if (LIVE.onceStop){ LIVE.onceStop = false; LIVE.running = false; }
+    if (LIVE.pending){ const [pb, pt] = LIVE.pending; LIVE.pending = null; setTimeout(() => liveFeedScan(pb, pt), 0); }
+  }
+}
+// déplacement commandé (pilotage WiFi) -> prédiction pour le prochain scan, dans le repère du robot
+function liveOnDrive(mv, ms){
+  if (!LIVE.running) return;
+  const v = numVal('lvV') * ms / 1000, w = numVal('lvW') * ms / 1000;
+  const d = { forward: [v, 0, 0], backward: [-v, 0, 0], left: [0, v, 0], right: [0, -v, 0], rotateleft: [0, 0, w], rotateright: [0, 0, -w] }[mv];
+  if (!d) return;
+  const m = { x: d[0], y: d[1], th: d[2] };
+  LIVE.motion = LIVE.motion ? LL.compose(LIVE.motion, m) : m;
+}
+function liveState(){
+  const T = LIVE.tracker, r = LIVE.cur && LIVE.cur.res, el = $('lvState');
+  if (!LIVE.map){ el.textContent = 'Prépare d’abord la carte.'; return; }
+  if (!T || !r){ el.innerHTML = 'Pas encore de scan. <b>Démarrer</b> pour commencer.'; return; }
+  const col = { 'localisé': '#4cd97b', 'relocalisé': '#4cd97b', 'ambigu': '#ffb347', 'incertain': '#ffb347', 'perdu': '#ff6b6b', 'non localisé': '#ff6b6b' }[r.status] || '#ccc';
+  const p = T.pose, tr = LIVE.cur.truth;
+  let h = `<span style="color:${col};font-weight:700;font-size:15px">● ${r.status}</span> · ${r.mode} · ${r.ms.toFixed(0)} ms`;
+  if (p) h += `<br>x <b>${p.x.toFixed(2)}</b> m · y <b>${p.y.toFixed(2)}</b> m · cap <b>${p.th.toFixed(1)}°</b>`;
+  h += `<br>points du scan sur la carte : <b>${(r.inliers * 100).toFixed(0)} %</b>`;
+  if (r.status === 'ambigu' && T.hyps) h += `<br><span style="color:#ffb347">${T.hyps.length} positions possibles : déplacer le robot pour lever le doute, ou l’indiquer à la main.</span>`;
+  if (tr && p){ const e = LL.poseError(p, tr); h += `<br>écart à la vraie pose : <b style="color:${e.pos <= 0.05 && e.ang <= 2 ? '#4cd97b' : '#ff6b6b'}">${(e.pos * 100).toFixed(1)} cm, ${e.ang.toFixed(2)}°</b>`; }
+  const okN = LIVE.trail.filter(t => t.err).length ? LIVE.trail.filter(t => t.err && t.err.pos <= 0.05 && t.err.ang <= 2).length : null;
+  h += `<br><span class="help">${LIVE.stats.n} scans · ${LIVE.stats.global} recherches globales · ${LIVE.stats.reloc} relocalisations` +
+       (okN !== null ? ` · justes ${okN}/${LIVE.trail.filter(t => t.err).length}` : '') + '</span>';
+  el.innerHTML = h;
+}
+// --- sources de scans
+function liveStart(){
+  if (!LIVE.map && !livePrepare()) return;
+  const feed = LIVE.feed = $('lvFeed').value;
+  if (feed === 'sim' && !LIVE.sim){ $('lvSrc').value = 'sim'; if (!livePrepare()) return; toast('Carte : salle simulée'); }
+  if (feed === 'sim' && $('lvSrc').value !== 'sim'){ $('lvSrc').value = 'sim'; livePrepare(); }
+  liveStop(true); liveReset(true); LIVE.running = true; liveViewButtons();
+  if (feed === 'robot'){
+    if (!isConnected()){ LIVE.running = false; return toast('Connecte d’abord le robot (onglet Scans, USB ou WiFi)'); }
+    if (!SER.live){ $('live').checked = true; $('live').onchange({ target: $('live') }); }
+    toast('Localisation en direct : en attente des scans du robot');
+  } else if (feed === 'replay'){
+    LIVE.replay = { i: 0, list: S.scans.filter(s => s.visible) };
+    if (!LIVE.replay.list.length){ LIVE.running = false; return toast('Aucun scan visible'); }
+    liveTick();
+  } else { LIVE.simIdx = 0; LIVE.simPrev = null; liveTick(); }
+  if (LIVE.view === 'free') LIVE.zoom = Math.max(LIVE.zoom, 70);          // vue GPS : assez près du robot
+  liveSetView(LIVE.view === 'free' ? 'head' : LIVE.view);
+}
+function liveStop(quiet){
+  LIVE.running = false; clearTimeout(LIVE.timer);
+  if (!quiet) toast('Arrêté');
+}
+function liveStep(){                       // un scan de la source relecture / simulation
+  if (LIVE.feed === 'replay'){
+    const L = LIVE.replay.list; if (!L.length) return false;
+    const s = L[LIVE.replay.i % L.length]; LIVE.replay.i++;
+    liveFeedScan(lvRaw(s), { ...s.pose });
+    return true;
+  }
+  if (LIVE.feed === 'sim'){
+    const D = LIVE.sim; if (!D) return false;
+    const truth = D.path[LIVE.simIdx % D.path.length]; LIVE.simIdx++;
+    if (LIVE.simPrev && !LIVE.kidnapped){
+      const m = LL.relPose(LIVE.simPrev, truth), g = () => (D.rng() - 0.5) * 0.2;
+      LIVE.motion = { x: m.x * (1 + g()) + 0.01, y: m.y * (1 + g()), th: m.th * (1 + g()) + 0.5 };   // odométrie bruitée
+    }
+    LIVE.kidnapped = false; LIVE.simPrev = truth;
+    liveFeedScan(Object.assign(LL.simulateScan(D.scene.walls, truth, { tours: 1 }, D.rng), { name: 'sim', pose: null }), truth);
+    return true;
+  }
+  return false;
+}
+function liveTick(){
+  if (!LIVE.running) return;
+  liveStep();
+  LIVE.timer = setTimeout(liveTick, Math.max(50, numVal('lvPeriod')));
+}
+// --- vue « GPS » : transformation monde -> écran (rotation, zoom, centrage)
+function liveXf(){
+  const T = LIVE.tracker, p = T && T.pose;
+  if (LIVE.view !== 'free' && p){
+    return { x: p.x, y: p.y, phi: LIVE.view === 'head' ? (90 - p.th) * D2R : 0, cx: W / 2, cy: LIVE.view === 'head' ? H * 0.62 : H / 2, k: LIVE.zoom };
+  }
+  const f = LIVE.free || { x: 0, y: 0, phi: 0 };
+  return { x: f.x, y: f.y, phi: f.phi, cx: W / 2, cy: H / 2, k: LIVE.zoom };
+}
+const lvW2S = (X, x, y) => { const dx = x - X.x, dy = y - X.y, c = Math.cos(X.phi), s = Math.sin(X.phi);
+  return [X.cx + (c * dx - s * dy) * X.k, X.cy - (s * dx + c * dy) * X.k]; };
+const lvS2W = (X, sx, sy) => { const u = (sx - X.cx) / X.k, v = -(sy - X.cy) / X.k, c = Math.cos(-X.phi), s = Math.sin(-X.phi);
+  return [X.x + c * u - s * v, X.y + s * u + c * v]; };
+function liveMapImage(){
+  const g = LIVE.map.grid;
+  if (LIVE.mapImg && LIVE.mapImg.g === g) return LIVE.mapImg.c;
+  const c = document.createElement('canvas'); c.width = g.W; c.height = g.H;
+  const x = c.getContext('2d'), im = x.createImageData(g.W, g.H);
+  for (let j = 0; j < g.H; j++) for (let i = 0; i < g.W; i++){
+    const v = g.data[j * g.W + i], o = ((g.H - 1 - j) * g.W + i) * 4;
+    const [r, gg, b, a] = v >= LC.OCC_T ? [214, 222, 232, 255] : v <= LC.FREE_T ? [36, 44, 56, 255] : [0, 0, 0, 0];
+    im.data[o] = r; im.data[o + 1] = gg; im.data[o + 2] = b; im.data[o + 3] = a;
+  }
+  x.putImageData(im, 0, 0); LIVE.mapImg = { g, c }; return c;
+}
+const LV_COL = { 'localisé': '#4cd97b', 'relocalisé': '#4cd97b', 'ambigu': '#ffb347', 'incertain': '#ffb347', 'perdu': '#ff6b6b', 'non localisé': '#ff6b6b' };
+function drawLiveView(){
+  ctx.fillStyle = '#0b0e12'; ctx.fillRect(0, 0, W, H);
+  if (!LIVE.map){
+    ctx.fillStyle = '#9aa3ad'; ctx.font = '15px system-ui'; ctx.textAlign = 'center';
+    ctx.fillText('Robot en direct : prépare la carte (étape 1), puis Démarrer.', W / 2, H / 2); ctx.textAlign = 'left'; return;
+  }
+  const X = liveXf(), g = LIVE.map.grid, P = (x, y) => lvW2S(X, x, y);
+  // carte (image affine : tourne avec la vue)
+  const ytop = g.y0 + g.H * g.res, o = P(g.x0, ytop), di = P(g.x0 + g.res, ytop), dj = P(g.x0, ytop - g.res);
+  ctx.save(); ctx.imageSmoothingEnabled = false;
+  ctx.setTransform(dpr * (di[0] - o[0]), dpr * (di[1] - o[1]), dpr * (dj[0] - o[0]), dpr * (dj[1] - o[1]), dpr * o[0], dpr * o[1]);
+  ctx.drawImage(liveMapImage(), 0, 0); ctx.restore();
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  // grille métrique légère (repère : tous les mètres)
+  ctx.save(); ctx.lineCap = 'round';
+  if ($('lvShowVec').checked && LIVE.map.segs.length){
+    ctx.strokeStyle = 'rgba(77,163,255,.85)'; ctx.lineWidth = 2;
+    ctx.beginPath(); for (const f of LIVE.map.segs){ const a = P(f.x1, f.y1), b = P(f.x2, f.y2); ctx.moveTo(a[0], a[1]); ctx.lineTo(b[0], b[1]); } ctx.stroke();
+  }
+  // trajectoire
+  if ($('lvShowTrail').checked && LIVE.trail.length > 1){
+    ctx.lineWidth = 3; ctx.lineJoin = 'round';
+    for (let k = 1; k < LIVE.trail.length; k++){
+      const a = LIVE.trail[k - 1], b = LIVE.trail[k];
+      if (Math.hypot(a.x - b.x, a.y - b.y) > 1.5) continue;            // saut (relocalisation) : pas de trait
+      const u = k / LIVE.trail.length;
+      ctx.strokeStyle = `rgba(62,230,230,${0.15 + 0.7 * u})`;
+      const pa = P(a.x, a.y), pb = P(b.x, b.y); ctx.beginPath(); ctx.moveTo(pa[0], pa[1]); ctx.lineTo(pb[0], pb[1]); ctx.stroke();
+    }
+  }
+  const T = LIVE.tracker, cur = LIVE.cur, r = cur && cur.res;
+  const robotR = Math.max(9, (numVal('pRobotR') || 0.15) * X.k);
+  const drawRobot = (p, fill, stroke, alpha, dashed) => {
+    const [x, y] = P(p.x, p.y), a = p.th * D2R + X.phi;               // cap à l'écran
+    const ux = Math.cos(a), uy = -Math.sin(a);
+    ctx.save(); ctx.globalAlpha = alpha;
+    if (dashed) ctx.setLineDash([5, 4]);
+    ctx.fillStyle = fill; ctx.strokeStyle = stroke; ctx.lineWidth = 2.5;
+    ctx.beginPath(); ctx.arc(x, y, robotR, 0, 2 * Math.PI); ctx.fill(); ctx.stroke();
+    ctx.setLineDash([]);
+    const L = robotR * 1.9;
+    ctx.beginPath(); ctx.moveTo(x + ux * L, y + uy * L); ctx.lineTo(x - uy * robotR * 0.7 + ux * robotR * 0.2, y + ux * robotR * 0.7 + uy * robotR * 0.2);
+    ctx.lineTo(x + uy * robotR * 0.7 + ux * robotR * 0.2, y - ux * robotR * 0.7 + uy * robotR * 0.2); ctx.closePath();
+    ctx.fillStyle = stroke; ctx.fill(); ctx.restore();
+  };
+  // hypothèses (ambiguïté)
+  if ($('lvShowHyps').checked && T && T.hyps && T.hyps.length > 1)
+    for (const h of T.hyps.slice(1)) drawRobot(h, 'rgba(255,179,71,.18)', '#ffb347', 0.8, true);
+  // scan actuel, posé à la pose trouvée : vert s'il colle à la carte, rouge sinon (obstacle nouveau)
+  if ($('lvShowScan').checked && cur && T && T.pose){
+    const p = T.pose, c = Math.cos(p.th * D2R), s = Math.sin(p.th * D2R), F = LIVE.tracker.M.field;
+    for (const q of cur.local){
+      const wx = p.x + c * q.x - s * q.y, wy = p.y + s * q.x + c * q.y, d = LL.fieldSample(F, wx, wy)[0];
+      const [sx, sy] = P(wx, wy); ctx.fillStyle = d <= 0.1 ? '#4cd97b' : '#ff5c5c';
+      ctx.fillRect(sx - 1.6, sy - 1.6, 3.2, 3.2);
+    }
+  }
+  if (cur && cur.truth) drawRobot(cur.truth, 'rgba(255,255,255,0)', 'rgba(255,255,255,.75)', 0.9, true);
+  if (T && T.pose){
+    const col = LV_COL[T.status] || '#4da3ff';
+    drawRobot(T.pose, col + '44', col, 1, false);
+  }
+  // main : indication de la pose
+  if (LIVE.hintDrag){
+    const { a, b } = LIVE.hintDrag, pa = P(a[0], a[1]), pb = P(b[0], b[1]);
+    ctx.strokeStyle = '#ff6bd5'; ctx.lineWidth = 3; ctx.beginPath(); ctx.moveTo(pa[0], pa[1]); ctx.lineTo(pb[0], pb[1]); ctx.stroke();
+    ctx.beginPath(); ctx.arc(pa[0], pa[1], robotR, 0, 2 * Math.PI); ctx.stroke();
+  }
+  ctx.restore();
+  // boussole : direction de l'axe +y de la carte (« nord ») et +x
+  const cx0 = W - 46, cy0 = 46;
+  ctx.save(); ctx.translate(cx0, cy0);
+  ctx.fillStyle = 'rgba(15,18,22,.85)'; ctx.strokeStyle = '#2a323c'; ctx.lineWidth = 1; ctx.beginPath(); ctx.arc(0, 0, 32, 0, 2 * Math.PI); ctx.fill(); ctx.stroke();
+  const ny = [-Math.sin(X.phi), -Math.cos(X.phi)], ex = [Math.cos(X.phi), -Math.sin(X.phi)];
+  ctx.strokeStyle = '#ff5c5c'; ctx.lineWidth = 3; ctx.beginPath(); ctx.moveTo(0, 0); ctx.lineTo(ny[0] * 24, ny[1] * 24); ctx.stroke();
+  ctx.strokeStyle = '#9aa3ad'; ctx.lineWidth = 2; ctx.beginPath(); ctx.moveTo(0, 0); ctx.lineTo(ex[0] * 18, ex[1] * 18); ctx.stroke();
+  ctx.fillStyle = '#ff5c5c'; ctx.font = '700 11px system-ui'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.fillText('y', ny[0] * 30 * 0.92 + 0, ny[1] * 30 * 0.92); ctx.fillStyle = '#9aa3ad'; ctx.fillText('x', ex[0] * 26, ex[1] * 26);
+  ctx.restore();
+  // échelle
+  const m = [0.5, 1, 2, 5, 10].find(v => v * X.k >= 60) || 10;
+  ctx.save(); ctx.strokeStyle = '#d6dee8'; ctx.fillStyle = '#d6dee8'; ctx.lineWidth = 2; ctx.font = '12px system-ui';
+  ctx.beginPath(); ctx.moveTo(16, H - 22); ctx.lineTo(16 + m * X.k, H - 22); ctx.moveTo(16, H - 27); ctx.lineTo(16, H - 17); ctx.moveTo(16 + m * X.k, H - 27); ctx.lineTo(16 + m * X.k, H - 17); ctx.stroke();
+  ctx.fillText(m + ' m', 20 + m * X.k, H - 18); ctx.restore();
+  // pas encore localisé : le dernier scan reçu est montré tel quel autour du centre de l'écran (on voit que ça scanne)
+  if ((!T || !T.pose) && cur && $('lvShowScan').checked){
+    ctx.save(); ctx.fillStyle = '#e3e7ec';
+    for (const q of cur.local) ctx.fillRect(W / 2 + q.x * X.k - 1.4, H / 2 - q.y * X.k - 1.4, 2.8, 2.8);
+    ctx.fillStyle = '#9aa3ad'; ctx.font = '12px system-ui'; ctx.textAlign = 'center';
+    ctx.fillText('scan brut (robot pas encore localisé)', W / 2, H / 2 + 18); ctx.textAlign = 'left'; ctx.restore();
+  }
+  // bandeau d'état
+  if (r || LIVE.running){
+    const st = T ? T.status : '…', col = LV_COL[st] || '#9aa3ad';
+    const line1 = r ? `${st}` : 'en attente du premier scan…';
+    let line2 = r ? `${(r.inliers * 100).toFixed(0)} % du scan sur la carte · ${r.mode} · ${r.ms.toFixed(0)} ms` : '';
+    if (LIVE.feed === 'robot' && LIVE.running){
+      const age = SER.lastScanAt ? (performance.now() - SER.lastScanAt) / 1000 : Infinity;
+      line2 += (line2 ? ' · ' : '') + (isFinite(age) ? `dernier scan il y a ${age.toFixed(1)} s` : 'aucun scan reçu');
+      if (age > 2){ ctx.save(); ctx.fillStyle = '#ff6b6b'; ctx.font = '700 13px system-ui';
+        ctx.fillText(isConnected() ? (SER.live ? 'le robot n’envoie plus de scans : batterie, WiFi ou lidar ?' : 'aperçu direct arrêté (case « Aperçu direct » décochée)') : 'robot déconnecté', 26, 84); ctx.restore(); }
+    }
+    ctx.save(); ctx.fillStyle = 'rgba(15,18,22,.88)'; ctx.strokeStyle = col; ctx.lineWidth = 2;
+    const w = 330, hh = r ? 52 : 34; ctx.beginPath(); ctx.roundRect ? ctx.roundRect(14, 14, w, hh, 8) : ctx.rect(14, 14, w, hh); ctx.fill(); ctx.stroke();
+    ctx.fillStyle = col; ctx.font = '700 15px system-ui'; ctx.fillText('● ' + line1, 26, 36);
+    ctx.fillStyle = '#c7cfd8'; ctx.font = '12px system-ui'; ctx.fillText(line2, 26, 55); ctx.restore();
+  }
+}
+// --- interactions
+function liveSetView(v){
+  if (v === 'free'){ const X = liveXf(); LIVE.free = { x: X.x, y: X.y, phi: X.phi }; }
+  LIVE.view = v; liveViewButtons(); draw();
+}
+function liveViewButtons(){ $('lvViewHead').classList.toggle('on', LIVE.view === 'head'); $('lvViewNorth').classList.toggle('on', LIVE.view === 'north'); $('lvViewFree').classList.toggle('on', LIVE.view === 'free'); $('lvHint').classList.toggle('on', LIVE.hint); }
+function liveWheel(e){
+  const f = (e.deltaY || e.deltaX) < 0 ? 1.15 : 1 / 1.15;
+  LIVE.zoom = Math.max(4, Math.min(600, LIVE.zoom * f)); draw();
+}
+function livePointerDown(e, mx, my){
+  if (!LIVE.map) return;
+  const X = liveXf(), w = lvS2W(X, mx, my);
+  if (LIVE.hint && e.button === 0){ LIVE.hintDrag = { a: w, b: w }; draw(); return; }
+  if (LIVE.view !== 'free') liveSetView('free');
+  LIVE.drag = { m0: [mx, my], f0: { ...LIVE.free } };
+}
+function livePointerMove(mx, my){
+  if (!LIVE.map) return true;
+  const X = liveXf(), [wx, wy] = lvS2W(X, mx, my);
+  $('hud').textContent = `x ${wx.toFixed(2)} m   y ${wy.toFixed(2)} m   ·   ${LIVE.view === 'head' ? 'cap en haut' : LIVE.view === 'north' ? 'nord en haut' : 'vue libre'}   ·   zoom ${(100 / LIVE.zoom * 100).toFixed(0)} cm / 100 px`;
+  if (LIVE.hintDrag){ LIVE.hintDrag.b = [wx, wy]; draw(); return true; }
+  if (LIVE.drag){
+    const d = LIVE.drag, F = d.f0, c = Math.cos(-F.phi), s = Math.sin(-F.phi);
+    const u = -(mx - d.m0[0]) / LIVE.zoom, v = (my - d.m0[1]) / LIVE.zoom;
+    LIVE.free = { x: F.x + c * u - s * v, y: F.y + s * u + c * v, phi: F.phi }; draw();
+  }
+  return true;
+}
+function livePointerUp(){
+  if (LIVE.hintDrag){
+    const { a, b } = LIVE.hintDrag; LIVE.hintDrag = null; LIVE.hint = false; liveViewButtons();
+    const th = Math.hypot(b[0] - a[0], b[1] - a[1]) > 0.05 ? Math.atan2(b[1] - a[1], b[0] - a[0]) * R2D : 0;
+    if (!LIVE.tracker) liveReset(false);
+    // pose donnée à la main : le prochain scan part de là (recherche locale élargie, comme le « 2D Pose Estimate » de ROS)
+    Object.assign(LIVE.tracker, { pose: { x: a[0], y: a[1], th }, hyps: null, lost: 0, status: 'incertain' });
+    LIVE.tracker.o.track = { rxy: 0.6, rth: 35 };
+    LIVE.handHint = true;
+    toast(`Position indiquée : (${a[0].toFixed(2)} ; ${a[1].toFixed(2)}) m, ${th.toFixed(0)}° — le prochain scan s’y recale`);
+    if (!LIVE.running && LIVE.cur) liveRelocalizeCurrent();
+    liveSetView(LIVE.view === 'free' ? 'head' : LIVE.view);
+  }
+  LIVE.drag = null;
+}
+// relance la localisation sur le dernier scan reçu (après une indication à la main)
+function liveRelocalizeCurrent(){
+  const cur = LIVE.cur; if (!cur) return;
+  const pts = LL.uniformSubsample(cur.local, { max: 350 });
+  const r = LL.trackerUpdate(LIVE.tracker, pts, null), T = LIVE.tracker; LIVE.cur.res = r;
+  T.o.track = undefined;
+  if (T.pose) LIVE.trail.push({ x: T.pose.x, y: T.pose.y, th: T.pose.th, inliers: r.inliers, mode: r.mode, status: r.status, ms: r.ms, t: Date.now(),
+                                err: cur.truth ? LL.poseError(T.pose, cur.truth) : null });
+  liveState(); draw();
+}
+// --- boutons
+$('lvSrc').onchange = () => { $('lvFileRow').style.display = $('lvSrc').value === 'file' ? '' : 'none'; };
+$('lvFeed').onchange = () => { $('lvLOORow').style.display = $('lvFeed').value === 'replay' ? '' : 'none'; $('lvKidnap').style.display = $('lvFeed').value === 'sim' ? '' : 'none'; };
+$('lvFeed').onchange();
+$('lvPrep').onclick = () => { liveStop(true); LIVE.trail = []; livePrepare(); };
+$('lvGridFile').onchange = async e => {
+  const f = e.target.files[0]; e.target.value = ''; if (!f) return;
+  try { LIVE.fileGrid = LC.gridFromJSON(JSON.parse(await f.text())); toast('Grid map chargée : ' + f.name); } catch (err){ toast('Grid map illisible : ' + err.message); }
+};
+$('lvVecFile').onchange = async e => {
+  const f = e.target.files[0]; e.target.value = ''; if (!f) return;
+  try { LIVE.fileVec = LC.vectorMapFromText(await f.text()); toast(`Carte vectorielle chargée : ${LIVE.fileVec.features.length} segments`); } catch (err){ toast('Carte vectorielle illisible : ' + err.message); }
+};
+$('lvStart').onclick = liveStart;
+$('lvStop').onclick = () => liveStop();
+$('lvOnce').onclick = () => {
+  if (!LIVE.map && !livePrepare()) return;
+  LIVE.feed = $('lvFeed').value;
+  if (LIVE.feed === 'robot'){ if (!isConnected()) return toast('Robot non connecté'); LIVE.running = true; LIVE.onceStop = true; if (!SER.live){ $('live').checked = true; $('live').onchange({ target: $('live') }); } return; }
+  if (LIVE.feed === 'sim' && !LIVE.sim){ $('lvSrc').value = 'sim'; livePrepare(); LIVE.simIdx = 0; }
+  if (LIVE.feed === 'replay' && (!LIVE.replay.list || !LIVE.replay.list.length)) LIVE.replay = { i: 0, list: S.scans.filter(s => s.visible) };
+  liveStep(); if (LIVE.view === 'free' && LIVE.tracker && LIVE.tracker.pose) liveSetView('head');
+};
+$('lvKidnap').onclick = () => {
+  if (!LIVE.sim) return toast('Démarre d’abord le robot simulé');
+  LIVE.simIdx += Math.floor(LIVE.sim.path.length / 2); LIVE.kidnapped = true;
+  toast('Robot déplacé à la main (sans commande) : il doit se rendre compte qu’il est perdu et se relocaliser');
+};
+$('lvGlobal').onclick = () => { if (!LIVE.map) return toast('Prépare d’abord la carte'); Object.assign(LIVE.tracker, { pose: null, hyps: null, status: 'non localisé' }); if (!LIVE.running && LIVE.cur) liveRelocalizeCurrent(); else liveState(); toast('Recherche sur toute la carte au prochain scan'); };
+$('lvHint').onclick = () => { if (!LIVE.map) return toast('Prépare d’abord la carte'); LIVE.hint = !LIVE.hint; liveViewButtons(); };
+$('lvViewHead').onclick = () => liveSetView('head');
+$('lvViewNorth').onclick = () => liveSetView('north');
+$('lvViewFree').onclick = () => liveSetView('free');
+['lvShowScan', 'lvShowTrail', 'lvShowHyps', 'lvShowVec'].forEach(id => $(id).onchange = draw);
+$('lvClear').onclick = () => { LIVE.trail = []; draw(); };
+$('lvExport').onclick = () => {
+  if (!LIVE.trail.length) return toast('Trajectoire vide');
+  let s = 'n,temps_ms,x_m,y_m,cap_deg,points_sur_carte,mode,etat,calcul_ms,erreur_pos_m,erreur_ang_deg\n';
+  const t0 = LIVE.trail[0].t;
+  LIVE.trail.forEach((t, k) => s += [k + 1, t.t - t0, t.x.toFixed(4), t.y.toFixed(4), t.th.toFixed(2), t.inliers.toFixed(3), t.mode, t.status, t.ms.toFixed(1),
+    t.err ? t.err.pos.toFixed(4) : '', t.err ? t.err.ang.toFixed(3) : ''].join(',') + '\n');
+  download('trajectoire_robot.csv', s, 'text/csv');
+};
+document.querySelectorAll('#lvPad [data-mv]').forEach(b => b.onclick = () => { if (!SER.wifi) return toast('Pilotage : robot connecté en WiFi'); drive(b.dataset.mv); });
+$('lvPadStop').onclick = robotStop;
+liveViewButtons();
+
+setInterval(() => { if (TAB === 'live' && LIVE.running && LIVE.feed === 'robot') draw(); }, 500);   // âge du dernier scan
+
+// --- plan de la salle
+function planRecompute(){
+  const R = PROC.res; if (!R) return toast('Lance d’abord le traitement');
+  const t0 = performance.now(), th = R.regReport && R.regReport.theta0 !== undefined ? R.regReport.theta0 : LM.dominantDirection(R.vmap.features);
+  R.plan = LM.roomPlan(R.grid, R.poses, Object.assign({ theta0: th, segs: R.vmap.features }, planOpt()));
+  R.plan.cost = LM.costmap(R.plan.grid, { robotRadius: numVal('pRobotR'), inflation: numVal('pInfl') });
+  delete PROC.imgs.plan; $('pLayer').value = 'plan';
+  const ps = R.plan.stats;
+  toast(`Plan : ${ps.corners} coins, ${ps.roomArea.toFixed(1)} m², ${ps.erased} obstacles effacés, ${ps.islands} meuble(s), ${ps.innerWalls} cloison(s) (${(performance.now() - t0).toFixed(0)} ms)`);
+  draw();
+}
+$('pPlanRedo').onclick = planRecompute;
+['pObjMax', 'pLeak', 'pNotch'].forEach(id => $(id).onchange = () => { if (PROC.res && $('pPlan').checked) planRecompute(); });
+$('pPlanSend').onclick = () => {
+  const R = PROC.res; if (!R || !R.plan) return toast('Pas de plan : coche « Construire le plan de la salle » et lance le traitement');
+  gridSet(LM.cloneGrid(R.plan.grid), 'Plan de la salle (onglet Traitement)');
+  vecPush(); VEC.map = { features: R.plan.segments.map(s => ({ ...s })), corners: LC.computeCorners(R.plan.segments, LC.VM_DEFAULTS), scans: 0, nextId: R.plan.segments.length + 1 };
+  VEC.last = null; VEC.sel = -1; vecRefresh();
+  toast('Plan envoyé vers les onglets Grid map et Vectorielle');
+};
+$('pExpPlan').onclick = () => {
+  const R = PROC.res; if (!R || !R.plan) return toast('Pas de plan');
+  const { pgm, yaml } = LC.gridToPGM(R.plan.grid, 'plan_salle');
+  download('plan_salle.pgm', pgm, 'image/x-portable-graymap'); setTimeout(() => download('plan_salle.yaml', yaml, 'text/yaml'), 300);
+};
+$('pExpPlanTxt').onclick = () => {
+  const R = PROC.res; if (!R || !R.plan) return toast('Pas de plan');
+  let s = '# Plan de la salle : contour (C), meubles (M), cloisons (W) ; sommets x,y en metres, dans l ordre\n';
+  s += 'C,' + R.plan.outer.map(p => p[0].toFixed(3) + ' ' + p[1].toFixed(3)).join(',') + '\n';
+  R.plan.islands.forEach(I => s += 'M,' + I.map(p => p[0].toFixed(3) + ' ' + p[1].toFixed(3)).join(',') + '\n');
+  (R.plan.innerWalls || []).forEach(([a, b]) => s += 'W,' + [a, b].map(p => p[0].toFixed(3) + ' ' + p[1].toFixed(3)).join(',') + '\n');
+  s += '# Segments x1,y1,x2,y2\n' + R.plan.segments.map(f => [f.x1, f.y1, f.x2, f.y2].map(v => v.toFixed(4)).join(',')).join('\n') + '\n';
+  download('plan_salle.txt', s, 'text/plain');
+};

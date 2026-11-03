@@ -2,7 +2,7 @@
 
 **Code :** `lidar_maptools.js`.
 **Outil :** onglet **Traitement** de `lidar_viewer.html`.
-**Tests :** 21 tests « Traitement » dans `test_lidar_core.js` (109 au total, tous réussis).
+**Tests :** 23 tests « Traitement » dans `test_lidar_core.js` (114 au total, tous réussis).
 **Résultats sur les 14 scans réels :** `resultats_traitement.md`.
 
 ---
@@ -154,6 +154,57 @@ Entre deux positions de la souris, le passage est interpolé tous les demi-rayon
 - **tout ce qui est à moins de R d'une position du robot**, effacé comme avec une gomme posée sur chaque position de scan : objets qui touchaient le robot, câbles, jambes de l'opérateur.
 
 Ils s'appliquent en fin de chaîne, ou au résultat affiché avec *Appliquer les filtres maintenant*.
+
+### 2.9 Des murs nets
+
+**Constat :** sur la carte réelle, les murs sont épais de 2 cellules, en pointillés noirs et gris, avec des trous. Dans la salle simulée, ils sont nets.
+
+**Cause :** deux scans voient le même mur avec 1 à 2 cm d'écart (précision du LD06 et des poses). En plus, un faisceau qui arrive en **rasant** un mur traverse les cellules de ce mur vues occupées par un autre scan, et les « libère » de 45. Une cellule vue occupée une fois (127 + 70 = 197) retombe alors à 152, c'est-à-dire en gris, après un seul faisceau rasant.
+
+**Deux remèdes :**
+1. **Une cellule déjà occupée résiste.** Un faisceau qui la traverse ne la baisse que de 15 au lieu de 45. Les cellules libres ou inconnues, elles, se libèrent toujours de 45 : la surface libre ne change pas.
+   - Réglage dans l'onglet Grid map, par défaut 15 ; c'est aussi le réglage de la chaîne de traitement.
+   - En mettant 45, on retrouve le comportement d'origine.
+2. **Murs nets** (`sharpenWalls`), après la régularisation de la carte vectorielle :
+   - pour chaque mur d'au moins 50 cm, on repère le côté intérieur (celui qui a le plus de cellules libres à 30 cm) ;
+   - les cellules occupées à moins de 10 cm du mur sont effacées : libres côté intérieur, inconnues côté extérieur ;
+   - le mur est ensuite tracé en trait continu d'une cellule.
+
+**Résultats sur la carte réelle.** On mesure la part de la longueur des murs (segments de plus de 1 m) qui a une cellule occupée à moins de 5 cm :
+
+| Réglage | Murs continus | Surface libre |
+|---|---|---|
+| Réglage d'origine (libération de 45 partout) | 80 % | 115 m² |
+| Libération de 20 partout | 95 % | 99 m² : les zones vues une seule fois restent grises |
+| **Cellule occupée qui résiste (15)** | **90 %** | **115 m²** |
+| + murs nets | 100 % des murs redessinés, d'une cellule d'épaisseur | 115 m² |
+
+**Limite :** les murs nets ne sont aussi justes que la carte vectorielle. Un mur que l'extraction n'a pas trouvé (trop court, trop bruité) n'est pas redessiné : il reste tel qu'il est dans la grille.
+
+### 2.10 Plan de la salle : contours seuls, obstacles supprimés
+
+**But :** obtenir automatiquement le **contour de la salle**, tracé proprement (côtés droits, angles nets), et se débarrasser des obstacles : chaises, pieds, sacs, personnes. Les grands éléments fixes sont gardés.
+
+**Fonction :** `roomPlan`, dans l'onglet Traitement : option « Construire le plan de la salle » et couche « Plan de la salle ».
+
+**Étapes :**
+1. **Obstacles effacés.** Chaque tache d'obstacle de la grid map plus petite que 1 m (réglable) compte comme du sol.
+2. **Sol de la salle.** On remplit l'espace libre à partir des positions du robot.
+3. **Fuites coupées.** Le lidar voit par les portes ouvertes et les fentes. Une ouverture morphologique (érosion puis dilatation) coupe les passages plus étroits que 90 cm, une largeur de porte ; on ne garde que la partie reliée au robot. Sur ta carte, le couloir vu par la porte du haut est coupé : 7,2 m² retirés.
+4. **Forme pleine.** Une fermeture morphologique (dilatation puis érosion) bouche les creux du contour plus étroits que 60 cm (objets contre les murs). On bouche ensuite tous les trous.
+5. **Structures intérieures.** Les grandes structures (plus de 1 m) situées à plus de 30 cm des murs sont regroupées quand elles sont à moins de 30 cm les unes des autres. Puis :
+   - **meuble plein** (le robot n'est jamais passé dedans) : gardé comme le **rectangle** orienté sur les axes de la salle qui englobe ses morceaux. Le lidar n'en voit souvent que 2 ou 3 côtés ;
+   - **espace où le robot est passé** (tables en U, comptoir) ou **structure fine** (moins de 25 cm) : gardé comme **cloisons**, c'est-à-dire les segments de la carte vectorielle à cet endroit. L'intérieur reste du sol.
+6. **Contour.** On suit le bord de la forme pleine, case par case. On le simplifie (Douglas-Peucker, 8 cm), puis on ajuste une droite sur chaque côté (moindres carrés totaux). Chaque côté à moins de 8° des axes de la salle y est calé. On fusionne les côtés alignés et on retire les crans de moins de 15 cm. Les **coins** sont les intersections des côtés voisins.
+7. **Nouvelle grid map.** Le sol est libre, les contours et les cloisons sont occupés, et l'extérieur comme l'intérieur des meubles sont inconnus. Le plan est aussi fourni en segments (carte vectorielle), et sa carte de coût est calculée.
+
+**Résultat sur tes 14 scans :**
+- contour de **11 coins**, 45 m de murs, 110 m² de sol ;
+- **128 obstacles effacés** ;
+- 7,2 m² de fuites (couloir) retirés ;
+- l'espace entouré de tables où était pos12 est gardé en 6 cloisons.
+
+**Remarque pour la localisation :** le plan ne contient plus les obstacles, alors qu'en réel 35 à 65 % des points d'un scan tombent sur eux. Pour se repérer, mieux vaut donc la grid map traitée, qui garde les obstacles. Le plan sert à l'affichage, au rapport et à la navigation.
 
 ## 3. Résultats
 

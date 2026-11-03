@@ -382,7 +382,7 @@
 
   /** Carte couvrant tous les scans ; data : [{ robot, pts }] (repère carte) */
   function buildLayeredGrid(data, opt = {}) {
-    const o = Object.assign({ res: 0.05, margin: 0.5, fillBetween: true }, opt);
+    const o = Object.assign({ res: 0.05, margin: 0.5, fillBetween: true, occFree: 15 }, opt);
     let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
     for (const { robot, pts } of data) for (const q of [robot, ...pts]) { if (q.x < x0) x0 = q.x; if (q.x > x1) x1 = q.x; if (q.y < y0) y0 = q.y; if (q.y > y1) y1 = q.y; }
     const g = LC.createGrid({ xMin: x0 - o.margin, yMin: y0 - o.margin, xMax: x1 + o.margin, yMax: y1 + o.margin, res: o.res });
@@ -676,6 +676,275 @@
     return { map: out, report: rep };
   }
 
+  /**
+   * Murs nets : les murs de la carte vectorielle (régularisée) sont redessinés dans la grid map.
+   *  1. pour chaque segment d'au moins minLen, on repère le côté « intérieur » (celui où l'on trouve le plus
+   *     de cellules libres à `side` mètres) ;
+   *  2. les cellules occupées à moins de `band` du segment (mur épais, pointillé, décalé de 1–2 cm entre
+   *     scans) sont effacées : libres côté intérieur, inconnues côté extérieur ;
+   *  3. le segment est tracé (Bresenham) en cellules occupées : un trait continu d'une cellule.
+   * Toutes les bandes sont effacées avant de tracer, pour ne pas effacer un mur voisin aux coins.
+   */
+  function sharpenWalls(g, segs, opt = {}) {
+    const o = Object.assign({ minLen: 0.5, band: 0.10, side: 0.3 }, opt), S = segs.filter(f => LC.segLen(f) >= o.minLen);
+    const st = { walls: S.length, cleared: 0, drawn: 0 }, freeV = FREE_T - 25;
+    const isFree = (x, y) => { const [i, j] = LC.worldToCell(g, x, y), v = LC.getCell(g, i, j); return v !== undefined && v <= FREE_T; };
+    for (const f of S) {
+      const L = LC.segLen(f), ux = (f.x2 - f.x1) / L, uy = (f.y2 - f.y1) / L, nx = -uy, ny = ux;
+      let plus = 0, minus = 0;
+      for (let t = 0; t <= L; t += 0.1) { const x = f.x1 + ux * t, y = f.y1 + uy * t; if (isFree(x + nx * o.side, y + ny * o.side)) plus++; if (isFree(x - nx * o.side, y - ny * o.side)) minus++; }
+      const inSign = plus >= minus ? 1 : -1;
+      const x0 = Math.min(f.x1, f.x2) - o.band, x1 = Math.max(f.x1, f.x2) + o.band, y0 = Math.min(f.y1, f.y2) - o.band, y1 = Math.max(f.y1, f.y2) + o.band;
+      const [i0, j0] = LC.worldToCell(g, x0, y0), [i1, j1] = LC.worldToCell(g, x1, y1);
+      for (let j = Math.max(0, j0); j <= Math.min(g.H - 1, j1); j++) for (let i = Math.max(0, i0); i <= Math.min(g.W - 1, i1); i++) {
+        const k = j * g.W + i; if (g.data[k] < OCC_T) continue;
+        const [cx, cy] = LC.cellCenter(g, i, j), t = (cx - f.x1) * ux + (cy - f.y1) * uy, d = (cx - f.x1) * nx + (cy - f.y1) * ny;
+        if (t < -o.band || t > L + o.band || Math.abs(d) > o.band) continue;
+        g.data[k] = d * inSign >= 0 ? freeV : UNKNOWN; st.cleared++;
+      }
+    }
+    for (const f of S) {
+      const [a, b] = LC.worldToCell(g, f.x1, f.y1), [c, d] = LC.worldToCell(g, f.x2, f.y2);
+      LC.bresenham(a, b, c, d, (i, j) => { if (LC.inGrid(g, i, j)) { const k = j * g.W + i; if (g.data[k] !== 255) st.drawn++; g.data[k] = 255; } });
+    }
+    return st;
+  }
+
+  // ==========================================================================
+  //  8 bis. Plan de la salle : contours seuls, obstacles supprimés
+  // ==========================================================================
+  // Opérations sur masques binaires (Uint8Array W×H), élément structurant carré de rayon r cellules
+  function maskMorph(m, W, H, r, dilate) {
+    const tmp = new Uint8Array(W * H), out = new Uint8Array(W * H);
+    for (let j = 0; j < H; j++) for (let i = 0; i < W; i++) {          // passe horizontale
+      let v = dilate ? 0 : 1;
+      for (let d = -r; d <= r; d++) { const a = i + d, x = a < 0 || a >= W ? 0 : m[j * W + a]; if (dilate ? x : !x) { v = dilate ? 1 : 0; break; } }
+      tmp[j * W + i] = v;
+    }
+    for (let j = 0; j < H; j++) for (let i = 0; i < W; i++) {          // passe verticale
+      let v = dilate ? 0 : 1;
+      for (let d = -r; d <= r; d++) { const b = j + d, x = b < 0 || b >= H ? 0 : tmp[b * W + i]; if (dilate ? x : !x) { v = dilate ? 1 : 0; break; } }
+      out[j * W + i] = v;
+    }
+    return out;
+  }
+  function maskFlood(m, W, H, seeds) {                                  // 4-connexité, depuis des indices de cellules
+    const out = new Uint8Array(W * H), st = [];
+    for (const k of seeds) if (m[k] && !out[k]) { out[k] = 1; st.push(k); }
+    while (st.length) {
+      const k = st.pop(), i = k % W, j = (k - i) / W;
+      if (i > 0 && m[k - 1] && !out[k - 1]) { out[k - 1] = 1; st.push(k - 1); }
+      if (i < W - 1 && m[k + 1] && !out[k + 1]) { out[k + 1] = 1; st.push(k + 1); }
+      if (j > 0 && m[k - W] && !out[k - W]) { out[k - W] = 1; st.push(k - W); }
+      if (j < H - 1 && m[k + W] && !out[k + W]) { out[k + W] = 1; st.push(k + W); }
+    }
+    return out;
+  }
+  // graine la plus proche dans le masque (spirale de rayon rmax cellules)
+  function nearestIn(m, W, H, i0, j0, rmax) {
+    for (let r = 0; r <= rmax; r++) for (let dj = -r; dj <= r; dj++) for (let di = -r; di <= r; di++) {
+      if (Math.max(Math.abs(di), Math.abs(dj)) !== r) continue;
+      const i = i0 + di, j = j0 + dj; if (i >= 0 && j >= 0 && i < W && j < H && m[j * W + i]) return j * W + i;
+    }
+    return -1;
+  }
+  /** Bords d'une région (masque) : boucles fermées de coins de cellules, région à gauche (contour
+   *  extérieur dans le sens trigonométrique, trous dans l'autre sens). Aux points de contact en diagonale,
+   *  on tourne à gauche (4-connexité). Renvoie [{ pts: [[x, y]...], area (m², signée) }]. */
+  function traceLoops(m, W, H, g) {
+    const out = new Map(), key = (i, j) => j * (W + 1) + i, edges = [];
+    const add = (a, b, c, d) => { const e = { a: key(a, b), b: key(c, d), ai: a, aj: b, bi: c, bj: d, used: false }; edges.push(e); const L = out.get(e.a); L ? L.push(e) : out.set(e.a, [e]); };
+    const In = (i, j) => i >= 0 && j >= 0 && i < W && j < H && m[j * W + i];
+    for (let j = 0; j < H; j++) for (let i = 0; i < W; i++) {
+      if (!m[j * W + i]) continue;
+      if (!In(i, j - 1)) add(i, j, i + 1, j);
+      if (!In(i + 1, j)) add(i + 1, j, i + 1, j + 1);
+      if (!In(i, j + 1)) add(i + 1, j + 1, i, j + 1);
+      if (!In(i - 1, j)) add(i, j + 1, i, j);
+    }
+    const loops = [];
+    for (const e0 of edges) {
+      if (e0.used) continue;
+      const P = []; let e = e0;
+      while (e && !e.used) {
+        e.used = true; P.push([e.ai, e.aj]);
+        const dx = e.bi - e.ai, dy = e.bj - e.aj, cand = (out.get(e.b) || []).filter(f => !f.used);
+        if (!cand.length) break;
+        const turn = f => { const fx = f.bi - f.ai, fy = f.bj - f.aj, cr = dx * fy - dy * fx, dot = dx * fx + dy * fy; return cr > 0 ? 0 : dot > 0 ? 1 : 2; };   // gauche, tout droit, droite
+        cand.sort((p, q) => turn(p) - turn(q)); e = cand[0];
+      }
+      // sommets utiles seulement (changements de direction)
+      const Q = [];
+      for (let k = 0; k < P.length; k++) {
+        const a = P[(k - 1 + P.length) % P.length], b = P[k], c = P[(k + 1) % P.length];
+        if ((b[0] - a[0]) * (c[1] - b[1]) - (b[1] - a[1]) * (c[0] - b[0]) !== 0) Q.push([g.x0 + b[0] * g.res, g.y0 + b[1] * g.res]);
+      }
+      let A = 0; for (let k = 0; k < Q.length; k++) { const a = Q[k], b = Q[(k + 1) % Q.length]; A += a[0] * b[1] - b[0] * a[1]; }
+      if (Q.length >= 4) loops.push({ pts: Q, area: A / 2 });
+    }
+    return loops;
+  }
+  /** Polygone en escalier (cellules) -> polygone propre : Douglas-Peucker, droite ajustée sur chaque côté,
+   *  côtés calés sur les axes de la salle (à snapTol près), côtés alignés fusionnés, petits crans retirés,
+   *  coins = intersections des côtés voisins. */
+  function regularizePolygon(Q, opt = {}) {
+    const o = Object.assign({ tol: 0.08, snapTol: 8, minEdge: 0.15, theta0: 0 }, opt), n = Q.length;
+    if (n < 4) return Q.slice();
+    // Douglas-Peucker sur polygone fermé : on coupe au point le plus éloigné du premier
+    let far = 0, fd = -1; for (let k = 1; k < n; k++) { const d = Math.hypot(Q[k][0] - Q[0][0], Q[k][1] - Q[0][1]); if (d > fd) { fd = d; far = k; } }
+    const P = Q.map(([x, y]) => ({ x, y }));
+    const ch1 = P.slice(0, far + 1), ch2 = P.slice(far).concat([P[0]]);
+    const v1 = douglasPeucker(ch1, o.tol), v2 = douglasPeucker(ch2, o.tol).map(k => (k + far) % n);
+    const V = [...new Set(v1.concat(v2.slice(1, -1)))].sort((a, b) => a - b);
+    if (V.length < 3) return Q.slice();
+    // côtés : points d'origine entre deux sommets, droite ajustée
+    const axisSnap = (ux, uy) => {
+      const a = Math.atan2(uy, ux) * R2D;
+      let best = null; for (let k = 0; k < 4; k++) { const t = o.theta0 + 90 * k, d = normDeg(t - a); if (!best || Math.abs(d) < Math.abs(best.d)) best = { t, d }; }
+      if (Math.abs(best.d) <= o.snapTol) return [Math.cos(best.t * D2R), Math.sin(best.t * D2R)];
+      return [ux, uy];
+    };
+    const mkEdge = pts => {
+      const f = LC.fitLine(pts), a = pts[0], b = pts[pts.length - 1];
+      let ux = f.ux, uy = f.uy; if ((b.x - a.x) * ux + (b.y - a.y) * uy < 0) { ux = -ux; uy = -uy; }
+      [ux, uy] = axisSnap(ux, uy);
+      let mx = 0, my = 0; for (const p of pts) { mx += p.x; my += p.y; } mx /= pts.length; my /= pts.length;
+      return { pts, ux, uy, mx, my, len: Math.hypot(b.x - a.x, b.y - a.y) };
+    };
+    let E = V.map((v, k) => { const w = V[(k + 1) % V.length], pts = []; for (let q = v; ; q = (q + 1) % n) { pts.push(P[q]); if (q === w) break; } return mkEdge(pts); });
+    const ang = (a, b) => Math.abs(normDeg(Math.atan2(a.uy, a.ux) * R2D - Math.atan2(b.uy, b.ux) * R2D));
+    const lat = (a, b) => Math.abs((b.mx - a.mx) * -a.uy + (b.my - a.my) * a.ux);
+    // fusion des côtés consécutifs alignés, puis suppression des petits crans entre deux côtés non parallèles
+    for (let changed = true, guard = 0; changed && guard < 200 && E.length > 3; guard++) {
+      changed = false;
+      for (let k = 0; k < E.length && E.length > 3; k++) {
+        const a = E[k], b = E[(k + 1) % E.length];
+        if (ang(a, b) < 10 && lat(a, b) < 0.10) { E.splice(k, 2, mkEdge(a.pts.concat(b.pts.slice(1)))); if (k === E.length) E.unshift(E.pop()); changed = true; break; }
+      }
+      if (changed) continue;
+      for (let k = 0; k < E.length && E.length > 3; k++) {
+        const e = E[k], p = E[(k - 1 + E.length) % E.length], q = E[(k + 1) % E.length];
+        if (e.len < o.minEdge && ang(p, q) > 30) { E.splice(k, 1); changed = true; break; }
+      }
+    }
+    // coins
+    const out = [];
+    for (let k = 0; k < E.length; k++) {
+      const a = E[(k - 1 + E.length) % E.length], b = E[k], cr = a.ux * b.uy - a.uy * b.ux;
+      const ref = b.pts[0];
+      if (Math.abs(cr) < Math.sin(5 * D2R)) { out.push([ref.x, ref.y]); continue; }
+      const t = ((b.mx - a.mx) * b.uy - (b.my - a.my) * b.ux) / cr, x = a.mx + a.ux * t, y = a.my + a.uy * t;
+      out.push(Math.hypot(x - ref.x, y - ref.y) > 0.6 ? [ref.x, ref.y] : [x, y]);
+    }
+    return out;
+  }
+  function fillHoles(m, W, H) {                         // bouche tout ce qui n'est pas relié au bord de la carte
+    const N = W * H, notM = new Uint8Array(N); for (let k = 0; k < N; k++) notM[k] = m[k] ? 0 : 1;
+    const border = []; for (let i = 0; i < W; i++) border.push(i, (H - 1) * W + i); for (let j = 0; j < H; j++) border.push(j * W, j * W + W - 1);
+    const ext = maskFlood(notM, W, H, border), out = new Uint8Array(N);
+    for (let k = 0; k < N; k++) out[k] = ext[k] ? 0 : 1;
+    return out;
+  }
+  /**
+   * Plan de la salle à partir d'une grid map (traitée) et des positions du robot :
+   *  1. obstacles effacés : les taches d'obstacle d'étendue ≤ objMax (chaises, pieds, sacs, personnes)
+   *     sont considérées comme du sol ;
+   *  2. sol relié aux positions du robot (remplissage), puis fuites coupées : ouverture morphologique
+   *     (passages plus étroits que `leak` : portes, rayons passés par une fente) ;
+   *  3. forme pleine de la salle : fermeture (encoches < `notch`) et trous bouchés ;
+   *  4. îlots : grandes structures (étendue > objMax) à l'intérieur, loin des murs (meuble fixe, pilier) ->
+   *     morceaux voisins regroupés, rectangle englobant orienté sur les axes de la salle ;
+   *  5. contours suivis, simplifiés et régularisés (côtés sur les axes de la salle, coins exacts) ;
+   *  6. nouvelle grid map : sol libre, contours occupés, extérieur et intérieur des îlots inconnus.
+   * Renvoie { grid, outer: [[x,y]], islands: [[[x,y]]], segments, stats }.
+   */
+  function roomPlan(g, poses, opt = {}) {
+    const o = Object.assign({ objMax: 1.0, leak: 0.9, notch: 0.6, wallGap: 0.3, thinMax: 0.25, segs: null, tol: 0.08, snapTol: 8, minEdge: 0.15, theta0: 0, keepIslands: true }, opt);
+    const W = g.W, H = g.H, N = W * H, area = m => m.reduce((a, v) => a + v, 0) * g.res * g.res;
+    // 1. obstacles à effacer / structures
+    const { labels, obstacles } = gridObstacles(g, null, { smallMax: 0.15, mediumMax: o.objMax });
+    const erase = new Set(obstacles.filter(c => c.cls !== 'structure').map(c => c.id));
+    const M = new Uint8Array(N);
+    for (let k = 0; k < N; k++) M[k] = g.data[k] <= FREE_T || (labels[k] >= 0 && erase.has(labels[k])) ? 1 : 0;
+    // 2. sol relié au robot, fuites coupées
+    const seedsIn = m => poses.map(p => { const [i, j] = LC.worldToCell(g, p.x, p.y); return nearestIn(m, W, H, i, j, 8); }).filter(k => k >= 0);
+    let R = maskFlood(M, W, H, seedsIn(M));
+    const a0 = area(R), rl = Math.round(o.leak / 2 / g.res);
+    if (rl > 0) { const O = maskMorph(maskMorph(R, W, H, rl, false), W, H, rl, true); for (let k = 0; k < N; k++) O[k] &= R[k]; R = maskFlood(O, W, H, seedsIn(O)); }
+    const a1 = area(R);
+    // 3. forme pleine
+    const rc = Math.max(1, Math.round(o.notch / 2 / g.res));
+    const Fp = fillHoles(maskMorph(maskMorph(R, W, H, rc, true), W, H, rc, false), W, H);
+    // 4. îlots : grandes structures loin des murs (≥ 90 % des cellules à plus de wallGap du bord de la salle).
+    //    Les morceaux voisins (à moins de wallGap) sont regroupés ; l'îlot est le rectangle orienté sur les axes
+    //    de la salle qui les englobe (le lidar ne voit souvent que 2 ou 3 côtés d'une table ou d'une armoire).
+    const inner = maskMorph(Fp, W, H, Math.round(o.wallGap / g.res), false), islandMasks = [], islandRects = [], innerWalls = [];
+    if (o.keepIslands) {
+      const S0 = new Uint8Array(N);
+      for (const c of obstacles) {
+        if (c.cls !== 'structure') continue;
+        let n = 0, nin = 0; for (let k = 0; k < N; k++) if (labels[k] === c.id) { n++; if (inner[k]) nin++; }
+        if (nin >= 0.9 * n) for (let k = 0; k < N; k++) if (labels[k] === c.id) S0[k] = 1;
+      }
+      const D = maskMorph(S0, W, H, Math.max(1, Math.round(o.wallGap / g.res)), true), lab = new Int32Array(N).fill(-1); let nG = 0;
+      for (let k0 = 0; k0 < N; k0++) {
+        if (!D[k0] || lab[k0] >= 0) continue;
+        const grp = maskFlood(D, W, H, [k0]); for (let k = 0; k < N; k++) if (grp[k]) lab[k] = nG;
+        const c = Math.cos(-o.theta0 * D2R), sn = Math.sin(-o.theta0 * D2R);
+        let u0 = Infinity, u1 = -Infinity, v0 = Infinity, v1 = -Infinity, n = 0;
+        for (let k = 0; k < N; k++) if (grp[k] && S0[k]) {
+          const [x, y] = LC.cellCenter(g, k % W, Math.floor(k / W)), u = c * x - sn * y, v = sn * x + c * y;
+          u0 = Math.min(u0, u); u1 = Math.max(u1, u); v0 = Math.min(v0, v); v1 = Math.max(v1, v); n++;
+        }
+        nG++;
+        if (!n) continue;
+        u0 -= g.res / 2; u1 += g.res / 2; v0 -= g.res / 2; v1 += g.res / 2;
+        if (Math.max(u1 - u0, v1 - v0) < o.objMax) continue;
+        const cb = Math.cos(o.theta0 * D2R), sb = Math.sin(o.theta0 * D2R), back = (u, v) => [cb * u - sb * v, sb * u + cb * v];
+        const holdsRobot = poses.some(p => { const u = c * p.x - sn * p.y, v = sn * p.x + c * p.y; return u > u0 && u < u1 && v > v0 && v < v1; });
+        if (holdsRobot || Math.min(u1 - u0, v1 - v0) < o.thinMax) {
+          // pas un meuble plein : le robot est passé à l'intérieur (tables en U, comptoir), ou structure fine :
+          // on garde des cloisons (segments de la carte vectorielle posés sur ces cellules, sinon l'axe du rectangle)
+          const near = (o.segs || []).filter(f => { const [i, j] = LC.worldToCell(g, (f.x1 + f.x2) / 2, (f.y1 + f.y2) / 2); return LC.inGrid(g, i, j) && grp[j * W + i] && LC.segLen(f) >= 0.3; });
+          if (near.length) near.forEach(f => innerWalls.push([[f.x1, f.y1], [f.x2, f.y2]]));
+          else if (Math.min(u1 - u0, v1 - v0) < o.thinMax) {
+            const ax = u1 - u0 >= v1 - v0, m = ax ? (v0 + v1) / 2 : (u0 + u1) / 2;
+            innerWalls.push(ax ? [back(u0, m), back(u1, m)] : [back(m, v0), back(m, v1)]);
+          }
+          continue;
+        }
+        const rect = [back(u0, v0), back(u1, v0), back(u1, v1), back(u0, v1)];
+        const f = new Uint8Array(N);
+        for (let k = 0; k < N; k++) { const [x, y] = LC.cellCenter(g, k % W, Math.floor(k / W)), u = c * x - sn * y, v = sn * x + c * y; if (u >= u0 && u <= u1 && v >= v0 && v <= v1) f[k] = 1; }
+        islandMasks.push(f); islandRects.push(rect);
+      }
+    }
+    const room = Fp.slice(); for (const f of islandMasks) for (let k = 0; k < N; k++) if (f[k]) room[k] = 0;
+    // 5. contours
+    const reg = Q => regularizePolygon(Q, o);
+    const outerLoop = traceLoops(Fp, W, H, g).filter(l => l.area > 0).sort((p, q) => q.area - p.area)[0];
+    const outer = outerLoop ? reg(outerLoop.pts) : [];
+    const islands = islandRects;
+    // 6. grid map du plan
+    const P = Object.assign({}, g, { data: new Uint8Array(N).fill(UNKNOWN) });
+    for (let k = 0; k < N; k++) if (room[k]) P.data[k] = 0;
+    const segments = [], draw = (a, b) => {
+      segments.push(Object.assign(LC.seg(a[0], a[1], b[0], b[1]), { id: segments.length + 1, conf: 10, nObs: 1, firstSeen: 0, lastSeen: 0 }));
+      const [i0, j0] = LC.worldToCell(P, a[0], a[1]), [i1, j1] = LC.worldToCell(P, b[0], b[1]);
+      LC.bresenham(i0, j0, i1, j1, (i, j) => { if (LC.inGrid(P, i, j)) P.data[j * W + i] = 255; });
+    };
+    for (const [a, b] of innerWalls) draw(a, b);
+    for (const poly of [outer, ...islands]) for (let k = 0; k < poly.length; k++) {
+      const a = poly[k], b = poly[(k + 1) % poly.length];
+      draw(a, b);
+    }
+    const perim = poly => poly.reduce((s, a, k) => { const b = poly[(k + 1) % poly.length]; return s + Math.hypot(b[0] - a[0], b[1] - a[1]); }, 0);
+    const areaOf = poly => Math.abs(poly.reduce((s, a, k) => { const b = poly[(k + 1) % poly.length]; return s + a[0] * b[1] - b[0] * a[1]; }, 0)) / 2;
+    return { grid: P, outer, islands, innerWalls, segments, stats: {
+      leakArea: a0 - a1, erased: erase.size, islands: islands.length, innerWalls: innerWalls.length, corners: outer.length,
+      roomArea: areaOf(outer) - islands.reduce((s, q) => s + areaOf(q), 0), perimeter: perim(outer) } };
+  }
+
   // ==========================================================================
   //  9. Exploitation : carte de coût et trajet
   // ==========================================================================
@@ -931,7 +1200,7 @@
     smooth: true, smoothOpt: {},
     close: true, closeOpt: {},
     features: {}, obstacleOpt: {}, vmOpt: { extract: { minLen: 0.3 } },
-    regularize: true, regOpt: {},
+    regularize: true, regOpt: {}, sharpen: true, sharpenOpt: {}, occFree: 15, plan: true, planOpt: {},
     filters: { minSegLen: 0, minCircleD: 0, minBlob: 0, nearPoses: 0, fill: 'free' },
     cost: { robotRadius: 0.15, inflation: 0.35 }
   };
@@ -962,7 +1231,7 @@
 
     await prog(base + 0.1 * (1 - base), 'Grid map enrichie');
     t0 = T();
-    const { grid: gridRaw, layers } = buildLayeredGrid(data, { res: o.res });
+    const { grid: gridRaw, layers } = buildLayeredGrid(data, { res: o.res, occFree: o.occFree });
     steps.push({ step: 'Grid map enrichie (impacts, observations, horodatage)', detail: `${gridRaw.W} × ${gridRaw.H} cellules, ${data.length} scans`, ms: T() - t0 });
     const qRaw = mapQuality(gridRaw, data, layers);
 
@@ -1005,7 +1274,20 @@
     }
     vmap = tmp.vmap;
     if (vmap !== vmapRaw) vmap.corners = LC.computeCorners(vmap.features, LC.VM_DEFAULTS);
+    if (o.sharpen) {
+      t0 = T(); const r = sharpenWalls(grid, vmap.features, o.sharpenOpt);
+      steps.push({ step: 'Murs nets', detail: `${r.walls} murs (≥ 50 cm) redessinés en trait continu : ${r.cleared} cellules de bord bruité effacées, ${r.drawn} cellules de mur ajoutées`, ms: T() - t0 });
+    }
     const qClean = mapQuality(grid, data, layers);
+
+    let plan = null;
+    if (o.plan) {
+      t0 = T();
+      plan = roomPlan(grid, poses, Object.assign({ theta0: regReport && regReport.theta0 !== undefined ? regReport.theta0 : dominantDirection(vmap.features), segs: vmap.features }, o.planOpt));
+      plan.cost = costmap(plan.grid, o.cost);
+      const ps = plan.stats;
+      steps.push({ step: 'Plan de la salle (contours, sans obstacles)', detail: `contour de ${ps.corners} coins, ${ps.perimeter.toFixed(1)} m de murs, ${ps.roomArea.toFixed(1)} m² de sol ; ${ps.erased} obstacles effacés, ${ps.leakArea.toFixed(1)} m² de fuites (portes, fentes) retirés, ${ps.islands} grand(s) meuble(s) plein(s) et ${ps.innerWalls} cloison(s) gardés`, ms: T() - t0 });
+    }
 
     await prog(base + 0.8 * (1 - base), 'Obstacles de la grille');
     t0 = T();
@@ -1019,7 +1301,7 @@
     steps.push({ step: 'Carte de coût', detail: `robot ${Math.round(o.cost.robotRadius * 100)} cm + marge ${Math.round(o.cost.inflation * 100)} cm ; ${cost.stats.navigable.toFixed(1)} m² accessibles au centre du robot`, ms: T() - t0 });
     await prog(1, 'terminé');
     return { poses, refineLog, pre, gridRaw, grid, layers, mobile, obstacles, labels, omap, vmapRaw, vmap, regReport, cost,
-             quality: { raw: qRaw, clean: qClean }, steps, opt: { obstacleOpt: o.obstacleOpt, cost: o.cost },
+             quality: { raw: qRaw, clean: qClean }, steps, plan, opt: { obstacleOpt: o.obstacleOpt, cost: o.cost },
              manual: { cells: 0, segCut: 0, segRemoved: 0, circles: 0 } };
   }
 
@@ -1049,7 +1331,7 @@
     createObstacleMap, updateObstacleMap, pruneObstaclesOnWalls, obstaclesToCSV,
     createLayers, updateGridLayered, buildLayeredGrid, cloneGrid, cloneLayers,
     decayGrid, clearObsolete, removeMobile, labelComponents, removeSpeckles, smoothGrid, closeGaps, gridObstacles,
-    dominantDirection, snapDirections, alignCollinear, mergeKeepProps, joinCorners, trimCollisions, regularizeVectorMap,
+    dominantDirection, snapDirections, alignCollinear, mergeKeepProps, joinCorners, trimCollisions, regularizeVectorMap, sharpenWalls, maskMorph, maskFlood, fillHoles, traceLoops, regularizePolygon, roomPlan,
     costmap, costmapToPGM, planPath, mapQuality, refinePoses,
     clipSegmentDisc, eraseDisc, filterSmall, filterNearPoses, refreshDerived, processMap, reportToMarkdown
   };
