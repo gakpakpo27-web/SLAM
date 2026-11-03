@@ -473,6 +473,14 @@
         const truth = live.D.path[10], pts = lvScan(truth), good = LL.inlierRatio(live.M.field, pts, truth), bad = LL.inlierRatio(live.M.field, pts, { ...truth, x: truth.x + 0.5, th: truth.th + 20 });
         return expect(good > 0.9 && bad < 0.5, `${good.toFixed(2)} / ${bad.toFixed(2)}`);
       });
+      test('retrouver la position : scan seul + grid map relue depuis PGM + YAML, sans pose de départ', () => {
+        const { pgm, yaml } = LC.gridToPGM(live.M.grid, 'c'), g2 = LC.gridFromPGM(pgm, yaml);
+        let same = g2.W === live.M.grid.W && g2.H === live.M.grid.H && near(g2.x0, live.M.grid.x0, 1e-3) && near(g2.y0, live.M.grid.y0, 1e-3);
+        for (let k = 0; k < g2.data.length && same; k++) same = g2.data[k] === live.M.grid.data[k];
+        const truth = { x: 3.1, y: 6.2, th: -77 }, r = LL.locateScan(LL.prepareMap(g2), LL.localPoints(LL.simulateScan(live.D.scene.walls, truth, { tours: 1 }, live.D.rng)));
+        const e = LL.poseError(r.pose, truth);
+        return expect(same && e.pos <= 0.05 && e.ang <= 2 && r.sigma.xy < 0.03, `${same} ${(e.pos * 100).toFixed(1)} cm ${e.ang.toFixed(2)}° σ ${(r.sigma.xy * 100).toFixed(1)} cm`);
+      });
       test('banc : mêmes poses initiales pour toutes les méthodes, un essai par cas et par niveau', () => {
         // (exécution synchrone d'une mini configuration via la fonction résumé)
         const rows = [{ ref: 'grid', method: 'a', label: 'A', level: 0, dp: 0, da: 0, epos: 0.01, eang: 0.1, ms: 1, ok: true, okCoarse: true },

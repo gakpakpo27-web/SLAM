@@ -321,3 +321,37 @@ La simulation ne reproduit pas l'ampleur du problème observé en réel : il fau
 - Une case doit être vue plusieurs fois : il faut parcourir la salle.
 - La couche a la taille de la carte d'origine : ce qui est vu au-delà de ses bords n'est pas ajouté.
 - Les murs (segments) de la carte vectorielle ne sont pas recalculés, seulement retirés quand ils ne reposent plus sur rien.
+
+### 7.7 Retrouver la position du robot à partir d'un scan et d'une grid map, et mesurer l'erreur
+
+**Outil :** onglet Localisation, section « Retrouver la position du robot (scan + grid map) ». Fonctions `locateScan` (`lidar_loc.js`) et `gridFromPGM` (`lidar_core.js`).
+
+**Entrées :**
+- **Une grid map,** au choix :
+  - la carte des autres scans visibles ;
+  - celle de l'onglet Grid map ;
+  - la grid map traitée ;
+  - le plan de la salle ;
+  - un fichier `.json`, ou `.pgm` + `.yaml` au format map_server de ROS, celui de l'export.
+- **Un scan :** un scan de la liste (importé ou capturé), ou le dernier scan reçu du robot.
+
+**Méthode :**
+1. **Localisation globale** (§7.1) : toute la carte, 360°, aucune pose de départ.
+2. **Dispersion :** le scan est relocalisé 12 fois avec un tirage aléatoire de 70 % de ses points, en partant de la position trouvée. L'écart-type des résultats mesure l'effet du **bruit des points**. C'est une borne basse : elle ne compte ni les défauts de la carte, ni ceux des poses de référence.
+3. **Erreur.** Elle est calculée par rapport à la position réelle : soit la pose de référence du scan (après superposition), soit une position mesurée au sol et tapée à la main, **dans le repère de la carte**. Réussite si l'erreur est ≤ 5 cm et ≤ 2°.
+4. **Validation sur toute la session :** chaque scan visible est relocalisé sans pose de départ. Avec « carte des autres scans », la carte est reconstruite **sans** le scan testé. On obtient le taux de réussite, l'erreur médiane et le 90ᵉ centile, le nombre de « sûr » faux et le temps, avec un export CSV.
+
+**Résultats sur tes 14 scans** (carte des 13 autres scans, aucune pose de départ) :
+
+| Mesure | Valeur |
+|---|---|
+| Réussites (≤ 5 cm, ≤ 2°) | **12 / 14** |
+| Classés « sûr » | 11, **aucun faux** |
+| Erreur des réussites | médiane **1,9 cm / 0,15°**, 90ᵉ centile 2,3 cm / 0,58° |
+| Temps médian | 0,2 s par scan |
+| Dispersion due au bruit (2σ) | moins de 1 cm |
+
+**À retenir :**
+- **Les 2 échecs** sont pos2 et pos3, déjà ambigus, et classés comme tels.
+- **La dispersion due au bruit** (moins de 1 cm) est bien plus faible que l'erreur réelle (environ 2 cm). La précision de l'outil est donc limitée par la carte et par l'incertitude des poses de référence (±3 cm), pas par le bruit du lidar.
+- **Avec une carte rechargée depuis des fichiers PGM + YAML,** le résultat est identique : pos9 est retrouvé à 0,6 cm et 0,23°.

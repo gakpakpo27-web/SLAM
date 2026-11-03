@@ -14,7 +14,7 @@
 | `lidar_maptools.js` | Traitement des cartes et des obstacles : prétraitement, clusters, cercles / RANSAC / Douglas-Peucker, grid map enrichie et nettoyée, obstacles, régularisation de la carte vectorielle, carte de coût, trajet A*, recalage global des poses |
 | `DEMARCHE_traitement_cartes.md` | Démarche et résultats du traitement des cartes et des obstacles |
 | `resultats_traitement.md` | Rapport de la chaîne de traitement sur les 14 scans réels (avec recalage) |
-| `test_lidar_core.js` | 115 tests automatiques (`node test_lidar_core.js`), dont les cas limites de la découpe |
+| `test_lidar_core.js` | 116 tests automatiques (`node test_lidar_core.js`), dont les cas limites de la découpe |
 | `DEMARCHE_parties_3_4.md` | Démarche des parties 3 et 4 : choix techniques, hypothèses, difficultés, limites |
 | `DEMARCHE_partie_5.md` | Démarche de la partie 5 (carte vectorielle) |
 | `capture_lidar.py` | (Optionnel) capture en ligne de commande, 1 fichier CSV par position |
@@ -227,6 +227,12 @@ référence », on choisit le scan pris à proximité.
 | Grid map | recherche exhaustive (5 cm / 1°), multi-résolution (20 cm / 4° → 2,5 cm / 0,5°), descente de gradient (Gauss-Newton robuste sur la carte des distances) |
 | Carte vectorielle | recherche exhaustive (10 cm / 2° puis 2,5 cm / 0,5°), descente de gradient (ICP point-segment), calcul direct (appariement de coins, sans pose initiale) |
 | Entre scans | ICP point-à-point, ICP point-à-ligne, corrélation multi-résolution |
+
+**Retrouver la position du robot** (onglet *Localisation*) : une grid map (carte des autres scans, onglet Grid map,
+Traitement, plan, ou fichier `.json` / `.pgm` + `.yaml`) et un scan (de la liste, ou le dernier reçu du robot) →
+position trouvée sans pose de départ, confiance, autres positions possibles, dispersion ; erreur par rapport à la pose
+de référence ou à une position mesurée au sol ; *Valider sur les scans visibles* donne réussite, erreurs médiane et
+90e centile, temps (export CSV).
 
 **Banc d'évaluation** (onglet *Localisation* ou `node bench_localisation.js --real session.json`) :
 - mêmes scans et mêmes poses initiales (même graine) pour toutes les méthodes ;
