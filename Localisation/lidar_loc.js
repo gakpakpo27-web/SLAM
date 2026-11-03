@@ -637,12 +637,190 @@
     return s;
   }
 
+
+  // ==========================================================================
+  //  5. Robot en direct : localisation globale (sans pose initiale) et suivi
+  // ==========================================================================
+  /**
+   * Prépare une carte FIXE (celle du Jour 1) pour la localisation en direct : carte des distances,
+   * index des segments (si carte vectorielle) et positions candidates pour la recherche globale
+   * (cellules vues libres, tous les candStep mètres, à plus de `clearance` d'un obstacle).
+   */
+  function prepareMap(grid, segs, opt = {}) {
+    const o = { candStep: 0.2, clearance: 0.04, ...opt };
+    const F = distanceField(grid), cands = [], step = Math.max(1, Math.round(o.candStep / grid.res));
+    for (let j = Math.floor(step / 2); j < grid.H; j += step) for (let i = Math.floor(step / 2); i < grid.W; i += step) {
+      const k = j * grid.W + i;
+      if (grid.data[k] > LC.FREE_T || F.dist[k] < o.clearance) continue;
+      cands.push([grid.x0 + (i + 0.5) * grid.res, grid.y0 + (j + 0.5) * grid.res]);
+    }
+    const S = segs && segs.length ? segs : null;
+    return { grid, field: F, index: S ? segIndex(S) : null, segs: S || [], cands, candStep: o.candStep };
+  }
+  /** Part des points du scan à moins de tol d'un obstacle de la carte : « % du scan qui colle à la carte » */
+  function inlierRatio(F, pts, pose, tol = 0.10) {
+    const c = Math.cos(pose.th * D2R), s = Math.sin(pose.th * D2R); let n = 0;
+    for (const p of pts) if (fieldSample(F, pose.x + c * p.x - s * p.y, pose.y + s * p.x + c * p.y)[0] <= tol) n++;
+    return pts.length ? n / pts.length : 0;
+  }
+  // affinage commun : multi-résolution fine autour de la pose, puis ICP point-segment (ou gradient sur la grille)
+  function refineOn(M, pts, init, o = {}) {
+    const r1 = gridMultiRes(M.field, pts, init, { rxy: o.rxy ?? 0.3, rth: o.rth ?? 6, keep: o.keep ?? 3,
+                            levels: o.levels ?? [[0.1, 2], [0.05, 1], [0.025, 0.5]] });
+    let best = r1, inl = inlierRatio(M.field, pts, r1);
+    const r2 = M.index ? vecICP(M.index, pts, r1) : gridGradient(M.field, pts, r1);
+    const inl2 = inlierRatio(M.field, pts, r2);
+    if (inl2 >= inl - 0.005) { best = r2; inl = inl2; }
+    return { x: best.x, y: best.y, th: normDeg(best.th), inliers: inl };
+  }
+  const distinctPose = (a, b, dxy, dth) => Math.hypot(a.x - b.x, a.y - b.y) > dxy || Math.abs(normDeg(a.th - b.th)) > dth;
+  /**
+   * Localisation globale : aucune idée de la pose de départ.
+   *  1. toutes les positions candidates × 360° (pas de 4°), score sur un champ lissé (σ = 20 cm) avec
+   *     80 points du scan -> les meilleures hypothèses bien distinctes ;
+   *  2. (carte vectorielle) hypothèse du calcul direct par les coins ;
+   *  3. chaque hypothèse est affinée (multi-résolution fine puis ICP) et notée par la part de points
+   *     qui collent à la carte (inliers, à 10 cm) ;
+   *  4. confiance : 'sûr' si la meilleure colle (≥ 30 % des points) et nettement mieux que la 2e hypothèse
+   *     distincte (2e < 80 % de la 1re), 'ambigu' si une autre hypothèse est presque aussi bonne (salle
+   *     symétrique, scan encombré), 'incertain' si rien ne colle. Seuils calés sur les 14 scans réels :
+   *     les 11 « sûr » sont justes ; les 2 erreurs (pos2, pos3) sont classées « ambigu ».
+   * pts : points locaux du scan (sous-échantillonnés). Renvoie { pose, inliers, confidence, hyps, ms }.
+   */
+  function globalLocalize(M, pts, opt = {}) {
+    const o = { sth: 4, sigma: 0.2, nPts: 80, keep: 24, refineTop: 8, sepXY: 0.5, sepTh: 20, okInl: 0.3, ambRatio: 0.8, ...opt };
+    const t0 = now(), F = M.field, L = likTable(F, o.sigma), P = thin(pts, o.nPts), n = P.length;
+    const PX = new Float64Array(n), PY = new Float64Array(n), C = M.cands, nA = Math.round(360 / o.sth);
+    // meilleur angle et 2e meilleur angle (éloigné) par position
+    const b1 = new Float64Array(C.length).fill(-1), a1 = new Float64Array(C.length), b2 = new Float64Array(C.length).fill(-1), a2 = new Float64Array(C.length);
+    for (let ia = 0; ia < nA; ia++) {
+      const th = -180 + ia * o.sth, c = Math.cos(th * D2R), s = Math.sin(th * D2R);
+      for (let k = 0; k < n; k++) { PX[k] = c * P[k].x - s * P[k].y; PY[k] = s * P[k].x + c * P[k].y; }
+      for (let q = 0; q < C.length; q++) {
+        const tx = C[q][0], ty = C[q][1]; let sum = 0;
+        for (let k = 0; k < n; k++) {
+          const i = Math.floor((tx + PX[k] - F.x0) / F.res), j = Math.floor((ty + PY[k] - F.y0) / F.res);
+          if (i >= 0 && j >= 0 && i < F.W && j < F.H) sum += L[j * F.W + i];
+        }
+        if (sum > b1[q]) { if (Math.abs(normDeg(th - a1[q])) > o.sepTh) { b2[q] = b1[q]; a2[q] = a1[q]; } b1[q] = sum; a1[q] = th; }
+        else if (sum > b2[q] && Math.abs(normDeg(th - a1[q])) > o.sepTh) { b2[q] = sum; a2[q] = th; }
+      }
+    }
+    const all = [];
+    for (let q = 0; q < C.length; q++) {
+      all.push({ x: C[q][0], y: C[q][1], th: a1[q], score: b1[q] / n });
+      if (b2[q] > 0) all.push({ x: C[q][0], y: C[q][1], th: a2[q], score: b2[q] / n });
+    }
+    all.sort((p, q) => q.score - p.score);
+    const coarse = [];
+    for (const h of all) { if (coarse.every(c => distinctPose(c, h, o.sepXY, o.sepTh))) coarse.push(h); if (coarse.length >= o.keep) break; }
+    const tCoarse = now() - t0;
+    let seeds = coarse.slice(0, o.refineTop);
+    if (M.index && o.direct !== false) {
+      try { const d = vecDirect(M.index, pts, { x: 0, y: 0, th: 0 }); if (!d.failed) seeds.push({ ...d, from: 'coins' }); } catch (e) { /* pas de coin */ }
+    }
+    let hyps = seeds.map(h => Object.assign(refineOn(M, pts, h), { coarse: h.score, from: h.from || 'grille' }));
+    hyps.sort((p, q) => q.inliers - p.inliers);
+    const uniq = []; for (const h of hyps) if (uniq.every(u => distinctPose(u, h, o.sepXY, o.sepTh))) uniq.push(h);
+    const best = uniq[0], second = uniq[1];
+    const ratio = second ? second.inliers / Math.max(1e-9, best.inliers) : 0;
+    const confidence = best.inliers < o.okInl ? 'incertain' : ratio >= o.ambRatio ? 'ambigu' : 'sûr';
+    return { pose: { x: best.x, y: best.y, th: best.th }, inliers: best.inliers, confidence, ratio, hyps: uniq.slice(0, 5),
+             ms: now() - t0, msCoarse: tCoarse, nCands: C.length * nA };
+  }
+  /** Suivi : on part de la pose précédente (plus le déplacement commandé, s'il est connu) et on cherche
+   *  dans une petite fenêtre qui grandit avec le déplacement. */
+  function trackStep(M, pts, prev, motion, opt = {}) {
+    const o = { rxy: 0.35, rth: 15, ...opt }, t0 = now();
+    const pred = motion ? compose(prev, motion) : prev;
+    const mv = motion ? Math.hypot(motion.x, motion.y) : 0, mr = motion ? Math.abs(motion.th) : 0;
+    const r = refineOn(M, pts, pred, { rxy: o.rxy + 0.3 * mv, rth: o.rth + 0.3 * mr, levels: [[0.1, 3], [0.05, 1], [0.025, 0.5]], keep: 4 });
+    return Object.assign(r, { ms: now() - t0, pred });
+  }
+  /**
+   * Suiveur : enchaîne les scans. Pas encore localisé -> recherche globale. Sinon suivi local ; si le
+   * scan ne colle plus à la carte (inliers < lostInl) deux fois de suite, ou s'effondre, le robot est
+   * « perdu » -> nouvelle recherche globale (cas du robot « kidnappé », déplacé à la main).
+   */
+  function createTracker(M, opt = {}) {
+    return { M, o: { lostInl: 0.25, hardLost: 0.15, lostCount: 1, relDrop: 0.7, ambRatio: 0.8, maxHyps: 3, ...opt }, ref: 0, pose: null, hyps: null,
+             status: 'non localisé', lost: 0, n: 0, last: null };
+  }
+  // résultat d'une recherche globale -> état du suiveur (plusieurs hypothèses gardées si c'est ambigu)
+  function adoptGlobal(T, g, mode) {
+    T.lost = 0;
+    if (g.confidence === 'incertain') { T.pose = null; T.hyps = null; T.status = 'non localisé'; }
+    else {
+      T.pose = g.pose;
+      T.hyps = g.confidence === 'ambigu' ? g.hyps.filter(h => h.inliers >= T.o.ambRatio * g.inliers * 0.9).slice(0, T.o.maxHyps).map(h => ({ x: h.x, y: h.y, th: h.th, inliers: h.inliers })) : null;
+      T.status = g.confidence === 'ambigu' ? 'ambigu' : mode === 'relocalisation' ? 'relocalisé' : 'localisé';
+    }
+    return { x: g.pose.x, y: g.pose.y, th: g.pose.th, inliers: g.inliers, confidence: g.confidence, hyps: g.hyps };
+  }
+  function trackerUpdate(T, pts, motion) {
+    const t0 = now(); T.n++;
+    let res, mode;
+    if (!T.pose) {
+      mode = 'global'; res = adoptGlobal(T, globalLocalize(T.M, pts, T.o.global), mode);
+    } else if (T.hyps && T.hyps.length > 1) {
+      // plusieurs hypothèses : chacune est suivie avec le même déplacement ; le robot qui bouge lève l'ambiguïté
+      mode = 'hypothèses';
+      const H = T.hyps.map(h => trackStep(T.M, pts, h, motion, T.o.track)).sort((p, q) => q.inliers - p.inliers);
+      T.hyps = H.filter(h => h.inliers >= T.o.ambRatio * H[0].inliers).slice(0, T.o.maxHyps).map(h => ({ x: h.x, y: h.y, th: h.th, inliers: h.inliers }));
+      T.pose = { x: H[0].x, y: H[0].y, th: H[0].th };
+      res = Object.assign({}, H[0], { hyps: H });
+      if (T.hyps.length === 1) { T.hyps = null; T.status = 'localisé'; } else T.status = 'ambigu';
+      if (H[0].inliers < T.o.hardLost) { mode = 'relocalisation'; res = adoptGlobal(T, globalLocalize(T.M, pts, T.o.global), mode); }
+    } else {
+      const s = trackStep(T.M, pts, T.pose, motion, T.o.track);
+      mode = 'suivi'; res = s;
+      // seuil relatif : un scan qui colle nettement moins bien que d'habitude (moyenne glissante des bons
+      // scans) est suspect, même au-dessus du seuil absolu (scans encombrés : 35 à 65 % des points collent)
+      const thr = Math.max(T.o.lostInl, T.ref ? T.o.relDrop * T.ref : 0);
+      if (s.inliers >= thr) { T.pose = { x: s.x, y: s.y, th: s.th }; T.lost = 0; T.status = 'localisé'; T.hyps = null; }
+      else {
+        T.lost++;
+        if (T.lost >= T.o.lostCount || s.inliers < T.o.hardLost) {
+          // robot perdu (ou déplacé à la main) : nouvelle recherche sur toute la carte
+          const g = globalLocalize(T.M, pts, T.o.global);
+          mode = 'relocalisation';
+          if (g.inliers > s.inliers + 0.05 && g.confidence !== 'incertain') res = adoptGlobal(T, g, mode);
+          else { T.pose = { x: s.x, y: s.y, th: s.th }; T.status = 'perdu'; }
+        } else { T.pose = { x: s.x, y: s.y, th: s.th }; T.status = 'incertain'; }
+      }
+    }
+    if (T.status === 'localisé' || T.status === 'relocalisé') T.ref = T.ref ? 0.7 * T.ref + 0.3 * res.inliers : res.inliers;   // « d'habitude »
+    if (T.status === 'non localisé') T.ref = 0;
+    T.last = Object.assign({ mode, status: T.status, ms: now() - t0, n: T.n, nHyps: T.hyps ? T.hyps.length : (T.pose ? 1 : 0) }, res);
+    return T.last;
+  }
+  /** Démo simulée : la salle du simulateur, une carte faite de 9 scans (comme au Jour 1) et un trajet
+   *  du robot (pas de `step` m, rotations en place), avec la vérité à chaque pas. */
+  function demoScenario(seed = 3, opt = {}) {
+    const sc = classroomScene(seed, { legs: opt.legs ?? 40 }), rng = mulberry32(seed + 11);
+    const mapPoses = [[2, 1.5, 0], [6.5, 1.5, 90], [11, 1.2, 150], [2, 5.5, 0], [6.5, 5, -90], [12, 6, 200], [2.5, 8.5, 0], [7.5, 6.8, 30], [12.5, 2, 90]];
+    const scans = mapPoses.map(([x, y, th]) => Object.assign(simulateScan(sc.walls, { x, y, th }, { tours: 3 }, rng), { pose: { x, y, th } }));
+    const R = buildReferences(scans, -1);
+    const way = opt.way ?? [[1.5, 1.5], [7, 1.2], [7.5, 6.5], [12, 6.5], [12.5, 1.5], [8.3, 1.4], [3, 6.2], [1.6, 8.6]];
+    const step = opt.step ?? 0.15, rotStep = opt.rotStep ?? 15, path = [];
+    let cur = { x: way[0][0], y: way[0][1], th: 0 };
+    for (let w = 1; w < way.length; w++) {
+      const [tx, ty] = way[w], head = Math.atan2(ty - cur.y, tx - cur.x) * R2D;
+      while (Math.abs(normDeg(head - cur.th)) > 1e-6) { const d = normDeg(head - cur.th); cur = { ...cur, th: normDeg(cur.th + Math.sign(d) * Math.min(rotStep, Math.abs(d))) }; path.push({ ...cur }); }
+      for (let L = Math.hypot(tx - cur.x, ty - cur.y); L > 1e-6; L = Math.hypot(tx - cur.x, ty - cur.y)) {
+        const d = Math.min(step, L); cur = { x: cur.x + d * Math.cos(head * D2R), y: cur.y + d * Math.sin(head * D2R), th: cur.th }; path.push({ ...cur });
+      }
+    }
+    return { scene: sc, scans, refs: R, path, rng };
+  }
+
   return {
     mulberry32, localPoints, uniformSubsample, transform, relPose, compose, poseError, perturb,
     classroomScene, simulateScan,
     distanceField, fieldSample, gridBrute, gridMultiRes, gridGradient,
     segIndex, vecScore, vecBrute, vecICP, vecDirect, lineFeatures,
     pointIndex, scanICPPoint, scanICPLine, scanCorrelative,
-    buildReferences, runLocBench, summarize, benchToCSV, benchToMarkdown, METHODS, REF_LABEL
+    buildReferences, runLocBench, summarize, benchToCSV, benchToMarkdown, METHODS, REF_LABEL,
+    prepareMap, inlierRatio, globalLocalize, trackStep, createTracker, trackerUpdate, demoScenario
   };
 });

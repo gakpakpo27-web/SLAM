@@ -176,3 +176,69 @@ Erreurs angulaires médianes en réussite : 0,00° à 0,35°.
 - **Références réelles limitées :** elles viennent de la même chaîne de recalage (superposition). Une validation indépendante serait plus solide : marquer quelques positions au sol et mesurer au mètre (±2 cm, ±2°).
 - **Bruit simulé idéalisé :** pas de reflets, pas de vitres, pas de personnes qui bougent.
 - **Temps mesurés sur un seul cœur,** en JavaScript : les ordres de grandeur comptent plus que les valeurs absolues.
+
+## 7. Robot en direct : se repérer sur la carte du Jour 1
+
+**Objectif :** la carte de la salle est faite (Jour 1). On pose le robot n'importe où, et il doit **se retrouver tout seul** sur cette carte, puis se suivre pendant qu'il roule. La vue suit le robot comme un GPS.
+
+**Outils :**
+- onglet **Robot en direct** de `lidar_viewer.html` ;
+- fonctions `prepareMap`, `globalLocalize`, `trackerUpdate` de `lidar_loc.js` ;
+- banc `node bench_suivi.js --real session.json`, dont les résultats sont dans `resultats_suivi.md`.
+
+### 7.1 Démarche
+
+1. **Carte figée.** On prend la grid map et la carte vectorielle du Jour 1. Elles peuvent venir des scans visibles, de l'onglet Traitement ou de fichiers exportés. On calcule une fois pour toutes :
+   - la carte des distances ;
+   - l'index des segments ;
+   - les **positions candidates** : toutes les cellules vues libres, tous les 20 cm.
+2. **Localisation globale, sans pose de départ :**
+   - chaque position candidate est testée sur 360°, tous les 4°, avec 80 points du scan sur un champ lissé (≈ 2 800 positions × 90 angles, environ 0,15 s) ;
+   - on ajoute l'hypothèse du calcul direct par les coins ;
+   - les 8 meilleures hypothèses bien distinctes (plus de 50 cm ou de 20° d'écart) sont affinées (multi-résolution fine, puis ICP point-segment) ;
+   - chaque hypothèse est notée par la **part des points du scan à moins de 10 cm d'un obstacle de la carte**.
+3. **Confiance,** calée sur les 14 scans réels :
+   - **sûr :** au moins 30 % des points collent, et la 2ᵉ hypothèse fait moins de 80 % du score de la 1ʳᵉ ;
+   - **ambigu :** une autre hypothèse est presque aussi bonne ;
+   - **incertain :** rien ne colle.
+4. **Suivi :** à chaque nouveau scan, on part de la pose précédente, plus le déplacement commandé s'il est connu (commandes WiFi `/forward`… × vitesse réglée, ou odométrie simulée). La recherche se fait dans une petite fenêtre (±35 cm et ±15°, élargie avec le déplacement) : 5 à 10 ms.
+5. **Se rendre compte qu'on est perdu.** Un scan est suspect s'il colle à moins de 25 % de la carte, ou à moins de 70 % de la moyenne des scans précédents (seuil relatif, utile car tes scans encombrés ne collent qu'à 35–65 %). On relance alors une recherche globale, gardée seulement si elle colle nettement mieux : c'est le cas du robot « kidnappé », déplacé à la main.
+6. **Ambiguïté.** Si la recherche globale est ambiguë, on suit jusqu'à 3 hypothèses en parallèle : le mouvement du robot les départage. On peut aussi **indiquer la position à la main** (clic, puis glisser vers l'avant du robot), comme le « 2D Pose Estimate » de ROS : le scan suivant se recale autour de cette position.
+
+### 7.2 Vue « GPS »
+
+- **Cap en haut :** la carte tourne pour que l'avant du robot soit toujours vers le haut. Le robot est placé aux deux tiers de l'écran, pour voir plus loin devant lui.
+- **Autres modes :** nord en haut, ou vue libre (on glisse la carte ; la touche C recentre).
+- **Repères :** une boussole montre où sont les axes x et y de la carte, et une échelle donne les distances.
+- **Points du scan :** en **vert** s'ils collent à la carte, en **rouge** sinon. Le rouge, c'est un obstacle nouveau (chaise déplacée, personne), ou le signe d'une pose fausse.
+- **Autres éléments affichés :** la trajectoire, les hypothèses en pointillés orange quand c'est ambigu, la vraie pose (pointillés blancs) en relecture et en simulation, et le bandeau d'état.
+
+### 7.3 Résultats
+
+**Localisation globale sur les 14 scans réels.** Aucune pose de départ ; chaque scan est cherché sur la carte des 13 autres.
+
+| Mesure | Résultat |
+|---|---|
+| Scans retrouvés (≤ 5 cm et ≤ 2°) | **12 / 14** |
+| Scans classés « sûr » | **11, tous justes** |
+| Scans faux (pos2, pos3) | tous deux classés **« ambigu »**, jamais « sûr » |
+| Bonne pose parmi les hypothèses gardées | 13 / 14 |
+| Temps médian | ≈ 0,2 s |
+
+**Suivi en simulation.** Poses exactes ; 264 scans, avec des pas de 15 cm et des rotations de 15° ; odométrie avec 10 % d'erreur, plus un biais de 1 cm et 0,5° par pas.
+
+| Scénario | Scans justes | Temps médian par scan |
+|---|---|---|
+| Avec odométrie | 264 / 264 | 6 ms |
+| Sans odométrie (pose précédente seule) | 264 / 264 | 5 ms |
+| 25 objets absents de la carte (chaises, cartons, personnes) | 264 / 264 | 5 ms |
+| Robot déplacé à la main à mi-parcours | 264 / 264 : relocalisé dès le scan du déplacement | 7 ms |
+
+**Relecture des 14 scans réels dans l'onglet** (carte sans le scan rejoué) : 12 / 14 justes. pos2 et pos3 sont affichés « ambigu ». Avec une indication à la main, pos3 se recale à 0,2 cm et 0,08°.
+
+### 7.4 Limites
+
+- **La simulation est plus facile que le réel** (pas de reflets, bruit idéal) : les erreurs y sont de 0,3 cm. En réel, il faut compter 1 à 3 cm, soit l'incertitude des poses de référence.
+- **Vitesses de la prédiction :** celles des commandes WiFi (0,25 m/s, 90°/s) sont à mesurer sur ton robot. Une prédiction fausse n'est pas grave : le suivi tolère ±35 cm et ±15°, et la recherche globale rattrape le reste.
+- **Scans encombrés pris au milieu des tables** (pos2, pos3) : ils restent ambigus tant que le robot ne bouge pas. Il faut alors avancer de quelques dizaines de centimètres, ou indiquer la position à la main.
+- **Fréquence des scans :** la recherche globale (0,2 s) dépasse l'intervalle entre deux scans en WiFi (5 Hz). Pendant qu'elle tourne, les scans arrivés entre-temps sont sautés : on ne garde que le plus récent.

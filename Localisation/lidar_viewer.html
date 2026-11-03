@@ -85,6 +85,8 @@
   .ok{color:#4cd97b} .ko{color:#ff6b6b}
   .seg-tools{display:flex;gap:4px;margin-bottom:6px}
   .seg-tools button.on{background:var(--accent);color:#06121f;border-color:var(--accent);font-weight:600}
+  #pEraser.on{background:#ff6bd5;color:#1a0614;border-color:#ff6bd5;font-weight:600}
+  #pPlanMode.on{background:#3ee6e6;color:#06121f;border-color:#3ee6e6;font-weight:600}
   #sTestOut{max-height:260px;overflow:auto;font-size:11.5px;line-height:1.5}
   #sTestOut .tg{color:var(--text);font-weight:600;margin-top:6px}
   .pad{display:grid;grid-template-columns:repeat(3,52px);gap:4px;justify-content:center}
@@ -115,6 +117,8 @@
     <button data-tab="seg">Segments</button>
     <button data-tab="vec">Vectorielle</button>
     <button data-tab="loc">Localisation</button>
+    <button data-tab="proc">Traitement</button>
+    <button data-tab="live">Robot en direct</button>
   </div>
   <div class="tab" id="tab-scans">
   <h2 style="margin-top:4px">1 · Acquisition depuis le robot</h2>
@@ -432,6 +436,137 @@
     </div>
     <div class="help" style="margin-top:4px">Les recherches exhaustives sont lentes (0,2 à 0,5 s par essai) : réduire les tirages pour un premier essai.</div>
   </div>
+  <!-- ===================================================== TRAITEMENT -->
+  <div class="tab" id="tab-proc" hidden>
+    <div class="help">Chaîne complète appliquée aux scans visibles (avec leurs poses) : prétraitement, grid map enrichie et nettoyée, obstacles, carte vectorielle régularisée, carte de coût. Les cartes des onglets Grid map et Vectorielle ne sont pas modifiées (boutons « Envoyer » plus bas).</div>
+    <h2>1 · Poses</h2>
+    <label class="chk" title="Chaque scan est relocalisé sur la carte des autres (multi-résolution puis ICP point-segment), 2 passes. Environ 0,5 s par scan."><input type="checkbox" id="pRefine"> Recaler toutes les poses avant (alignement global)</label>
+    <h2>2 · Prétraitement des scans</h2>
+    <div class="frm">
+      <label for="pDMin" title="Les points plus proches appartiennent au robot (châssis, câbles)">Rayon du robot : points ignorés en dessous (m)</label><input type="number" id="pDMin" value="0.10" step="0.01" min="0">
+      <label for="pDMax">Portée maximum (m)</label><input type="number" id="pDMax" value="12" step="0.5" min="1">
+      <label for="pIMin">Intensité minimum (0–255)</label><input type="number" id="pIMin" value="0" step="5" min="0" max="255">
+    </div>
+    <label class="chk"><input type="checkbox" id="pIso" checked> Retirer les points isolés (sans voisin proche)</label>
+    <label class="chk" title="Faisceau à cheval sur un premier plan et le fond : point fantôme entre les deux"><input type="checkbox" id="pMixed" checked> Retirer les points mixtes (bords d’objets)</label>
+    <h2>3 · Nettoyage de la grid map</h2>
+    <div class="frm"><label for="pRes">Résolution (m)</label><input type="number" id="pRes" value="0.05" step="0.01" min="0.02"></div>
+    <label class="chk" title="Cellule vue au moins 3 fois mais impact dans moins d'un tiers des observations : objet déplacé, personne, porte"><input type="checkbox" id="pMobile" checked> Effacer les traces d’obstacles mobiles (persistance)</label>
+    <div class="frm"><label for="pPersist">Persistance maximum d’un obstacle mobile (%)</label><input type="number" id="pPersist" value="34" step="1" min="5" max="90"></div>
+    <label class="chk" title="1 ou 2 cellules isolées vues dans un seul scan. Les petites taches vues souvent (pieds de chaise) sont gardées."><input type="checkbox" id="pSpeck" checked> Retirer les taches isolées (bruit)</label>
+    <label class="chk" title="Une cellule inconnue prend l'état d'au moins 5 de ses 8 voisines"><input type="checkbox" id="pSmooth" checked> Lissage majoritaire (trous et stries)</label>
+    <label class="chk" title="Fermeture morphologique : bouche les trous d'une ou deux cellules dans les murs"><input type="checkbox" id="pClose" checked> Fermer les trous des murs</label>
+    <label class="chk" title="Scans pris dans l'ordre : une cellule occupée qui n'est plus revue comme impact depuis N scans est libérée (si revue libre) ou remise à inconnue"><input type="checkbox" id="pObsolete"> Effacer les obstacles obsolètes</label>
+    <label class="chk" title="Les cellules non observées depuis N scans se rapprochent de « inconnu »"><input type="checkbox" id="pDecay"> Décroissance temporelle</label>
+    <div class="frm"><label for="pAge">… durée de vie (scans)</label><input type="number" id="pAge" value="8" step="1" min="1"></div>
+    <h2>4 · Features et obstacles</h2>
+    <div class="frm">
+      <label for="pMethod">Extraction des segments</label><select id="pMethod"><option value="split">Split-and-merge (partie 4)</option><option value="dp">Douglas-Peucker</option><option value="ransac">RANSAC (robuste)</option></select>
+      <label for="pSmall" title="Cluster plus petit : pied de chaise, poteau (cercle)">Taille max d’un petit obstacle (m)</label><input type="number" id="pSmall" value="0.15" step="0.01" min="0.03">
+    </div>
+    <label class="chk" title="Murs ramenés aux directions dominantes, segments d'un même mur alignés et fusionnés, coins raccordés, dépassements rognés"><input type="checkbox" id="pReg" checked> Régulariser la carte vectorielle</label>
+    <div class="frm"><label for="pSnap">Redresser si l’écart aux axes de la salle ≤ (°)</label><input type="number" id="pSnap" value="6" step="1" min="0" max="20"></div>
+    <h2>5 · Carte de coût (navigation)</h2>
+    <div class="frm">
+      <label for="pRobotR">Rayon du robot (m)</label><input type="number" id="pRobotR" value="0.15" step="0.01" min="0.05">
+      <label for="pInfl">Marge de sécurité (m)</label><input type="number" id="pInfl" value="0.35" step="0.05" min="0">
+    </div>
+    <h2>6 · Filtres « distance minimum » (0 = désactivé)</h2>
+    <div class="frm">
+      <label for="pFSeg">Supprimer les segments plus courts que (m)</label><input type="number" id="pFSeg" value="0" step="0.05" min="0">
+      <label for="pFCirc">Supprimer les cercles de diamètre inférieur à (m)</label><input type="number" id="pFCirc" value="0" step="0.01" min="0">
+      <label for="pFBlob" title="Groupes de points / cellules d'obstacle connexes de la grid map">Supprimer les taches de points plus petites que (m)</label><input type="number" id="pFBlob" value="0" step="0.05" min="0">
+      <label for="pFNear" title="Objets qui touchaient le robot, câbles, jambes de l'opérateur… Libère aussi les positions de scan pour les trajets">Supprimer tout ce qui est à moins de … d’une position du robot (m)</label><input type="number" id="pFNear" value="0" step="0.05" min="0">
+      <label for="pFill">Cellules effacées (filtres et gomme) →</label><select id="pFill"><option value="free">libres</option><option value="unknown">inconnues</option></select>
+    </div>
+    <div class="row"><button id="pFApply" title="Applique les filtres au résultat affiché, sans relancer la chaîne (annulable)">Appliquer les filtres maintenant</button></div>
+    <div class="row" style="margin-top:8px"><button class="primary" id="pRun">Lancer le traitement</button><span class="help" id="pStatus"></span></div>
+    <div class="info" id="pInfo">Aucun traitement.</div>
+
+    <h2>Affichage</h2>
+    <div class="frm"><label for="pLayer">Couche</label><select id="pLayer">
+      <option value="clean">Grid map traitée</option><option value="raw">Grid map brute</option>
+      <option value="diff">Différences (rouge retiré, vert ajouté, violet mobile)</option>
+      <option value="persist">Persistance (impacts ÷ observations)</option>
+      <option value="obst">Obstacles par classe</option><option value="cost">Carte de coût</option><option value="none">Aucune</option></select></div>
+    <div class="opt"><span>Opacité</span><input type="range" id="pAlpha" min="0.2" max="1" step="0.05" value="1"><span></span></div>
+    <label class="chk"><input type="checkbox" id="pShowVec" checked> Carte vectorielle régularisée (+ coins)</label>
+    <label class="chk"><input type="checkbox" id="pShowVecRaw"> Carte vectorielle avant régularisation (pointillés)</label>
+    <label class="chk"><input type="checkbox" id="pShowCirc" checked> Obstacles circulaires (orange ; mobiles en rouge)</label>
+    <div class="opt"><span>Confiance minimum des cercles</span><input type="range" id="pMinConf" min="1" max="10" step="1" value="3"><span id="pMinConfV">3</span></div>
+    <label class="chk"><input type="checkbox" id="pShowPts"> Points des scans</label>
+
+    <h2>Gomme (édition manuelle)</h2>
+    <div class="row"><button id="pEraser">Gomme : glisser sur la carte</button><button id="pEUndo">Annuler (Ctrl+Z)</button></div>
+    <div class="frm"><label for="pBrush">Rayon de la gomme (m)</label><input type="number" id="pBrush" value="0.15" step="0.05" min="0.02"></div>
+    <label class="chk"><input type="checkbox" id="pEGrid" checked> Cellules d’obstacle (grid map)</label>
+    <label class="chk"><input type="checkbox" id="pESeg" checked> Segments (coupés au bord de la gomme)</label>
+    <label class="chk"><input type="checkbox" id="pECirc" checked> Cercles</label>
+    <div class="help">Molette + Maj : changer le rayon. Clic droit ou glisser hors gomme : déplacer la vue. Relancer le traitement efface les retouches manuelles.</div>
+    <div class="info" id="pEInfo">Aucune retouche.</div>
+
+    <h2>Trajet sur la carte de coût</h2>
+    <div class="row"><button id="pPlanMode">Placer départ / arrivée</button><button id="pPlanClear">Effacer</button></div>
+    <label class="chk"><input type="checkbox" id="pPlanUnk"> Autoriser les zones inconnues</label>
+    <div class="info" id="pPlanInfo">Active le mode puis clique le départ, puis l’arrivée (A* 8-connexe, le robot garde ses distances aux obstacles).</div>
+
+    <h2>Utiliser le résultat</h2>
+    <div class="row">
+      <button id="pApply" title="Remplace la pose des scans par la pose recalée (annulable avec Ctrl+Z dans l'onglet Scans)">Appliquer les poses recalées</button>
+      <button id="pToGrid">Envoyer la grid map → onglet Grid map</button>
+      <button id="pToVec">Envoyer la carte vectorielle → onglet Vectorielle</button>
+    </div>
+    <h2>Fichiers</h2>
+    <div class="row">
+      <button id="pExpPgm">Grid map traitée (PGM + YAML)</button><button id="pExpPng">Image de la couche (PNG)</button>
+      <button id="pExpVec">Carte vectorielle (.txt)</button><button id="pExpObs">Obstacles (CSV)</button>
+      <button id="pExpCost">Carte de coût (PGM)</button><button id="pExpRep">Rapport (.md)</button>
+    </div>
+  </div>
+  <!-- ===================================================== ROBOT EN DIRECT -->
+  <div class="tab" id="tab-live" hidden>
+    <div class="help">Le robot se repère sur la carte du Jour 1 : d’abord sur toute la carte (sans savoir où il est), puis scan après scan. La vue suit le robot comme un GPS.</div>
+    <h2>1 · Carte de référence</h2>
+    <div class="frm"><label for="lvSrc">Carte</label><select id="lvSrc">
+      <option value="scans">Scans visibles (carte du Jour 1)</option><option value="proc">Résultat de l’onglet Traitement</option>
+      <option value="file">Fichiers (grid map .json + vectorielle .txt)</option><option value="sim">Salle simulée (démo)</option></select></div>
+    <div class="row" id="lvFileRow" style="display:none">
+      <label class="btn">Grid map (.json)<input type="file" id="lvGridFile" accept=".json" hidden></label>
+      <label class="btn">Vectorielle (.txt, option)<input type="file" id="lvVecFile" accept=".txt,.csv" hidden></label>
+    </div>
+    <div class="row"><button class="primary" id="lvPrep">Préparer la carte</button></div>
+    <div class="info" id="lvMapInfo">Aucune carte.</div>
+
+    <h2>2 · Scans</h2>
+    <div class="frm"><label for="lvFeed">Source</label><select id="lvFeed">
+      <option value="robot">Robot connecté (USB ou WiFi)</option><option value="replay">Rejouer les scans visibles</option><option value="sim">Robot simulé (trajet dans la salle simulée)</option></select>
+      <label for="lvPeriod">Intervalle (relecture, simulation) (ms)</label><input type="number" id="lvPeriod" value="400" step="100" min="50"></div>
+    <label class="chk" id="lvLOORow" title="Chaque scan rejoué est cherché sur une carte construite SANS lui : sinon il se retrouverait lui-même dans la carte"><input type="checkbox" id="lvLOO" checked> Relecture : carte sans le scan rejoué (test honnête)</label>
+    <div class="row"><button class="primary" id="lvStart">▶ Démarrer</button><button id="lvStop">■ Arrêter</button><button id="lvOnce">Un scan</button><button id="lvKidnap" title="Simulation : le robot est déplacé à la main sans prévenir">Kidnapper</button></div>
+
+    <h2>3 · Repérage</h2>
+    <div class="row"><button id="lvGlobal" title="Oublie la pose actuelle et cherche sur toute la carte au prochain scan">Relocaliser (toute la carte)</button><button id="lvHint">Indiquer la position à la main</button></div>
+    <div class="help">Indiquer : clic sur la position du robot, glisser vers son avant, relâcher.</div>
+    <label class="chk"><input type="checkbox" id="lvOdom" checked> Prédire avec les commandes de déplacement (WiFi) ou l’odométrie simulée</label>
+    <div class="frm"><label for="lvV">Vitesse en translation (m/s)</label><input type="number" id="lvV" value="0.25" step="0.05" min="0">
+      <label for="lvW">Vitesse de rotation (°/s)</label><input type="number" id="lvW" value="90" step="10" min="0"></div>
+    <label class="chk"><input type="checkbox" id="lvSendPose"> Envoyer la pose trouvée au robot (/pose, WiFi)</label>
+    <div class="pad" id="lvPad" style="margin-top:6px">
+      <button data-mv="rotateleft" title="U">⟲</button><button data-mv="forward" title="I">▲</button><button data-mv="rotateright" title="O">⟳</button>
+      <button data-mv="left" title="J">◀</button><button id="lvPadStop" class="stop" title="Espace">STOP</button><button data-mv="right" title="L">▶</button>
+      <span></span><button data-mv="backward" title="K">▼</button><span></span>
+    </div>
+    <div class="info" id="lvState">Pas encore localisé.</div>
+
+    <h2>4 · Vue</h2>
+    <div class="row seg-tools"><button id="lvViewHead" class="on" title="La carte tourne : l’avant du robot est toujours en haut">Cap en haut (GPS)</button><button id="lvViewNorth">Nord en haut</button><button id="lvViewFree">Libre</button></div>
+    <div class="help">Molette : zoom. Glisser : déplacer la vue (passe en « Libre »). Touche C : recentrer.</div>
+    <label class="chk"><input type="checkbox" id="lvShowScan" checked> Scan actuel (vert : colle à la carte, rouge : obstacle nouveau)</label>
+    <label class="chk"><input type="checkbox" id="lvShowTrail" checked> Trajectoire</label>
+    <label class="chk"><input type="checkbox" id="lvShowHyps" checked> Hypothèses quand c’est ambigu</label>
+    <label class="chk"><input type="checkbox" id="lvShowVec" checked> Carte vectorielle</label>
+    <div class="row"><button id="lvClear">Effacer la trajectoire</button><button id="lvExport">Trajectoire (CSV)</button></div>
+  </div>
 </aside>
 
 <main>
@@ -638,6 +773,7 @@
       for (const k of freeSet) d[k] = Math.max(0, d[k] - free);
       for (const k of occSet) d[k] = Math.min(255, d[k] + occ);
     }
+    if (p.onCells) p.onCells(freeSet, occSet);         // couches annexes (compteurs, horodatage) : voir lidar_maptools.js
     return { freed: freeSet.size, occupied: occSet.size, outside, robotInside: inGrid(g, ri, rj) };
   }
 
@@ -985,7 +1121,7 @@
     const t = ++map.scans;
     const st = { scan: t, extracted: 0, added: [], merged: [], shortened: [], split: [], weakened: [], removed: [], expired: [], fused: 0, ghosts: [] };
 
-    const segs = extractSegments(pts, robot, o.extract);
+    const segs = o.segments || extractSegments(pts, robot, o.extract);   // o.segments : segments déjà extraits (autre méthode)
     st.extracted = segs.length;
 
     if (o.absence && map.features.length) absenceCheck(map, robot, pts, o, st);
@@ -1794,13 +1930,1250 @@
     return s;
   }
 
+
+  // ==========================================================================
+  //  5. Robot en direct : localisation globale (sans pose initiale) et suivi
+  // ==========================================================================
+  /**
+   * Prépare une carte FIXE (celle du Jour 1) pour la localisation en direct : carte des distances,
+   * index des segments (si carte vectorielle) et positions candidates pour la recherche globale
+   * (cellules vues libres, tous les candStep mètres, à plus de `clearance` d'un obstacle).
+   */
+  function prepareMap(grid, segs, opt = {}) {
+    const o = { candStep: 0.2, clearance: 0.04, ...opt };
+    const F = distanceField(grid), cands = [], step = Math.max(1, Math.round(o.candStep / grid.res));
+    for (let j = Math.floor(step / 2); j < grid.H; j += step) for (let i = Math.floor(step / 2); i < grid.W; i += step) {
+      const k = j * grid.W + i;
+      if (grid.data[k] > LC.FREE_T || F.dist[k] < o.clearance) continue;
+      cands.push([grid.x0 + (i + 0.5) * grid.res, grid.y0 + (j + 0.5) * grid.res]);
+    }
+    const S = segs && segs.length ? segs : null;
+    return { grid, field: F, index: S ? segIndex(S) : null, segs: S || [], cands, candStep: o.candStep };
+  }
+  /** Part des points du scan à moins de tol d'un obstacle de la carte : « % du scan qui colle à la carte » */
+  function inlierRatio(F, pts, pose, tol = 0.10) {
+    const c = Math.cos(pose.th * D2R), s = Math.sin(pose.th * D2R); let n = 0;
+    for (const p of pts) if (fieldSample(F, pose.x + c * p.x - s * p.y, pose.y + s * p.x + c * p.y)[0] <= tol) n++;
+    return pts.length ? n / pts.length : 0;
+  }
+  // affinage commun : multi-résolution fine autour de la pose, puis ICP point-segment (ou gradient sur la grille)
+  function refineOn(M, pts, init, o = {}) {
+    const r1 = gridMultiRes(M.field, pts, init, { rxy: o.rxy ?? 0.3, rth: o.rth ?? 6, keep: o.keep ?? 3,
+                            levels: o.levels ?? [[0.1, 2], [0.05, 1], [0.025, 0.5]] });
+    let best = r1, inl = inlierRatio(M.field, pts, r1);
+    const r2 = M.index ? vecICP(M.index, pts, r1) : gridGradient(M.field, pts, r1);
+    const inl2 = inlierRatio(M.field, pts, r2);
+    if (inl2 >= inl - 0.005) { best = r2; inl = inl2; }
+    return { x: best.x, y: best.y, th: normDeg(best.th), inliers: inl };
+  }
+  const distinctPose = (a, b, dxy, dth) => Math.hypot(a.x - b.x, a.y - b.y) > dxy || Math.abs(normDeg(a.th - b.th)) > dth;
+  /**
+   * Localisation globale : aucune idée de la pose de départ.
+   *  1. toutes les positions candidates × 360° (pas de 4°), score sur un champ lissé (σ = 20 cm) avec
+   *     80 points du scan -> les meilleures hypothèses bien distinctes ;
+   *  2. (carte vectorielle) hypothèse du calcul direct par les coins ;
+   *  3. chaque hypothèse est affinée (multi-résolution fine puis ICP) et notée par la part de points
+   *     qui collent à la carte (inliers, à 10 cm) ;
+   *  4. confiance : 'sûr' si la meilleure colle (≥ 30 % des points) et nettement mieux que la 2e hypothèse
+   *     distincte (2e < 80 % de la 1re), 'ambigu' si une autre hypothèse est presque aussi bonne (salle
+   *     symétrique, scan encombré), 'incertain' si rien ne colle. Seuils calés sur les 14 scans réels :
+   *     les 11 « sûr » sont justes ; les 2 erreurs (pos2, pos3) sont classées « ambigu ».
+   * pts : points locaux du scan (sous-échantillonnés). Renvoie { pose, inliers, confidence, hyps, ms }.
+   */
+  function globalLocalize(M, pts, opt = {}) {
+    const o = { sth: 4, sigma: 0.2, nPts: 80, keep: 24, refineTop: 8, sepXY: 0.5, sepTh: 20, okInl: 0.3, ambRatio: 0.8, ...opt };
+    const t0 = now(), F = M.field, L = likTable(F, o.sigma), P = thin(pts, o.nPts), n = P.length;
+    const PX = new Float64Array(n), PY = new Float64Array(n), C = M.cands, nA = Math.round(360 / o.sth);
+    // meilleur angle et 2e meilleur angle (éloigné) par position
+    const b1 = new Float64Array(C.length).fill(-1), a1 = new Float64Array(C.length), b2 = new Float64Array(C.length).fill(-1), a2 = new Float64Array(C.length);
+    for (let ia = 0; ia < nA; ia++) {
+      const th = -180 + ia * o.sth, c = Math.cos(th * D2R), s = Math.sin(th * D2R);
+      for (let k = 0; k < n; k++) { PX[k] = c * P[k].x - s * P[k].y; PY[k] = s * P[k].x + c * P[k].y; }
+      for (let q = 0; q < C.length; q++) {
+        const tx = C[q][0], ty = C[q][1]; let sum = 0;
+        for (let k = 0; k < n; k++) {
+          const i = Math.floor((tx + PX[k] - F.x0) / F.res), j = Math.floor((ty + PY[k] - F.y0) / F.res);
+          if (i >= 0 && j >= 0 && i < F.W && j < F.H) sum += L[j * F.W + i];
+        }
+        if (sum > b1[q]) { if (Math.abs(normDeg(th - a1[q])) > o.sepTh) { b2[q] = b1[q]; a2[q] = a1[q]; } b1[q] = sum; a1[q] = th; }
+        else if (sum > b2[q] && Math.abs(normDeg(th - a1[q])) > o.sepTh) { b2[q] = sum; a2[q] = th; }
+      }
+    }
+    const all = [];
+    for (let q = 0; q < C.length; q++) {
+      all.push({ x: C[q][0], y: C[q][1], th: a1[q], score: b1[q] / n });
+      if (b2[q] > 0) all.push({ x: C[q][0], y: C[q][1], th: a2[q], score: b2[q] / n });
+    }
+    all.sort((p, q) => q.score - p.score);
+    const coarse = [];
+    for (const h of all) { if (coarse.every(c => distinctPose(c, h, o.sepXY, o.sepTh))) coarse.push(h); if (coarse.length >= o.keep) break; }
+    const tCoarse = now() - t0;
+    let seeds = coarse.slice(0, o.refineTop);
+    if (M.index && o.direct !== false) {
+      try { const d = vecDirect(M.index, pts, { x: 0, y: 0, th: 0 }); if (!d.failed) seeds.push({ ...d, from: 'coins' }); } catch (e) { /* pas de coin */ }
+    }
+    let hyps = seeds.map(h => Object.assign(refineOn(M, pts, h), { coarse: h.score, from: h.from || 'grille' }));
+    hyps.sort((p, q) => q.inliers - p.inliers);
+    const uniq = []; for (const h of hyps) if (uniq.every(u => distinctPose(u, h, o.sepXY, o.sepTh))) uniq.push(h);
+    const best = uniq[0], second = uniq[1];
+    const ratio = second ? second.inliers / Math.max(1e-9, best.inliers) : 0;
+    const confidence = best.inliers < o.okInl ? 'incertain' : ratio >= o.ambRatio ? 'ambigu' : 'sûr';
+    return { pose: { x: best.x, y: best.y, th: best.th }, inliers: best.inliers, confidence, ratio, hyps: uniq.slice(0, 5),
+             ms: now() - t0, msCoarse: tCoarse, nCands: C.length * nA };
+  }
+  /** Suivi : on part de la pose précédente (plus le déplacement commandé, s'il est connu) et on cherche
+   *  dans une petite fenêtre qui grandit avec le déplacement. */
+  function trackStep(M, pts, prev, motion, opt = {}) {
+    const o = { rxy: 0.35, rth: 15, ...opt }, t0 = now();
+    const pred = motion ? compose(prev, motion) : prev;
+    const mv = motion ? Math.hypot(motion.x, motion.y) : 0, mr = motion ? Math.abs(motion.th) : 0;
+    const r = refineOn(M, pts, pred, { rxy: o.rxy + 0.3 * mv, rth: o.rth + 0.3 * mr, levels: [[0.1, 3], [0.05, 1], [0.025, 0.5]], keep: 4 });
+    return Object.assign(r, { ms: now() - t0, pred });
+  }
+  /**
+   * Suiveur : enchaîne les scans. Pas encore localisé -> recherche globale. Sinon suivi local ; si le
+   * scan ne colle plus à la carte (inliers < lostInl) deux fois de suite, ou s'effondre, le robot est
+   * « perdu » -> nouvelle recherche globale (cas du robot « kidnappé », déplacé à la main).
+   */
+  function createTracker(M, opt = {}) {
+    return { M, o: { lostInl: 0.25, hardLost: 0.15, lostCount: 1, relDrop: 0.7, ambRatio: 0.8, maxHyps: 3, ...opt }, ref: 0, pose: null, hyps: null,
+             status: 'non localisé', lost: 0, n: 0, last: null };
+  }
+  // résultat d'une recherche globale -> état du suiveur (plusieurs hypothèses gardées si c'est ambigu)
+  function adoptGlobal(T, g, mode) {
+    T.lost = 0;
+    if (g.confidence === 'incertain') { T.pose = null; T.hyps = null; T.status = 'non localisé'; }
+    else {
+      T.pose = g.pose;
+      T.hyps = g.confidence === 'ambigu' ? g.hyps.filter(h => h.inliers >= T.o.ambRatio * g.inliers * 0.9).slice(0, T.o.maxHyps).map(h => ({ x: h.x, y: h.y, th: h.th, inliers: h.inliers })) : null;
+      T.status = g.confidence === 'ambigu' ? 'ambigu' : mode === 'relocalisation' ? 'relocalisé' : 'localisé';
+    }
+    return { x: g.pose.x, y: g.pose.y, th: g.pose.th, inliers: g.inliers, confidence: g.confidence, hyps: g.hyps };
+  }
+  function trackerUpdate(T, pts, motion) {
+    const t0 = now(); T.n++;
+    let res, mode;
+    if (!T.pose) {
+      mode = 'global'; res = adoptGlobal(T, globalLocalize(T.M, pts, T.o.global), mode);
+    } else if (T.hyps && T.hyps.length > 1) {
+      // plusieurs hypothèses : chacune est suivie avec le même déplacement ; le robot qui bouge lève l'ambiguïté
+      mode = 'hypothèses';
+      const H = T.hyps.map(h => trackStep(T.M, pts, h, motion, T.o.track)).sort((p, q) => q.inliers - p.inliers);
+      T.hyps = H.filter(h => h.inliers >= T.o.ambRatio * H[0].inliers).slice(0, T.o.maxHyps).map(h => ({ x: h.x, y: h.y, th: h.th, inliers: h.inliers }));
+      T.pose = { x: H[0].x, y: H[0].y, th: H[0].th };
+      res = Object.assign({}, H[0], { hyps: H });
+      if (T.hyps.length === 1) { T.hyps = null; T.status = 'localisé'; } else T.status = 'ambigu';
+      if (H[0].inliers < T.o.hardLost) { mode = 'relocalisation'; res = adoptGlobal(T, globalLocalize(T.M, pts, T.o.global), mode); }
+    } else {
+      const s = trackStep(T.M, pts, T.pose, motion, T.o.track);
+      mode = 'suivi'; res = s;
+      // seuil relatif : un scan qui colle nettement moins bien que d'habitude (moyenne glissante des bons
+      // scans) est suspect, même au-dessus du seuil absolu (scans encombrés : 35 à 65 % des points collent)
+      const thr = Math.max(T.o.lostInl, T.ref ? T.o.relDrop * T.ref : 0);
+      if (s.inliers >= thr) { T.pose = { x: s.x, y: s.y, th: s.th }; T.lost = 0; T.status = 'localisé'; T.hyps = null; }
+      else {
+        T.lost++;
+        if (T.lost >= T.o.lostCount || s.inliers < T.o.hardLost) {
+          // robot perdu (ou déplacé à la main) : nouvelle recherche sur toute la carte
+          const g = globalLocalize(T.M, pts, T.o.global);
+          mode = 'relocalisation';
+          if (g.inliers > s.inliers + 0.05 && g.confidence !== 'incertain') res = adoptGlobal(T, g, mode);
+          else { T.pose = { x: s.x, y: s.y, th: s.th }; T.status = 'perdu'; }
+        } else { T.pose = { x: s.x, y: s.y, th: s.th }; T.status = 'incertain'; }
+      }
+    }
+    if (T.status === 'localisé' || T.status === 'relocalisé') T.ref = T.ref ? 0.7 * T.ref + 0.3 * res.inliers : res.inliers;   // « d'habitude »
+    if (T.status === 'non localisé') T.ref = 0;
+    T.last = Object.assign({ mode, status: T.status, ms: now() - t0, n: T.n, nHyps: T.hyps ? T.hyps.length : (T.pose ? 1 : 0) }, res);
+    return T.last;
+  }
+  /** Démo simulée : la salle du simulateur, une carte faite de 9 scans (comme au Jour 1) et un trajet
+   *  du robot (pas de `step` m, rotations en place), avec la vérité à chaque pas. */
+  function demoScenario(seed = 3, opt = {}) {
+    const sc = classroomScene(seed, { legs: opt.legs ?? 40 }), rng = mulberry32(seed + 11);
+    const mapPoses = [[2, 1.5, 0], [6.5, 1.5, 90], [11, 1.2, 150], [2, 5.5, 0], [6.5, 5, -90], [12, 6, 200], [2.5, 8.5, 0], [7.5, 6.8, 30], [12.5, 2, 90]];
+    const scans = mapPoses.map(([x, y, th]) => Object.assign(simulateScan(sc.walls, { x, y, th }, { tours: 3 }, rng), { pose: { x, y, th } }));
+    const R = buildReferences(scans, -1);
+    const way = opt.way ?? [[1.5, 1.5], [7, 1.2], [7.5, 6.5], [12, 6.5], [12.5, 1.5], [8.3, 1.4], [3, 6.2], [1.6, 8.6]];
+    const step = opt.step ?? 0.15, rotStep = opt.rotStep ?? 15, path = [];
+    let cur = { x: way[0][0], y: way[0][1], th: 0 };
+    for (let w = 1; w < way.length; w++) {
+      const [tx, ty] = way[w], head = Math.atan2(ty - cur.y, tx - cur.x) * R2D;
+      while (Math.abs(normDeg(head - cur.th)) > 1e-6) { const d = normDeg(head - cur.th); cur = { ...cur, th: normDeg(cur.th + Math.sign(d) * Math.min(rotStep, Math.abs(d))) }; path.push({ ...cur }); }
+      for (let L = Math.hypot(tx - cur.x, ty - cur.y); L > 1e-6; L = Math.hypot(tx - cur.x, ty - cur.y)) {
+        const d = Math.min(step, L); cur = { x: cur.x + d * Math.cos(head * D2R), y: cur.y + d * Math.sin(head * D2R), th: cur.th }; path.push({ ...cur });
+      }
+    }
+    return { scene: sc, scans, refs: R, path, rng };
+  }
+
   return {
     mulberry32, localPoints, uniformSubsample, transform, relPose, compose, poseError, perturb,
     classroomScene, simulateScan,
     distanceField, fieldSample, gridBrute, gridMultiRes, gridGradient,
     segIndex, vecScore, vecBrute, vecICP, vecDirect, lineFeatures,
     pointIndex, scanICPPoint, scanICPLine, scanCorrelative,
-    buildReferences, runLocBench, summarize, benchToCSV, benchToMarkdown, METHODS, REF_LABEL
+    buildReferences, runLocBench, summarize, benchToCSV, benchToMarkdown, METHODS, REF_LABEL,
+    prepareMap, inlierRatio, globalLocalize, trackStep, createTracker, trackerUpdate, demoScenario
+  };
+});
+
+</script>
+<script>
+/* ============================================================================
+ *  lidar_maptools.js – Traitement des cartes et des obstacles
+ *  Dépend de lidar_core.js (LidarCore) et lidar_loc.js (LidarLoc).
+ *  Navigateur : window.LidarMapTools ; Node : require('./lidar_maptools.js').
+ *
+ *  Reprend les étapes des documents du cours qui n'étaient pas encore outillées :
+ *   - « grid map » §1 et §5 : cellules enrichies (compteur d'impacts, nombre d'observations,
+ *     horodatage), décroissance temporelle, effacement des obstacles obsolètes, lissage spatial,
+ *     cellules d'intérêt (petits obstacles isolés mais sûrs) ;
+ *   - « carte vectorielle » §2 et §3 : prétraitement (points aberrants), segmentation en clusters
+ *     (distance, angle, intensité), reconnaissance géométrique (régression, RANSAC,
+ *     Douglas-Peucker, cercles), §4–§6 : features circulaires fusionnées et suivies
+ *     (confiance, absence), nettoyage (collisions géométriques, redondances) ;
+ *   - « cartographie » §2 et §6–§9 : durée de vie / probabilité de persistance des obstacles
+ *     (objets mobiles), alignement global des scans (correction géométrique des poses).
+ *  Et pour exploiter la carte : carte de coût (obstacles gonflés du rayon du robot) et
+ *  planification de trajet A*, métriques de qualité pour comparer avant / après traitement.
+ *
+ *  Conventions : poses { x, y, th (deg) } ; points { x, y } en mètres ; grilles de lidar_core.js.
+ * ========================================================================== */
+(function (root, factory) {
+  if (typeof module === 'object' && module.exports) module.exports = factory(require('./lidar_core.js'), require('./lidar_loc.js'));
+  else root.LidarMapTools = factory(root.LidarCore, root.LidarLoc);
+})(typeof self !== 'undefined' ? self : this, function (LC, LL) {
+  'use strict';
+  const D2R = Math.PI / 180, R2D = 180 / Math.PI;
+  const { UNKNOWN, FREE_T, OCC_T } = LC;
+  const now = () => (typeof performance !== 'undefined' ? performance.now() : Date.now());
+  const normDeg = a => ((a + 180) % 360 + 360) % 360 - 180;
+  const mod = (a, m) => ((a % m) + m) % m;
+
+  // ==========================================================================
+  //  1. Prétraitement d'un scan (points aberrants)
+  // ==========================================================================
+  const PRE_DEFAULTS = {
+    dMin: 0.10, dMax: 12,          // portée utile (m) ; LD06 : 0,02 à 12 m. Sous dMin : le robot lui-même (châssis, câbles)
+    iMin: 0,                       // intensité minimale (qualité du point, 0..255)
+    isolated: true, isoRadius: 0.08, isoWin: 2,   // point sans voisin à moins de max(isoRadius, 2,5 × écart angulaire)
+    mixed: true, mixedJump: 0.20,  // « points mixtes » : entre un premier plan et un fond (faisceau à cheval)
+    scale: 1
+  };
+  /**
+   * scan { a: [deg], d: [mm], i?: [] }, pose { x, y, th } -> { pts: [{x,y,r}] globaux (ordre angulaire),
+   * local: [{x,y}], removed: { range, intensity, isolated, mixed }, kept, total }
+   */
+  function preprocessScan(scan, pose, opt = {}) {
+    const o = Object.assign({}, PRE_DEFAULTS, opt);
+    const removed = { range: 0, intensity: 0, isolated: 0, mixed: 0 };
+    const idx = [];
+    for (let k = 0; k < scan.a.length; k++) {
+      const r = scan.d[k] / 1000;
+      if (!(r >= o.dMin && r <= o.dMax)) { removed.range++; continue; }
+      if (scan.i && o.iMin > 0 && scan.i[k] < o.iMin) { removed.intensity++; continue; }
+      idx.push(k);
+    }
+    idx.sort((p, q) => scan.a[p] - scan.a[q]);
+    const n = idx.length;
+    const P = idx.map(k => { const r = scan.d[k] / 1000 * o.scale, a = scan.a[k] * D2R; return { x: r * Math.cos(a), y: r * Math.sin(a), r, a: scan.a[k] }; });
+    const keep = new Uint8Array(n).fill(1);
+    const adj = (k, m) => Math.abs(normDeg(P[m].a - P[k].a)) < 3;      // voisins angulaires réels (pas de trou)
+    if (o.mixed && n >= 3) {
+      for (let k = 0; k < n; k++) {
+        const p = (k - 1 + n) % n, q = (k + 1) % n;
+        if (!adj(k, p) || !adj(k, q)) continue;
+        const r = P[k].r, rp = P[p].r, rq = P[q].r;
+        if (Math.abs(r - rp) > o.mixedJump && Math.abs(r - rq) > o.mixedJump && (r - rp) * (rq - r) > 0) { keep[k] = 0; removed.mixed++; }
+      }
+    }
+    if (o.isolated && n >= 3) {
+      const iso = [];
+      for (let k = 0; k < n; k++) {
+        if (!keep[k]) continue;
+        const rad = Math.max(o.isoRadius, 2.5 * P[k].r * 0.8 * D2R);
+        let ok = false;
+        for (let w = 1; w <= o.isoWin && !ok; w++) for (const m of [(k - w + n) % n, (k + w) % n]) {
+          if (m !== k && Math.hypot(P[m].x - P[k].x, P[m].y - P[k].y) <= rad) { ok = true; break; }
+        }
+        if (!ok) iso.push(k);
+      }
+      for (const k of iso) { keep[k] = 0; removed.isolated++; }
+    }
+    const c = Math.cos(pose.th * D2R), s = Math.sin(pose.th * D2R), pts = [], local = [];
+    for (let k = 0; k < n; k++) if (keep[k]) {
+      const p = P[k];
+      local.push({ x: p.x, y: p.y });
+      pts.push({ x: pose.x + c * p.x - s * p.y, y: pose.y + s * p.x + c * p.y, r: p.r });
+    }
+    return { pts, local, removed, kept: pts.length, total: scan.a.length };
+  }
+
+  // ==========================================================================
+  //  2. Segmentation en clusters
+  // ==========================================================================
+  /**
+   * Nouveau cluster quand deux points successifs (ordre angulaire) sont séparés :
+   *  - en distance de plus de gapBase + gapK·r (les points s'espacent avec la distance),
+   *  - ou en angle de plus de angGap (des retours manquent : vitre, surface noire, hors portée),
+   *  - ou (si iJump > 0 et intensités fournies) en intensité de plus de iJump.
+   * Renvoie [[{x,y,...}], ...] ; les clusters de moins de minPts points sont écartés.
+   */
+  function clusterScan(pts, origin, opt = {}) {
+    const o = Object.assign({ gapBase: 0.10, gapK: 0.03, angGap: 4, iJump: 0, minPts: 1 }, opt);
+    const n = pts.length; if (!n) return [];
+    const rng = p => Math.hypot(p.x - origin.x, p.y - origin.y);
+    const brg = p => Math.atan2(p.y - origin.y, p.x - origin.x) * R2D;
+    const brk = (p, q) => {
+      const d = Math.hypot(p.x - q.x, p.y - q.y) - (o.gapBase + o.gapK * Math.max(rng(p), rng(q)));
+      if (d > 0) return d + 1;
+      if (Math.abs(normDeg(brg(q) - brg(p))) > o.angGap) return 1;
+      if (o.iJump > 0 && p.i !== undefined && q.i !== undefined && Math.abs(p.i - q.i) > o.iJump) return 0.5;
+      return 0;
+    };
+    // commencer après la plus forte rupture (évite de couper un objet à l'angle 0°/360°)
+    let start = 0, worst = -1;
+    for (let k = 0; k < n; k++) { const b = brk(pts[k], pts[(k + 1) % n]); if (b > worst) { worst = b; start = (k + 1) % n; } }
+    const out = []; let cur = [pts[start]];
+    for (let m = 1; m < n; m++) {
+      const p = pts[(start + m - 1) % n], q = pts[(start + m) % n];
+      if (brk(p, q) > 0) { out.push(cur); cur = []; }
+      cur.push(q);
+    }
+    out.push(cur);
+    return out.filter(C => C.length >= o.minPts);
+  }
+
+  // ==========================================================================
+  //  3. Reconnaissance géométrique
+  // ==========================================================================
+  function solve3(A, b) {                       // élimination de Gauss avec pivot partiel
+    const M = A.map((r, i) => [...r, b[i]]);
+    for (let c = 0; c < 3; c++) {
+      let p = c; for (let r = c + 1; r < 3; r++) if (Math.abs(M[r][c]) > Math.abs(M[p][c])) p = r;
+      if (Math.abs(M[p][c]) < 1e-14) return null;
+      [M[c], M[p]] = [M[p], M[c]];
+      for (let r = 0; r < 3; r++) if (r !== c) { const f = M[r][c] / M[c][c]; for (let k = c; k < 4; k++) M[r][k] -= f * M[c][k]; }
+    }
+    return [M[0][3] / M[0][0], M[1][3] / M[1][1], M[2][3] / M[2][2]];
+  }
+  /**
+   * Cercle par moindres carrés : solution algébrique (Kåsa) puis affinage géométrique
+   * (Gauss-Newton sur Σ (|p − c| − r)²). Renvoie { x, y, r, rmse } ou null.
+   */
+  function fitCircle(P) {
+    if (P.length < 3) return null;
+    let mx = 0, my = 0; for (const p of P) { mx += p.x; my += p.y; } mx /= P.length; my /= P.length;
+    // Kåsa sur coordonnées centrées : x² + y² + D x + E y + F = 0
+    const A = [[0, 0, 0], [0, 0, 0], [0, 0, 0]], b = [0, 0, 0];
+    for (const p of P) {
+      const x = p.x - mx, y = p.y - my, z = -(x * x + y * y), v = [x, y, 1];
+      for (let i = 0; i < 3; i++) { b[i] += v[i] * z; for (let j = 0; j < 3; j++) A[i][j] += v[i] * v[j]; }
+    }
+    const s = solve3(A, b); if (!s) return null;
+    let cx = -s[0] / 2, cy = -s[1] / 2, r2 = cx * cx + cy * cy - s[2];
+    if (!(r2 > 0)) return null;
+    let r = Math.sqrt(r2);
+    for (let it = 0; it < 20; it++) {
+      const JtJ = [[0, 0, 0], [0, 0, 0], [0, 0, 0]], Jtr = [0, 0, 0];
+      for (const p of P) {
+        const dx = p.x - mx - cx, dy = p.y - my - cy, d = Math.hypot(dx, dy) || 1e-12, res = d - r;
+        const J = [-dx / d, -dy / d, -1];
+        for (let i = 0; i < 3; i++) { Jtr[i] += J[i] * res; for (let j = 0; j < 3; j++) JtJ[i][j] += J[i] * J[j]; }
+      }
+      const st = solve3(JtJ, Jtr.map(v => -v)); if (!st) break;
+      cx += st[0]; cy += st[1]; r += st[2];
+      if (Math.hypot(st[0], st[1], st[2]) < 1e-7) break;
+    }
+    let e2 = 0; for (const p of P) { const d = Math.hypot(p.x - mx - cx, p.y - my - cy) - r; e2 += d * d; }
+    return { x: cx + mx, y: cy + my, r: Math.abs(r), rmse: Math.sqrt(e2 / P.length) };
+  }
+
+  /** Douglas-Peucker : indices des sommets de la polyligne simplifiée (tolérance tol, m) */
+  function douglasPeucker(P, tol) {
+    const n = P.length; if (n <= 2) return n === 2 ? [0, 1] : n ? [0] : [];
+    const keep = new Uint8Array(n); keep[0] = keep[n - 1] = 1;
+    const stack = [[0, n - 1]];
+    while (stack.length) {
+      const [a, b] = stack.pop(); if (b - a < 2) continue;
+      const ch = LC.seg(P[a].x, P[a].y, P[b].x, P[b].y), deg = LC.segLen(ch) < 1e-9;
+      let dm = -1, im = -1;
+      for (let k = a + 1; k < b; k++) {
+        const d = deg ? Math.hypot(P[k].x - P[a].x, P[k].y - P[a].y) : LC.pointLineDist(P[k].x, P[k].y, ch);
+        if (d > dm) { dm = d; im = k; }
+      }
+      if (dm > tol) { keep[im] = 1; stack.push([a, im], [im, b]); }
+    }
+    const out = []; for (let k = 0; k < n; k++) if (keep[k]) out.push(k);
+    return out;
+  }
+  /** Segments d'un cluster par Douglas-Peucker puis régression (moindres carrés totaux) sur chaque morceau */
+  function dpSegments(C, opt = {}) {
+    const o = Object.assign({ tol: 0.04, minPts: 5, minLen: 0.20 }, opt);
+    const v = douglasPeucker(C, o.tol), out = [];
+    for (let k = 0; k + 1 < v.length; k++) {
+      const piece = C.slice(v[k], v[k + 1] + 1);
+      if (piece.length < o.minPts) continue;
+      const s = LC.fitSegment(piece);
+      if (LC.segLen(s) >= o.minLen) out.push(s);
+    }
+    return out;
+  }
+  /**
+   * RANSAC séquentiel : on tire 2 points, on compte les points à moins de tol de la droite,
+   * on garde la meilleure droite, on la réajuste sur ses inliers, on la découpe là où les inliers
+   * sont séparés de plus de gapTol (deux murs alignés = deux segments), on retire ses inliers et
+   * on recommence. Robuste aux points aberrants (chaises devant un mur, reflets).
+   */
+  function ransacLines(P, opt = {}) {
+    const o = Object.assign({ tol: 0.03, minInliers: 8, iters: 150, gapTol: 0.25, minLen: 0.25, maxLines: 40, rng: LL.mulberry32(1) }, opt);
+    let rest = P.slice(); const out = [];
+    for (let L = 0; L < o.maxLines && rest.length >= o.minInliers; L++) {
+      let best = null, bestN = 0;
+      for (let it = 0; it < o.iters; it++) {
+        const a = rest[Math.floor(o.rng() * rest.length)], b = rest[Math.floor(o.rng() * rest.length)];
+        const dx = b.x - a.x, dy = b.y - a.y, l = Math.hypot(dx, dy); if (l < 0.05) continue;
+        const nx = -dy / l, ny = dx / l, c = nx * a.x + ny * a.y;
+        let cnt = 0; for (const p of rest) if (Math.abs(nx * p.x + ny * p.y - c) <= o.tol) cnt++;
+        if (cnt > bestN) { bestN = cnt; best = { nx, ny, c }; }
+      }
+      if (!best || bestN < o.minInliers) break;
+      let inl = rest.filter(p => Math.abs(best.nx * p.x + best.ny * p.y - best.c) <= o.tol);
+      const f = LC.fitLine(inl), nx = -f.uy, ny = f.ux, c = nx * f.mx + ny * f.my;
+      inl = rest.filter(p => Math.abs(nx * p.x + ny * p.y - c) <= o.tol);
+      const inSet = new Set(inl);
+      rest = rest.filter(p => !inSet.has(p));
+      const t = p => (p.x - f.mx) * f.ux + (p.y - f.my) * f.uy;
+      inl.sort((p, q) => t(p) - t(q));
+      let run = [inl[0]];
+      const flush = () => { if (run.length >= Math.max(3, o.minInliers / 2)) { const s = LC.fitSegment(run); if (LC.segLen(s) >= o.minLen) out.push(s); } };
+      for (let k = 1; k < inl.length; k++) { if (t(inl[k]) - t(inl[k - 1]) > o.gapTol) { flush(); run = []; } run.push(inl[k]); }
+      flush();
+    }
+    return out;
+  }
+
+  /** Petit cluster -> cercle approché : on voit la moitié avant de l'objet, dont le barycentre est
+   *  à 2r/π ≈ 0,64 r du centre, côté robot ; le centre est donc reculé d'autant. */
+  function smallObjectCircle(C, origin) {
+    let mx = 0, my = 0; for (const p of C) { mx += p.x; my += p.y; } mx /= C.length; my /= C.length;
+    let ext = 0; for (const p of C) for (const q of C) ext = Math.max(ext, Math.hypot(p.x - q.x, p.y - q.y));
+    const r = Math.max(0.015, ext / 2), dx = mx - origin.x, dy = my - origin.y, l = Math.hypot(dx, dy) || 1;
+    return { x: mx + dx / l * 0.64 * r, y: my + dy / l * 0.64 * r, r, n: C.length, rmse: 0, kind: 'petit' };
+  }
+
+  const FEAT_DEFAULTS = {
+    method: 'split',                              // 'split' (split-and-merge, partie 4), 'dp' (Douglas-Peucker), 'ransac'
+    cluster: { gapBase: 0.10, gapK: 0.03, angGap: 4, minPts: 2 },
+    smallMax: 0.15,                               // cluster plus petit que ça : petit objet (pied de chaise, poteau)
+    circle: { minPts: 6, maxR: 0.30, minR: 0.02, maxRmse: 0.012 },
+    extract: { minLen: 0.25 }, dp: {}, ransac: {}
+  };
+  /**
+   * Extraction complète des features d'un scan (repère de la carte) :
+   * clusters -> petits objets (cercles), objets circulaires (cercle ajusté, convexe face au robot),
+   * sinon segments par la méthode choisie.
+   */
+  function extractFeatures(pts, origin, opt = {}) {
+    const o = Object.assign({}, FEAT_DEFAULTS, opt, { circle: Object.assign({}, FEAT_DEFAULTS.circle, opt.circle), cluster: Object.assign({}, FEAT_DEFAULTS.cluster, opt.cluster) });
+    const clusters = clusterScan(pts, origin, o.cluster);
+    const segments = [], circles = [], stats = { clusters: clusters.length, small: 0, round: 0, linear: 0 };
+    for (const C of clusters) {
+      let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
+      for (const p of C) { if (p.x < x0) x0 = p.x; if (p.x > x1) x1 = p.x; if (p.y < y0) y0 = p.y; if (p.y > y1) y1 = p.y; }
+      const ext = Math.hypot(x1 - x0, y1 - y0);
+      if (ext <= o.smallMax) { circles.push(smallObjectCircle(C, origin)); stats.small++; continue; }
+      if (C.length >= o.circle.minPts && ext <= 2 * o.circle.maxR) {
+        const f = fitCircle(C);
+        if (f && f.r >= o.circle.minR && f.r <= o.circle.maxR && f.rmse <= o.circle.maxRmse) {
+          let mx = 0, my = 0; for (const p of C) { mx += p.x; my += p.y; } mx /= C.length; my /= C.length;
+          // l'objet doit présenter sa face convexe au robot : centre plus loin que les points
+          if (Math.hypot(f.x - origin.x, f.y - origin.y) > Math.hypot(mx - origin.x, my - origin.y)) {
+            circles.push({ ...f, n: C.length, kind: 'cercle' }); stats.round++; continue;
+          }
+        }
+      }
+      const segs = o.method === 'ransac' ? ransacLines(C, o.ransac) : o.method === 'dp' ? dpSegments(C, o.dp) : LC.extractSegments(C, origin, o.extract);
+      if (segs.length) stats.linear++;
+      segments.push(...segs);
+    }
+    return { clusters, segments, circles, stats };
+  }
+
+  // ==========================================================================
+  //  4. Carte d'obstacles ponctuels / circulaires (features « cercle »)
+  // ==========================================================================
+  const OM_DEFAULTS = { assoc: 0.15, hit: 1, miss: 1, confMax: 10, maxAge: 0, absMinRays: 2, absMargin: 0.10, minR: 0.03, mobileMin: 2 };
+  function createObstacleMap() { return { items: [], scans: 0, nextId: 1 }; }
+  /**
+   * Intègre les cercles observés dans un scan :
+   *  absence : un faisceau qui passe à travers un obstacle connu (et s'arrête plus loin) le prouve
+   *            absent -> confiance −, compteur de « vu absent » + (persistance) ;
+   *  association : cercle observé à moins de assoc d'un obstacle -> moyenne pondérée (fusion) ;
+   *  nettoyage : fusion des doublons, durée de vie maxAge, suppression à confiance nulle.
+   * persistance = nObs / (nObs + absences) ; « mobile » si absent au moins mobileMin fois et persistance < 0,5.
+   */
+  function updateObstacleMap(M, robot, pts, circles, opt = {}) {
+    const o = Object.assign({}, OM_DEFAULTS, opt), t = ++M.scans;
+    const st = { scan: t, added: [], merged: [], weakened: [], removed: [], expired: [] };
+    if (M.items.length) {
+      const miss = new Map(), step = Math.max(1, Math.ceil(pts.length / 900));
+      for (let k = 0; k < pts.length; k += step) {
+        const p = pts[k], dx = p.x - robot.x, dy = p.y - robot.y, L = Math.hypot(dx, dy); if (L < 0.1) continue;
+        const ux = dx / L, uy = dy / L;
+        for (const it of M.items) {
+          const re = Math.max(it.r, o.minR), cx = it.x - robot.x, cy = it.y - robot.y, u = cx * ux + cy * uy;
+          if (u <= 0 || u + re + o.absMargin >= L) continue;          // l'impact est sur (ou avant) l'obstacle
+          if (Math.abs(cx * uy - cy * ux) < 0.8 * re) miss.set(it.id, (miss.get(it.id) || 0) + 1);
+        }
+      }
+      for (const [id, c] of miss) {
+        if (c < o.absMinRays) continue;
+        const it = M.items.find(q => q.id === id);
+        it.conf -= o.miss; it.misses++; st.weakened.push(id);
+      }
+      M.items = M.items.filter(it => { if (it.conf <= 0) { st.removed.push(it.id); return false; } return true; });
+    }
+    for (const c of circles) {
+      let best = null, bd = o.assoc;
+      for (const it of M.items) { const d = Math.hypot(it.x - c.x, it.y - c.y); if (d <= bd) { bd = d; best = it; } }
+      if (!best) {
+        const it = { id: M.nextId++, x: c.x, y: c.y, r: c.r, conf: 1, nObs: 1, misses: 0, firstSeen: t, lastSeen: t, kind: c.kind || 'cercle' };
+        M.items.push(it); st.added.push(it.id); continue;
+      }
+      const w = Math.min(best.nObs, 20);
+      best.x = (best.x * w + c.x) / (w + 1); best.y = (best.y * w + c.y) / (w + 1); best.r = (best.r * w + c.r) / (w + 1);
+      if (best.lastSeen !== t) { best.nObs++; best.conf = Math.min(o.confMax, best.conf + o.hit); }
+      best.lastSeen = t;
+      if (c.kind === 'cercle') best.kind = 'cercle';
+      if (!st.merged.includes(best.id) && !st.added.includes(best.id)) st.merged.push(best.id);
+    }
+    // doublons (deux obstacles qui ont convergé au même endroit)
+    for (let i = 0; i < M.items.length; i++) for (let j = M.items.length - 1; j > i; j--) {
+      const a = M.items[i], b = M.items[j];
+      if (Math.hypot(a.x - b.x, a.y - b.y) > o.assoc * 0.5) continue;
+      const wa = a.nObs, wb = b.nObs;
+      Object.assign(a, { x: (a.x * wa + b.x * wb) / (wa + wb), y: (a.y * wa + b.y * wb) / (wa + wb), r: (a.r * wa + b.r * wb) / (wa + wb),
+        nObs: wa + wb, conf: Math.max(a.conf, b.conf), misses: a.misses + b.misses, firstSeen: Math.min(a.firstSeen, b.firstSeen), lastSeen: Math.max(a.lastSeen, b.lastSeen) });
+      M.items.splice(j, 1); st.removed.push(b.id);
+    }
+    if (o.maxAge > 0) M.items = M.items.filter(it => { if (t - it.lastSeen > o.maxAge) { st.expired.push(it.id); return false; } return true; });
+    for (const it of M.items) { it.persistence = it.nObs / (it.nObs + it.misses); it.mobile = it.misses >= o.mobileMin && it.persistence < 0.5; }
+    return st;
+  }
+  /** Un « petit obstacle » posé sur un mur de la carte vectorielle est en fait un morceau de mur trop
+   *  court pour devenir un segment (trou dans les points) : il est retiré de la carte d'obstacles. */
+  function pruneObstaclesOnWalls(M, segs, opt = {}) {
+    const { tol = 0.06 } = opt, removed = [];
+    M.items = M.items.filter(it => {
+      const on = segs.some(f => LC.pointSegDist(it.x, it.y, f) < it.r + tol);
+      if (on) removed.push(it.id);
+      return !on;
+    });
+    return { removed };
+  }
+  function obstaclesToCSV(M) {
+    let s = 'id,type,x_m,y_m,rayon_m,confiance,observations,vu_absent,persistance,mobile,premier_scan,dernier_scan\n';
+    for (const it of M.items) s += [it.id, it.kind, it.x.toFixed(4), it.y.toFixed(4), it.r.toFixed(4), it.conf, it.nObs, it.misses,
+      (it.persistence ?? 1).toFixed(2), it.mobile ? 1 : 0, it.firstSeen, it.lastSeen].join(',') + '\n';
+    return s;
+  }
+
+  // ==========================================================================
+  //  5. Grid map enrichie : couches par cellule
+  // ==========================================================================
+  // hits : nombre de scans où la cellule a été un impact ; seen : nombre de scans où elle a été
+  // observée (libre ou impact) ; last / lastOcc : numéro du dernier scan qui l'a observée / vue occupée.
+  // Mémoire : 12 octets de plus par cellule (le compromis mémoire / information du cours).
+  function createLayers(g) {
+    const n = g.W * g.H;
+    return { W: g.W, H: g.H, hits: new Uint16Array(n), seen: new Uint16Array(n), last: new Int32Array(n).fill(-1), lastOcc: new Int32Array(n).fill(-1), t: 0 };
+  }
+  function updateGridLayered(g, L, robot, pts, p = {}) {
+    const t = ++L.t;
+    return LC.updateGrid(g, robot, pts, Object.assign({}, p, {
+      onCells(F, O) {
+        for (const k of F) { if (L.seen[k] < 65535) L.seen[k]++; L.last[k] = t; }
+        for (const k of O) { if (L.hits[k] < 65535) L.hits[k]++; if (L.seen[k] < 65535) L.seen[k]++; L.last[k] = t; L.lastOcc[k] = t; }
+      }
+    }));
+  }
+  const cloneGrid = g => Object.assign({}, g, { data: g.data.slice() });
+  const cloneLayers = L => ({ W: L.W, H: L.H, hits: L.hits.slice(), seen: L.seen.slice(), last: L.last.slice(), lastOcc: L.lastOcc.slice(), t: L.t });
+
+  /** Carte couvrant tous les scans ; data : [{ robot, pts }] (repère carte) */
+  function buildLayeredGrid(data, opt = {}) {
+    const o = Object.assign({ res: 0.05, margin: 0.5, fillBetween: true }, opt);
+    let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
+    for (const { robot, pts } of data) for (const q of [robot, ...pts]) { if (q.x < x0) x0 = q.x; if (q.x > x1) x1 = q.x; if (q.y < y0) y0 = q.y; if (q.y > y1) y1 = q.y; }
+    const g = LC.createGrid({ xMin: x0 - o.margin, yMin: y0 - o.margin, xMax: x1 + o.margin, yMax: y1 + o.margin, res: o.res });
+    const L = createLayers(g);
+    for (const { robot, pts } of data) updateGridLayered(g, L, robot, pts, o);
+    return { grid: g, layers: L };
+  }
+
+  // ==========================================================================
+  //  6. Nettoyage de la grid map (document « grid map » §5)
+  // ==========================================================================
+  /** Décroissance temporelle : cellules non observées depuis plus de `age` scans -> rapprochées de « inconnu » de `step` */
+  function decayGrid(g, L, opt = {}) {
+    const { age = 10, step = 16 } = opt; let n = 0;
+    for (let k = 0; k < g.data.length; k++) {
+      if (L.last[k] < 0 || L.t - L.last[k] <= age) continue;
+      const v = g.data[k];
+      if (v > UNKNOWN) { g.data[k] = Math.max(UNKNOWN, v - step); n++; } else if (v < UNKNOWN) { g.data[k] = Math.min(UNKNOWN, v + step); n++; }
+    }
+    return { changed: n };
+  }
+  /** Obstacles obsolètes : cellule occupée qui n'a plus été un impact depuis `age` scans.
+   *  Revue libre depuis -> libre ; jamais réobservée -> inconnue. */
+  function clearObsolete(g, L, opt = {}) {
+    const { age = 10 } = opt; let freed = 0, unknown = 0;
+    for (let k = 0; k < g.data.length; k++) {
+      if (g.data[k] < OCC_T || L.lastOcc[k] < 0 || L.t - L.lastOcc[k] <= age) continue;
+      if (L.last[k] > L.lastOcc[k]) { g.data[k] = FREE_T - 25; freed++; } else { g.data[k] = UNKNOWN; unknown++; }
+    }
+    return { freed, unknown };
+  }
+  /** Obstacles mobiles (probabilité de persistance) : cellule observée au moins minSeen fois, mais
+   *  impact dans moins de maxPersist de ces observations (une personne, une chaise déplacée, une porte).
+   *  Elle est rendue libre ; le masque `mobile` les garde pour l'affichage. */
+  //  Une cellule vue comme impact dans au moins keepHits scans est gardée : un objet fin (pied de chaise
+  //  de 2 cm dans une cellule de 5 cm) est souvent « traversé » par les faisceaux venus d'ailleurs.
+  function removeMobile(g, L, opt = {}) {
+    const { minSeen = 3, maxPersist = 0.34, keepHits = 3 } = opt, mobile = new Uint8Array(g.data.length);
+    let n = 0, wasOcc = 0, wasUnk = 0;
+    for (let k = 0; k < g.data.length; k++) {
+      const h = L.hits[k], s = L.seen[k];
+      if (!h || h >= keepHits || s < minSeen || h / s > maxPersist) continue;
+      mobile[k] = 1; n++;
+      const v = g.data[k];
+      if (v >= OCC_T) wasOcc++; else if (v > FREE_T) wasUnk++;
+      if (v > FREE_T - 25) g.data[k] = FREE_T - 25;
+    }
+    return { removed: n, wasOcc, wasUnk, mobile };
+  }
+  /** Étiquetage des composantes connexes (8-connexité) des cellules occupées */
+  function labelComponents(g, opt = {}) {
+    const occT = opt.occT ?? OCC_T, W = g.W, H = g.H, lab = new Int32Array(W * H).fill(-1), comps = [];
+    const stack = [];
+    for (let k0 = 0; k0 < W * H; k0++) {
+      if (lab[k0] >= 0 || g.data[k0] < occT) continue;
+      const id = comps.length, cells = []; lab[k0] = id; stack.push(k0);
+      while (stack.length) {
+        const k = stack.pop(); cells.push(k);
+        const i = k % W, j = (k - i) / W;
+        for (let dj = -1; dj <= 1; dj++) for (let di = -1; di <= 1; di++) {
+          if (!di && !dj) continue;
+          const a = i + di, b = j + dj; if (a < 0 || b < 0 || a >= W || b >= H) continue;
+          const m = b * W + a; if (lab[m] >= 0 || g.data[m] < occT) continue;
+          lab[m] = id; stack.push(m);
+        }
+      }
+      comps.push({ id, cells });
+    }
+    return { labels: lab, comps };
+  }
+  /** Petites taches isolées et peu confirmées (bruit) -> inconnues. Une tache isolée mais vue souvent
+   *  (pied de chaise, poteau) est une cellule d'intérêt : elle est gardée. */
+  function removeSpeckles(g, L, opt = {}) {
+    const { maxCells = 2, minHits = 2 } = opt, { comps } = labelComponents(g); let n = 0, kept = 0;
+    for (const c of comps) {
+      if (c.cells.length > maxCells) continue;
+      const support = L ? Math.max(...c.cells.map(k => L.hits[k])) : 0;
+      if (L && support >= minHits) { kept++; continue; }
+      for (const k of c.cells) g.data[k] = UNKNOWN; n += c.cells.length;
+    }
+    return { removed: n, keptInterest: kept };
+  }
+  /** Lissage spatial. 'majority' : une cellule inconnue prend l'état majoritaire de ses 8 voisines
+   *  si au moins minVotes sont d'accord (trous et stries comblés, murs fins préservés).
+   *  'mean' : moyenne des voisines dans un rayon, sauf pour les cellules occupées (sinon les murs
+   *  d'une cellule d'épaisseur disparaîtraient). */
+  function smoothGrid(g, opt = {}) {
+    const { mode = 'majority', radius = 1, minVotes = 5 } = opt, W = g.W, H = g.H, src = g.data.slice(); let n = 0;
+    for (let j = 0; j < H; j++) for (let i = 0; i < W; i++) {
+      const k = j * W + i, v = src[k];
+      if (mode === 'majority') {
+        if (v <= FREE_T || v >= OCC_T) continue;
+        let f = 0, o = 0;
+        for (let dj = -1; dj <= 1; dj++) for (let di = -1; di <= 1; di++) {
+          if (!di && !dj) continue;
+          const a = i + di, b = j + dj; if (a < 0 || b < 0 || a >= W || b >= H) continue;
+          const w = src[b * W + a]; if (w <= FREE_T) f++; else if (w >= OCC_T) o++;
+        }
+        if (f >= minVotes) { g.data[k] = FREE_T - 5; n++; } else if (o >= minVotes) { g.data[k] = OCC_T + 5; n++; }
+      } else {
+        if (v >= OCC_T) continue;
+        let s = 0, c = 0;
+        for (let dj = -radius; dj <= radius; dj++) for (let di = -radius; di <= radius; di++) {
+          const a = i + di, b = j + dj; if (a < 0 || b < 0 || a >= W || b >= H) continue;
+          s += src[b * W + a]; c++;
+        }
+        const m = Math.round(s / c); if (m !== v) { g.data[k] = Math.min(OCC_T - 1, m); n++; }
+      }
+    }
+    return { changed: n };
+  }
+  /** Fermeture morphologique des obstacles (dilatation puis érosion, carré de rayon r) :
+   *  bouche les trous d'une ou deux cellules dans les murs. Les cellules franchement libres
+   *  (valeur < protectFree, traversées plusieurs fois) ne sont jamais bouchées. */
+  function closeGaps(g, opt = {}) {
+    const { radius = 1, protectFree = 30 } = opt, W = g.W, H = g.H, occ = new Uint8Array(W * H);
+    for (let k = 0; k < W * H; k++) occ[k] = g.data[k] >= OCC_T ? 1 : 0;
+    const morph = (src, dil) => {
+      const out = new Uint8Array(W * H);
+      for (let j = 0; j < H; j++) for (let i = 0; i < W; i++) {
+        let v = dil ? 0 : 1;
+        for (let dj = -radius; dj <= radius && (dil ? !v : v); dj++) for (let di = -radius; di <= radius; di++) {
+          const a = i + di, b = j + dj, x = a < 0 || b < 0 || a >= W || b >= H ? 0 : src[b * W + a];
+          if (dil && x) { v = 1; break; } if (!dil && !x) { v = 0; break; }
+        }
+        out[j * W + i] = v;
+      }
+      return out;
+    };
+    const closed = morph(morph(occ, true), false); let n = 0;
+    for (let k = 0; k < W * H; k++) if (closed[k] && !occ[k] && g.data[k] >= protectFree) { g.data[k] = OCC_T + 30; n++; }
+    return { filled: n };
+  }
+
+  // ==========================================================================
+  //  7. Obstacles de la grid map : composantes, mesures, classes
+  // ==========================================================================
+  const OBST_DEFAULTS = { smallMax: 0.15, mediumMax: 1.0 };
+  /** Chaque composante connexe d'obstacle -> { id, cells, area (m²), cx, cy, len, wid (m, ACP), angle, cls, support }.
+   *  Classes par encombrement : 'petit' (pied de chaise, poteau), 'objet' (chaise, sac, poubelle),
+   *  'structure' (mur, meuble). Le lidar ne voit que le contour des objets : on classe donc sur la taille. */
+  function gridObstacles(g, L, opt = {}) {
+    const o = Object.assign({}, OBST_DEFAULTS, opt), { labels, comps } = labelComponents(g), out = [];
+    for (const c of comps) {
+      let sx = 0, sy = 0; const P = c.cells.map(k => LC.cellCenter(g, k % g.W, Math.floor(k / g.W)));
+      for (const [x, y] of P) { sx += x; sy += y; }
+      const cx = sx / P.length, cy = sy / P.length;
+      let a = 0, b = 0, d = 0; for (const [x, y] of P) { a += (x - cx) ** 2; b += (y - cy) ** 2; d += (x - cx) * (y - cy); }
+      a /= P.length; b /= P.length; d /= P.length;
+      const tr = (a + b) / 2, df = Math.sqrt(((a - b) / 2) ** 2 + d * d), l1 = tr + df, l2 = Math.max(0, tr - df);
+      const len = Math.sqrt(12 * l1) + g.res, wid = Math.sqrt(12 * l2) + g.res, ext = Math.max(len, wid);
+      const cls = ext <= o.smallMax ? 'petit' : ext <= o.mediumMax ? 'objet' : 'structure';
+      const support = L ? Math.max(...c.cells.map(k => L.hits[k])) : 0;
+      out.push({ id: c.id, cells: c.cells.length, area: c.cells.length * g.res * g.res, cx, cy, len, wid,
+                 angle: 0.5 * Math.atan2(2 * d, a - b) * R2D, cls, support });
+    }
+    return { labels, obstacles: out };
+  }
+
+  // ==========================================================================
+  //  8. Carte vectorielle : régularisation et nettoyage géométrique
+  // ==========================================================================
+  /** Direction dominante (mod 90°) pondérée par la longueur : dans une salle, les murs sont parallèles ou perpendiculaires */
+  function dominantDirection(segs) {
+    const h = new Float64Array(90);
+    for (const s of segs) h[Math.floor(mod(LC.segAngle(s) * R2D, 90)) % 90] += LC.segLen(s);
+    let best = 0, bv = -1;
+    for (let b = 0; b < 90; b++) { let v = 0; for (let d = -2; d <= 2; d++) v += h[mod(b + d, 90)]; if (v > bv) { bv = v; best = b; } }
+    // moyenne circulaire (période 90° -> angle × 4) autour du pic
+    let cx = 0, cy = 0;
+    for (const s of segs) {
+      const a = mod(LC.segAngle(s) * R2D, 90);
+      if (Math.abs(normDeg((a - best - 0.5) * 4) / 4) > 8) continue;
+      const w = LC.segLen(s); cx += w * Math.cos(a * 4 * D2R); cy += w * Math.sin(a * 4 * D2R);
+    }
+    return cx || cy ? mod(Math.atan2(cy, cx) * R2D / 4, 90) : best + 0.5;
+  }
+  const rotateAbout = (s, mx, my, dth) => {
+    const c = Math.cos(dth), sn = Math.sin(dth), r = (x, y) => [mx + c * (x - mx) - sn * (y - my), my + sn * (x - mx) + c * (y - my)];
+    const [x1, y1] = r(s.x1, s.y1), [x2, y2] = r(s.x2, s.y2); return Object.assign({}, s, { x1, y1, x2, y2 });
+  };
+  /** Redresse les segments à moins de angTol d'une direction dominante (rotation autour de leur milieu) */
+  function snapDirections(segs, opt = {}) {
+    const theta0 = opt.theta0 ?? dominantDirection(segs), angTol = opt.angTol ?? 6; let n = 0;
+    const out = segs.map(s => {
+      const a = LC.segAngle(s) * R2D;
+      let bestD = Infinity;
+      for (const t of [theta0, theta0 + 90]) { const d = normDeg(2 * (t - a)) / 2; if (Math.abs(d) < Math.abs(bestD)) bestD = d; }
+      if (Math.abs(bestD) > angTol || Math.abs(bestD) < 1e-9) return s;
+      n++; return rotateAbout(s, (s.x1 + s.x2) / 2, (s.y1 + s.y2) / 2, bestD * D2R);
+    });
+    return { segments: out, snapped: n, theta0 };
+  }
+  /** Segments parallèles (à angTol près) dont les droites sont à moins de distTol : ramenés sur une
+   *  même droite (décalage moyen pondéré par la longueur). Un mur vu par plusieurs scans devient droit. */
+  function alignCollinear(segs, opt = {}) {
+    const { angTol = 1.5, distTol = 0.06 } = opt, out = segs.map(s => Object.assign({}, s)), used = new Uint8Array(out.length); let n = 0;
+    for (let i = 0; i < out.length; i++) {
+      if (used[i]) continue;
+      const a = LC.segAngle(out[i]), nx = -Math.sin(a), ny = Math.cos(a), off = s => nx * (s.x1 + s.x2) / 2 + ny * (s.y1 + s.y2) / 2;
+      const grp = [i]; used[i] = 1;
+      for (let j = i + 1; j < out.length; j++) {
+        if (used[j]) continue;
+        if (LC.angleBetween(out[i], out[j]).lines > angTol) continue;
+        if (Math.abs(off(out[j]) - off(out[i])) > distTol) continue;
+        grp.push(j); used[j] = 1;
+      }
+      if (grp.length < 2) continue;
+      let sw = 0, so = 0; for (const k of grp) { const w = LC.segLen(out[k]) * (out[k].conf ?? 1); sw += w; so += w * off(out[k]); }
+      const target = so / sw;
+      for (const k of grp) {
+        const s = out[k], d = target - off(s);
+        // on garde l'orientation propre de chaque segment ; seule la position latérale change
+        Object.assign(s, { x1: s.x1 + nx * d, y1: s.y1 + ny * d, x2: s.x2 + nx * d, y2: s.y2 + ny * d });
+      }
+      n += grp.length;
+    }
+    return { segments: out, aligned: n };
+  }
+  /** Fusion des segments proches en gardant les propriétés (confiance max, observations cumulées) */
+  function mergeKeepProps(segs, tol) {
+    let list = segs.map(s => Object.assign({}, s)), n = 0, changed = true;
+    while (changed) {
+      changed = false;
+      outer: for (let i = 0; i < list.length; i++) for (let j = i + 1; j < list.length; j++) {
+        const a = list[i], b = list[j];
+        if (!LC.areClose(a, b, tol).close) continue;
+        const g = LC.mergeSegments(a, b, LC.segLen(a) * (a.conf ?? 1), LC.segLen(b) * (b.conf ?? 1));
+        list[i] = Object.assign({}, a, { x1: g.x1, y1: g.y1, x2: g.x2, y2: g.y2, conf: Math.max(a.conf ?? 1, b.conf ?? 1),
+          nObs: (a.nObs ?? 1) + (b.nObs ?? 1), firstSeen: Math.min(a.firstSeen ?? 0, b.firstSeen ?? 0), lastSeen: Math.max(a.lastSeen ?? 0, b.lastSeen ?? 0) });
+        list.splice(j, 1); n++; changed = true; break outer;
+      }
+    }
+    return { segments: list, merged: n };
+  }
+  /** Coins propres : deux segments à plus de minAng dont l'intersection des droites est à moins de
+   *  maxExt d'une extrémité -> cette extrémité est déplacée sur l'intersection (prolongement ou
+   *  rognage). Si l'intersection tombe dans l'autre segment : jonction en T, seul le premier bouge. */
+  function joinCorners(segs, opt = {}) {
+    const { maxExt = 0.25, minAng = 60 } = opt, out = segs.map(s => Object.assign({}, s)); let n = 0;
+    for (let i = 0; i < out.length; i++) for (let j = i + 1; j < out.length; j++) {
+      const a = out[i], b = out[j];
+      if (LC.angleBetween(a, b).lines < minAng) continue;
+      const r = LC.intersect(a, b); if (r.type !== 'point' && r.type !== 'lines') continue;
+      const end = s => { const d1 = Math.hypot(s.x1 - r.x, s.y1 - r.y), d2 = Math.hypot(s.x2 - r.x, s.y2 - r.y); return d1 <= d2 ? [1, d1] : [2, d2]; };
+      const [ea, da] = end(a), [eb, db] = end(b);
+      const tIn = (s, tt) => tt >= -1e-9 && tt <= 1 + 1e-9;
+      const aNear = da <= maxExt, bNear = db <= maxExt;
+      if (!aNear && !bNear) continue;
+      // les deux bouts proches : vrai coin ; un seul : jonction en T si l'intersection est dans l'autre
+      if (aNear && bNear) {
+        if (da > 1e-9) { a['x' + ea] = r.x; a['y' + ea] = r.y; n++; }
+        if (db > 1e-9) { b['x' + eb] = r.x; b['y' + eb] = r.y; n++; }
+      } else if (aNear && tIn(b, r.u) && da > 1e-9) { a['x' + ea] = r.x; a['y' + ea] = r.y; n++; }
+      else if (bNear && tIn(a, r.t) && db > 1e-9) { b['x' + eb] = r.x; b['y' + eb] = r.y; n++; }
+    }
+    return { segments: out, joined: n };
+  }
+  /** Collisions géométriques : deux segments qui se croisent avec un petit dépassement (< overhang)
+   *  -> le dépassement est rogné (artefact d'extraction, deux murs ne se traversent pas). */
+  function trimCollisions(segs, opt = {}) {
+    const { overhang = 0.12, minAng = 20 } = opt, out = segs.map(s => Object.assign({}, s)); let n = 0;
+    for (let i = 0; i < out.length; i++) for (let j = 0; j < out.length; j++) {
+      if (i === j) continue;
+      const a = out[i], b = out[j];
+      if (LC.angleBetween(a, b).lines < minAng) continue;
+      const r = LC.intersect(a, b); if (r.type !== 'point') continue;
+      const L = LC.segLen(a), d1 = r.t * L, d2 = (1 - r.t) * L;
+      if (d1 > 1e-6 && d1 < overhang && d2 > overhang) { a.x1 = r.x; a.y1 = r.y; n++; }
+      else if (d2 > 1e-6 && d2 < overhang && d1 > overhang) { a.x2 = r.x; a.y2 = r.y; n++; }
+    }
+    return { segments: out, trimmed: n };
+  }
+  const REG_DEFAULTS = { minConf: 1, minLen: 0.30, snapTol: 6, alignTol: 0.06, merge: { angTol: 3, distTol: 0.06, gapTol: 0.30 },
+                         maxExt: 0.25, cornerMin: 60, overhang: 0.12, orthogonal: true };
+  /** Chaîne de régularisation d'une carte vectorielle -> nouvelle carte + compte rendu */
+  function regularizeVectorMap(map, opt = {}) {
+    const o = Object.assign({}, REG_DEFAULTS, opt), rep = { before: map.features.length };
+    let S = map.features.filter(f => (f.conf ?? 1) >= o.minConf && LC.segLen(f) >= o.minLen).map(f => Object.assign({}, f));
+    rep.weak = rep.before - S.length;
+    if (o.orthogonal && S.length) { const r = snapDirections(S, { angTol: o.snapTol }); S = r.segments; rep.snapped = r.snapped; rep.theta0 = r.theta0; }
+    { const r = alignCollinear(S, { distTol: o.alignTol }); S = r.segments; rep.aligned = r.aligned; }
+    { const r = mergeKeepProps(S, o.merge); S = r.segments; rep.merged = r.merged; }
+    { const r = joinCorners(S, { maxExt: o.maxExt, minAng: o.cornerMin }); S = r.segments; rep.joined = r.joined; }
+    { const r = trimCollisions(S, { overhang: o.overhang }); S = r.segments; rep.trimmed = r.trimmed; }
+    S = S.filter(f => LC.segLen(f) >= o.minLen);
+    let id = 1; S.forEach(f => { f.id = id++; });
+    const out = { features: S, corners: LC.computeCorners(S, LC.VM_DEFAULTS), scans: map.scans, nextId: id };
+    rep.after = S.length; rep.corners = out.corners.length;
+    rep.lenBefore = map.features.reduce((a, f) => a + LC.segLen(f), 0); rep.lenAfter = S.reduce((a, f) => a + LC.segLen(f), 0);
+    return { map: out, report: rep };
+  }
+
+  // ==========================================================================
+  //  9. Exploitation : carte de coût et trajet
+  // ==========================================================================
+  // Valeurs (convention costmap ROS) : 0 libre, 1..252 proche d'un obstacle, 253 « inscrit » (le centre
+  // du robot à cette place = collision), 254 obstacle, 255 inconnu.
+  const COST = { LETHAL: 254, INSCRIBED: 253, UNKNOWN: 255 };
+  function costmap(g, opt = {}) {
+    const o = Object.assign({ robotRadius: 0.15, inflation: 0.35, decay: 3 }, opt);
+    const F = LL.distanceField(g), n = g.W * g.H, cost = new Uint8Array(n);
+    let free = 0, inscribed = 0;
+    for (let k = 0; k < n; k++) {
+      const v = g.data[k], d = F.dist[k];
+      if (v >= OCC_T) { cost[k] = COST.LETHAL; continue; }
+      if (d <= o.robotRadius) { cost[k] = COST.INSCRIBED; inscribed++; continue; }
+      if (v > FREE_T) { cost[k] = COST.UNKNOWN; continue; }
+      cost[k] = d <= o.robotRadius + o.inflation ? Math.max(1, Math.round(252 * Math.exp(-o.decay * (d - o.robotRadius) / o.inflation))) : 0;
+      free++;
+    }
+    return { W: g.W, H: g.H, res: g.res, x0: g.x0, y0: g.y0, cost, dist: F.dist, robotRadius: o.robotRadius,
+             stats: { navigable: free * g.res * g.res, inscribed: inscribed * g.res * g.res } };
+  }
+  function costmapToPGM(cm, name = 'costmap') {
+    const header = `P5\n# ${name} res=${cm.res} 0=libre 254=obstacle 253=inscrit 255=inconnu\n${cm.W} ${cm.H}\n255\n`;
+    const out = new Uint8Array(header.length + cm.W * cm.H);
+    for (let k = 0; k < header.length; k++) out[k] = header.charCodeAt(k);
+    let p = header.length;
+    for (let j = cm.H - 1; j >= 0; j--) for (let i = 0; i < cm.W; i++) out[p++] = cm.cost[j * cm.W + i];
+    return out;
+  }
+  /**
+   * A* 8-connexe sur la carte de coût : cellules ≥ 253 interdites (et inconnues sauf allowUnknown),
+   * coût d'un pas = longueur × (1 + w·coût/252) : le trajet s'écarte des obstacles quand c'est possible.
+   * Puis lissage : on saute les points intermédiaires tant que la ligne droite reste sans collision.
+   * Renvoie { ok, path: [{x,y}], raw, length, expanded } (raison si échec).
+   */
+  function planPath(cm, start, goal, opt = {}) {
+    const o = Object.assign({ w: 3, allowUnknown: false, maxExpand: 2e6 }, opt), W = cm.W, H = cm.H;
+    const toCell = p => [Math.floor((p.x - cm.x0) / cm.res), Math.floor((p.y - cm.y0) / cm.res)];
+    const blocked = k => cm.cost[k] === COST.LETHAL || cm.cost[k] === COST.INSCRIBED || (!o.allowUnknown && cm.cost[k] === COST.UNKNOWN);
+    const [si, sj] = toCell(start), [gi, gj] = toCell(goal);
+    const inside = (i, j) => i >= 0 && j >= 0 && i < W && j < H;
+    if (!inside(si, sj) || !inside(gi, gj)) return { ok: false, reason: 'départ ou arrivée hors carte' };
+    const S = sj * W + si, G = gj * W + gi;
+    if (blocked(G)) {
+      if (cm.cost[G] === COST.LETHAL) return { ok: false, reason: 'arrivée sur un obstacle' };
+      if (cm.cost[G] === COST.UNKNOWN) return { ok: false, reason: 'arrivée en zone inconnue (cocher « autoriser les zones inconnues »)' };
+      const d = cm.dist ? cm.dist[G] : 0;
+      return { ok: false, reason: `arrivée à ${(d * 100).toFixed(0)} cm d'un obstacle, moins que le rayon du robot (${(cm.robotRadius * 100).toFixed(0)} cm)` };
+    }
+    const gs = new Float64Array(W * H).fill(Infinity), from = new Int32Array(W * H).fill(-1), closed = new Uint8Array(W * H);
+    const h = k => { const i = k % W, j = (k - i) / W, dx = Math.abs(i - gi), dy = Math.abs(j - gj); return Math.max(dx, dy) + (Math.SQRT2 - 1) * Math.min(dx, dy); };
+    // tas binaire
+    const heap = [], push = (k, f) => { heap.push([f, k]); let c = heap.length - 1; while (c) { const p = (c - 1) >> 1; if (heap[p][0] <= heap[c][0]) break; [heap[p], heap[c]] = [heap[c], heap[p]]; c = p; } };
+    const pop = () => { const top = heap[0], last = heap.pop(); if (heap.length) { heap[0] = last; let c = 0; for (;;) { const l = 2 * c + 1, r = l + 1; let m = c; if (l < heap.length && heap[l][0] < heap[m][0]) m = l; if (r < heap.length && heap[r][0] < heap[m][0]) m = r; if (m === c) break; [heap[m], heap[c]] = [heap[c], heap[m]]; c = m; } } return top; };
+    gs[S] = 0; push(S, h(S)); let expanded = 0;
+    while (heap.length) {
+      const [, k] = pop(); if (closed[k]) continue; closed[k] = 1;
+      if (k === G) break;
+      if (++expanded > o.maxExpand) return { ok: false, reason: 'recherche trop longue' };
+      const i = k % W, j = (k - i) / W;
+      for (let dj = -1; dj <= 1; dj++) for (let di = -1; di <= 1; di++) {
+        if (!di && !dj) continue;
+        const a = i + di, b = j + dj; if (!inside(a, b)) continue;
+        const m = b * W + a; if (closed[m] || (blocked(m) && m !== S)) continue;
+        if (di && dj && (blocked(j * W + a) || blocked(b * W + i))) continue;      // pas de coupe en diagonale entre deux obstacles
+        const c = (di && dj ? Math.SQRT2 : 1) * (1 + o.w * (cm.cost[m] === COST.UNKNOWN ? 1 : cm.cost[m] / 252));
+        if (gs[k] + c < gs[m]) { gs[m] = gs[k] + c; from[m] = k; push(m, gs[m] + h(m)); }
+      }
+    }
+    if (from[G] < 0 && G !== S) return { ok: false, reason: 'aucun passage assez large pour le robot', expanded };
+    const cells = []; for (let k = G; k >= 0; k = k === S ? -1 : from[k]) cells.push(k);
+    cells.reverse();
+    const ctr = k => { const i = k % W, j = (k - i) / W; return { x: cm.x0 + (i + 0.5) * cm.res, y: cm.y0 + (j + 0.5) * cm.res, i, j }; };
+    const raw = cells.map(ctr);
+    // lissage par visibilité (ligne droite sans cellule bloquée ni trop coûteuse)
+    const clear = (p, q) => { let ok = true; LC.bresenham(p.i, p.j, q.i, q.j, (a, b) => { const c = cm.cost[b * W + a]; if (c >= COST.INSCRIBED || c > 128) ok = false; }); return ok; };
+    const path = [raw[0]]; let a = 0;
+    while (a < raw.length - 1) { let b = raw.length - 1; while (b > a + 1 && !clear(raw[a], raw[b])) b--; path.push(raw[b]); a = b; }
+    path[0] = { x: start.x, y: start.y, i: si, j: sj }; path[path.length - 1] = { x: goal.x, y: goal.y, i: gi, j: gj };
+    let length = 0; for (let k = 1; k < path.length; k++) length += Math.hypot(path[k].x - path[k - 1].x, path[k].y - path[k - 1].y);
+    return { ok: true, path, raw, length, expanded };
+  }
+
+  // ==========================================================================
+  //  10. Qualité d'une carte
+  // ==========================================================================
+  /**
+   *  - points sur obstacle : part des points des scans (avec leur pose) à moins de 1,5 cellule
+   *    d'une cellule occupée -> cohérence de la superposition ;
+   *  - distance moyenne des points à l'obstacle le plus proche (plafonnée à 50 cm) ;
+   *  - netteté : part des cellules observées dont l'état est tranché (libre ou occupé) ;
+   *  - conflits : cellules vues souvent, tantôt libres tantôt occupées (persistance entre 25 et 75 %).
+   */
+  function mapQuality(g, data, L) {
+    const F = LL.distanceField(g); let n = 0, on = 0, sd = 0;
+    for (const { pts } of data) for (let k = 0; k < pts.length; k += 2) {
+      const d = Math.min(0.5, LL.fieldSample(F, pts[k].x, pts[k].y)[0]); n++; sd += d; if (d <= 1.5 * g.res) on++;
+    }
+    const st = LC.gridStats(g); let observed = 0, conflicts = 0;
+    for (let k = 0; k < g.data.length; k++) {
+      if (L ? L.seen[k] > 0 : g.data[k] !== UNKNOWN) observed++;
+      if (L && L.seen[k] >= 3 && L.hits[k]) { const p = L.hits[k] / L.seen[k]; if (p > 0.25 && p < 0.75) conflicts++; }
+    }
+    return { pointsOnObstacle: n ? on / n : 0, meanDist: n ? sd / n : 0, occCells: st.occ, freeArea: st.free * g.res * g.res,
+             unknownPct: st.unk / st.cells, sharpness: observed ? (st.free + st.occ) / observed : 0, conflicts };
+  }
+
+  // ==========================================================================
+  //  11. Recalage global des poses (alignement de tous les scans entre eux)
+  // ==========================================================================
+  /**
+   * Correction géométrique (document « cartographie » §6 et §9) : chaque scan est relocalisé sur la
+   * carte construite avec tous les AUTRES scans (multi-résolution sur la grid map, puis ICP
+   * point-segment sur la carte vectorielle, méthodes du Jour 2), en partant de sa pose actuelle.
+   * Les poses sont mises à jour au fur et à mesure (Gauss-Seidel) et on refait passes fois.
+   * Garde-fous : correction refusée si elle dépasse maxCorr / maxRot, ou si le score diminue.
+   * scans : [{ name, a, d, i, pose }]. onProgress(fraction, texte) peut être async.
+   */
+  async function refinePoses(scans, opt = {}, onProgress) {
+    const o = Object.assign({ passes: 4, rxy: 0.3, rth: 8, maxCorr: 0.30, maxRot: 8, growing: true, stopPos: 0.005, stopAng: 0.1 }, opt);
+    const poses = scans.map(s => Object.assign({}, s.pose)), log = [], N = scans.length;
+    const pts = scans.map(s => LL.uniformSubsample(LL.localPoints(s)));
+    const total = o.passes * N; let done = 0;
+    // un essai : relocaliser le scan k sur la carte des scans `refIdx` (poses actuelles)
+    const attempt = (k, refIdx, pass) => {
+      const R = LL.buildReferences(refIdx.map(j => Object.assign({}, scans[j], { pose: poses[j] })), -1);
+      const P = pts[k], before = LL.vecScore(R.index, P, poses[k].x, poses[k].y, poses[k].th, 0.05);
+      const r1 = LL.gridMultiRes(R.field, P, poses[k], { rxy: o.rxy, rth: o.rth }), r2 = LL.vecICP(R.index, P, r1);
+      const after = LL.vecScore(R.index, P, r2.x, r2.y, r2.th, 0.05), e = LL.poseError(r2, poses[k]);
+      const ok = e.pos <= o.maxCorr && e.ang <= o.maxRot && after >= before - 1e-3;
+      log.push({ pass, name: scans[k].name, refs: refIdx.length, dx: r2.x - poses[k].x, dy: r2.y - poses[k].y, dth: normDeg(r2.th - poses[k].th), before, after, accepted: ok });
+      if (ok) poses[k] = { x: r2.x, y: r2.y, th: normDeg(r2.th) };
+      return ok ? e : { pos: 0, ang: 0 };
+    };
+    for (let pass = 1; pass <= o.passes; pass++) {
+      let maxPos = 0, maxAng = 0;
+      // passe 1 « progressive » : le scan 1 fixe le repère, les autres sont recalés du plus proche au plus
+      // loin, chacun sur les scans DÉJÀ recalés (référence cohérente) ; passes suivantes : sur tous les autres
+      const order = [...Array(N).keys()].slice(1);
+      if (pass === 1 && o.growing) order.sort((a, b) => Math.hypot(poses[a].x - poses[0].x, poses[a].y - poses[0].y) - Math.hypot(poses[b].x - poses[0].x, poses[b].y - poses[0].y));
+      const doneSet = [0];
+      for (const k of order) {
+        if (onProgress) await onProgress(done / total, `passe ${pass} · ${scans[k].name || 'scan ' + (k + 1)}`);
+        done++;
+        const refIdx = pass === 1 && o.growing ? doneSet.slice() : [...Array(N).keys()].filter(j => j !== k);
+        const e = attempt(k, refIdx, pass);
+        maxPos = Math.max(maxPos, e.pos); maxAng = Math.max(maxAng, e.ang);
+        doneSet.push(k);
+      }
+      if (pass > 1 && maxPos < o.stopPos && maxAng < o.stopAng) { done = total; break; }   // convergé
+    }
+    if (onProgress) await onProgress(1, 'terminé');
+    return { poses, log };
+  }
+
+  // ==========================================================================
+  //  11 bis. Édition : gomme et filtres « distance minimum »
+  // ==========================================================================
+  // Les fonctions travaillent sur un résultat R = { grid, vmap, omap } (celui de processMap).
+  // fill : valeur donnée aux cellules effacées, 'free' (libre) ou 'unknown' (inconnue).
+  const fillValue = fill => fill === 'unknown' ? UNKNOWN : FREE_T - 25;
+  /** Parties d'un segment hors du disque (centre cx, cy, rayon r) : [] si entièrement dedans, [s] si non touché */
+  function clipSegmentDisc(s, cx, cy, r) {
+    const dx = s.x2 - s.x1, dy = s.y2 - s.y1, a = dx * dx + dy * dy, fx = s.x1 - cx, fy = s.y1 - cy;
+    if (a < 1e-12) return Math.hypot(fx, fy) < r ? [] : [s];
+    const b = 2 * (fx * dx + fy * dy), c = fx * fx + fy * fy - r * r, disc = b * b - 4 * a * c;
+    if (disc <= 0) return [s];
+    const sq = Math.sqrt(disc), t1 = (-b - sq) / (2 * a), t2 = (-b + sq) / (2 * a);
+    if (t2 <= 0 || t1 >= 1) return [s];
+    if ((Math.min(t2, 1) - Math.max(t1, 0)) * Math.sqrt(a) < 1e-6) return [s];     // le disque ne fait qu'effleurer le segment
+    const at = t => [s.x1 + dx * t, s.y1 + dy * t], out = [];
+    if (t1 > 0) { const [x, y] = at(t1); out.push(Object.assign({}, s, { x2: x, y2: y })); }
+    if (t2 < 1) { const [x, y] = at(t2); out.push(Object.assign({}, s, { x1: x, y1: y })); }
+    return out;
+  }
+  /**
+   * Gomme : efface dans un disque (x, y, r) les cellules non libres de la grille, les parties de
+   * segments (un segment coupé en deux garde ses propriétés) et les cercles qui touchent le disque.
+   * opt : { grid, segments, circles (booléens), fill, minPiece (m, morceaux plus courts supprimés) }
+   */
+  function eraseDisc(R, x, y, r, opt = {}) {
+    const o = Object.assign({ grid: true, segments: true, circles: true, fill: 'free', minPiece: 0.05 }, opt), st = { cells: 0, segCut: 0, segRemoved: 0, circles: 0, cutIds: [] };
+    if (o.grid && R.grid) {
+      const g = R.grid, v = fillValue(o.fill);
+      const i0 = Math.max(0, Math.floor((x - r - g.x0) / g.res)), i1 = Math.min(g.W - 1, Math.floor((x + r - g.x0) / g.res));
+      const j0 = Math.max(0, Math.floor((y - r - g.y0) / g.res)), j1 = Math.min(g.H - 1, Math.floor((y + r - g.y0) / g.res));
+      for (let j = j0; j <= j1; j++) for (let i = i0; i <= i1; i++) {
+        const [cx, cy] = LC.cellCenter(g, i, j); if (Math.hypot(cx - x, cy - y) > r) continue;
+        const k = j * g.W + i;
+        if (g.data[k] > FREE_T && g.data[k] !== v) { g.data[k] = v; st.cells++; }
+      }
+    }
+    if (o.segments && R.vmap) {
+      const out = [];
+      for (const f of R.vmap.features) {
+        const P = clipSegmentDisc(f, x, y, r);
+        if (P.length === 1 && P[0] === f) { out.push(f); continue; }
+        const keep = P.filter(q => LC.segLen(q) >= o.minPiece);
+        if (!keep.length) { st.segRemoved++; continue; }
+        st.segCut++; st.cutIds.push(f.id);
+        keep.forEach((q, n) => out.push(n === 0 ? Object.assign(q, { id: f.id }) : Object.assign(q, { id: R.vmap.nextId++ })));
+      }
+      R.vmap.features = out;
+    }
+    if (o.circles && R.omap) {
+      const n0 = R.omap.items.length;
+      R.omap.items = R.omap.items.filter(it => Math.hypot(it.x - x, it.y - y) >= r + it.r);
+      st.circles = n0 - R.omap.items.length;
+    }
+    return st;
+  }
+  /** Filtre de taille : segments plus courts que minSegLen, cercles de diamètre < minCircleD,
+   *  taches d'obstacle de la grille (composantes connexes) d'étendue < minBlob. 0 = désactivé. */
+  function filterSmall(R, opt = {}) {
+    const { minSegLen = 0, minCircleD = 0, minBlob = 0, fill = 'free' } = opt, st = { segments: 0, circles: 0, blobs: 0, cells: 0 };
+    if (minSegLen > 0 && R.vmap) { const n0 = R.vmap.features.length; R.vmap.features = R.vmap.features.filter(f => LC.segLen(f) >= minSegLen); st.segments = n0 - R.vmap.features.length; }
+    if (minCircleD > 0 && R.omap) { const n0 = R.omap.items.length; R.omap.items = R.omap.items.filter(it => 2 * it.r >= minCircleD); st.circles = n0 - R.omap.items.length; }
+    if (minBlob > 0 && R.grid) {
+      const { labels, obstacles } = gridObstacles(R.grid, null), small = new Set(obstacles.filter(o => Math.max(o.len, o.wid) < minBlob).map(o => o.id)), v = fillValue(fill);
+      for (let k = 0; k < labels.length; k++) if (small.has(labels[k])) { R.grid.data[k] = v; st.cells++; }
+      st.blobs = small.size;
+    }
+    return st;
+  }
+  /** Filtre de distance : tout ce qui est à moins de `radius` d'une des positions du robot (objets
+   *  touchant le robot, câbles, jambes de l'opérateur) est effacé, comme avec la gomme. */
+  function filterNearPoses(R, poses, radius, opt = {}) {
+    const st = { cells: 0, segCut: 0, segRemoved: 0, circles: 0 };
+    for (const p of poses) { const r = eraseDisc(R, p.x, p.y, radius, opt); for (const k in st) st[k] += r[k]; }   // cutIds non cumulés
+    return st;
+  }
+  /** Après une édition : obstacles de la grille, coins de la carte vectorielle, carte de coût et qualité recalculés */
+  function refreshDerived(R, opt = {}) {
+    const o = Object.assign({}, R.opt || {}, opt);
+    const { labels, obstacles } = gridObstacles(R.grid, R.layers, o.obstacleOpt);
+    R.labels = labels; R.obstacles = obstacles;
+    R.vmap.corners = LC.computeCorners(R.vmap.features, LC.VM_DEFAULTS);
+    R.cost = costmap(R.grid, o.cost);
+    if (R.pre && R.poses) R.quality.clean = mapQuality(R.grid, R.pre.map((p, k) => ({ robot: R.poses[k], pts: p.pts })), R.layers);
+    return R;
+  }
+
+  // ==========================================================================
+  //  12. Chaîne complète
+  // ==========================================================================
+  const PIPE_DEFAULTS = {
+    refine: false, refineOpt: {},
+    pre: {}, res: 0.05,
+    mobile: true, mobileOpt: {},
+    obsolete: false, obsoleteOpt: { age: 10 },
+    decay: false, decayOpt: { age: 10, step: 16 },
+    speckles: true, speckleOpt: {},
+    smooth: true, smoothOpt: {},
+    close: true, closeOpt: {},
+    features: {}, obstacleOpt: {}, vmOpt: { extract: { minLen: 0.3 } },
+    regularize: true, regOpt: {},
+    filters: { minSegLen: 0, minCircleD: 0, minBlob: 0, nearPoses: 0, fill: 'free' },
+    cost: { robotRadius: 0.15, inflation: 0.35 }
+  };
+  /**
+   * scans : [{ name, a, d, i, pose, scale? }] -> tout ce qu'il faut pour afficher et exporter :
+   * { poses, refineLog, pre, gridRaw, grid, layers, mobile, obstacles, labels, omap, vmapRaw, vmap,
+   *   regReport, cost, quality: { raw, clean }, steps: [{ step, detail, ms }] }
+   */
+  async function processMap(scans, opt = {}, onProgress) {
+    const o = Object.assign({}, PIPE_DEFAULTS, opt), steps = [], T = () => now();
+    const prog = async (f, t) => { if (onProgress) await onProgress(f, t); };
+    let t0, poses = scans.map(s => Object.assign({}, s.pose)), refineLog = null;
+    if (o.refine && scans.length > 1) {
+      t0 = T();
+      const r = await refinePoses(scans, o.refineOpt, (f, t) => prog(0.6 * f, 'Recalage des poses : ' + t));
+      poses = r.poses; refineLog = r.log;
+      const acc = r.log.filter(l => l.accepted && (Math.hypot(l.dx, l.dy) > 0.005 || Math.abs(l.dth) > 0.2));
+      steps.push({ step: 'Recalage global des poses', detail: `${acc.length} corrections acceptées sur ${r.log.length} essais`, ms: T() - t0 });
+    }
+    const base = o.refine ? 0.6 : 0;
+    await prog(base, 'Prétraitement des scans');
+    t0 = T();
+    const pre = scans.map((s, k) => Object.assign({ name: s.name }, preprocessScan(s, poses[k], Object.assign({ scale: s.scale ?? 1 }, o.pre))));
+    const data = pre.map((p, k) => ({ robot: { x: poses[k].x, y: poses[k].y }, pts: p.pts }));
+    const rm = pre.reduce((a, p) => { for (const k in p.removed) a[k] = (a[k] || 0) + p.removed[k]; return a; }, {});
+    const tot = pre.reduce((a, p) => a + p.total, 0);
+    steps.push({ step: 'Prétraitement', detail: `${tot - pre.reduce((a, p) => a + p.kept, 0)} points écartés sur ${tot} : hors portée ${rm.range}, intensité ${rm.intensity}, isolés ${rm.isolated}, mixtes ${rm.mixed}`, ms: T() - t0 });
+
+    await prog(base + 0.1 * (1 - base), 'Grid map enrichie');
+    t0 = T();
+    const { grid: gridRaw, layers } = buildLayeredGrid(data, { res: o.res });
+    steps.push({ step: 'Grid map enrichie (impacts, observations, horodatage)', detail: `${gridRaw.W} × ${gridRaw.H} cellules, ${data.length} scans`, ms: T() - t0 });
+    const qRaw = mapQuality(gridRaw, data, layers);
+
+    const grid = cloneGrid(gridRaw); let mobile = new Uint8Array(grid.data.length);
+    const stepG = (name, fn) => { const t = T(), r = fn(); steps.push({ step: name, detail: r.detail, ms: T() - t }); return r; };
+    if (o.decay) stepG('Décroissance temporelle', () => { const r = decayGrid(grid, layers, o.decayOpt); return { detail: `${r.changed} cellules rapprochées de « inconnu »` }; });
+    if (o.obsolete) stepG('Obstacles obsolètes', () => { const r = clearObsolete(grid, layers, o.obsoleteOpt); return { detail: `${r.freed} cellules libérées, ${r.unknown} remises à inconnu` }; });
+    if (o.mobile) stepG('Obstacles mobiles (persistance)', () => { const r = removeMobile(grid, layers, o.mobileOpt); mobile = r.mobile; return { detail: `${r.removed} cellules « traces » (impact dans moins d'un tiers des observations) rendues libres, dont ${r.wasOcc} encore occupées et ${r.wasUnk} inconnues` }; });
+    if (o.speckles) stepG('Taches isolées', () => { const r = removeSpeckles(grid, layers, o.speckleOpt); return { detail: `${r.removed} cellules de bruit retirées, ${r.keptInterest} petits obstacles confirmés gardés` }; });
+    if (o.smooth) stepG('Lissage (majoritaire)', () => { const r = smoothGrid(grid, o.smoothOpt); return { detail: `${r.changed} cellules inconnues tranchées` }; });
+    if (o.close) stepG('Fermeture des murs', () => { const r = closeGaps(grid, o.closeOpt); return { detail: `${r.filled} trous bouchés` }; });
+
+    await prog(base + 0.45 * (1 - base), 'Features (segments, cercles)');
+    t0 = T();
+    const vmapRaw = LC.createVectorMap(), omap = createObstacleMap(); let nSeg = 0, nCirc = 0;
+    for (const { robot, pts } of data) {
+      const f = extractFeatures(pts, robot, o.features); nSeg += f.segments.length; nCirc += f.circles.length;
+      LC.updateVectorMap(vmapRaw, robot, pts, Object.assign({}, o.vmOpt, (o.features.method || 'split') !== 'split' ? { segments: f.segments } : {}));
+      updateObstacleMap(omap, robot, pts, f.circles, o.omOpt);
+    }
+    const pr = pruneObstaclesOnWalls(omap, vmapRaw.features, o.pruneOpt);
+    steps.push({ step: 'Carte vectorielle + obstacles circulaires', detail: `${vmapRaw.features.length} segments ; ${nCirc} cercles observés -> ${omap.items.length} obstacles circulaires suivis (${omap.items.filter(i => i.conf >= 3).length} de confiance ≥ 3, ${omap.items.filter(i => i.mobile).length} mobiles), ${pr.removed.length} écartés car posés sur un mur`, ms: T() - t0 });
+
+    let vmap = vmapRaw, regReport = null;
+    if (o.regularize) {
+      t0 = T();
+      const r = regularizeVectorMap(vmapRaw, o.regOpt); vmap = r.map; regReport = r.report;
+      steps.push({ step: 'Régularisation de la carte vectorielle', detail: `${r.report.before} → ${r.report.after} segments ; ${r.report.snapped ?? 0} redressés (axes ${(r.report.theta0 ?? 0).toFixed(1)}° / ${((r.report.theta0 ?? 0) + 90).toFixed(1)}°), ${r.report.aligned} alignés, ${r.report.merged} fusions, ${r.report.joined} coins raccordés, ${r.report.trimmed} dépassements rognés`, ms: T() - t0 });
+    }
+    // filtres « distance minimum » : taille des éléments et distance aux positions du robot
+    const F = o.filters || {}, fill = F.fill || 'free';
+    const tmp = { grid, vmap: vmap === vmapRaw ? JSON.parse(JSON.stringify(vmapRaw)) : vmap, omap, poses };   // la carte « avant régularisation » reste intacte
+    if (F.minSegLen > 0 || F.minCircleD > 0 || F.minBlob > 0) {
+      t0 = T(); const r = filterSmall(tmp, Object.assign({ fill }, F));
+      steps.push({ step: 'Filtre de taille', detail: `${r.segments} segments de moins de ${Math.round((F.minSegLen || 0) * 100)} cm, ${r.circles} cercles de moins de ${Math.round((F.minCircleD || 0) * 100)} cm de diamètre, ${r.blobs} taches de moins de ${Math.round((F.minBlob || 0) * 100)} cm (${r.cells} cellules) supprimés`, ms: T() - t0 });
+    }
+    if (F.nearPoses > 0) {
+      t0 = T(); const r = filterNearPoses(tmp, poses, F.nearPoses, { fill });
+      steps.push({ step: 'Filtre de distance au robot', detail: `à moins de ${Math.round(F.nearPoses * 100)} cm d'une position du robot : ${r.cells} cellules, ${r.segCut} segments coupés (${r.segRemoved} supprimés), ${r.circles} cercles supprimés`, ms: T() - t0 });
+    }
+    vmap = tmp.vmap;
+    if (vmap !== vmapRaw) vmap.corners = LC.computeCorners(vmap.features, LC.VM_DEFAULTS);
+    const qClean = mapQuality(grid, data, layers);
+
+    await prog(base + 0.8 * (1 - base), 'Obstacles de la grille');
+    t0 = T();
+    const { labels, obstacles } = gridObstacles(grid, layers, o.obstacleOpt);
+    const cnt = c => obstacles.filter(x => x.cls === c).length;
+    steps.push({ step: 'Obstacles (composantes connexes)', detail: `${obstacles.length} : ${cnt('structure')} structures, ${cnt('objet')} objets, ${cnt('petit')} petits`, ms: T() - t0 });
+
+    await prog(base + 0.85 * (1 - base), 'Carte de coût');
+    t0 = T();
+    const cost = costmap(grid, o.cost);
+    steps.push({ step: 'Carte de coût', detail: `robot ${Math.round(o.cost.robotRadius * 100)} cm + marge ${Math.round(o.cost.inflation * 100)} cm ; ${cost.stats.navigable.toFixed(1)} m² accessibles au centre du robot`, ms: T() - t0 });
+    await prog(1, 'terminé');
+    return { poses, refineLog, pre, gridRaw, grid, layers, mobile, obstacles, labels, omap, vmapRaw, vmap, regReport, cost,
+             quality: { raw: qRaw, clean: qClean }, steps, opt: { obstacleOpt: o.obstacleOpt, cost: o.cost },
+             manual: { cells: 0, segCut: 0, segRemoved: 0, circles: 0 } };
+  }
+
+  function reportToMarkdown(R) {
+    const q = R.quality, pc = v => (v * 100).toFixed(1) + ' %';
+    let s = '# Traitement de la carte\n\n## Étapes\n\n| Étape | Résultat | Temps |\n|---|---|---|\n';
+    for (const st of R.steps) s += `| ${st.step} | ${st.detail} | ${st.ms.toFixed(0)} ms |\n`;
+    s += '\n## Qualité de la grid map\n\n| Mesure | Brute | Traitée |\n|---|---|---|\n';
+    s += `| Points des scans sur un obstacle (≤ 1,5 cellule) | ${pc(q.raw.pointsOnObstacle)} | ${pc(q.clean.pointsOnObstacle)} |\n`;
+    s += `| Distance moyenne point → obstacle | ${(q.raw.meanDist * 100).toFixed(1)} cm | ${(q.clean.meanDist * 100).toFixed(1)} cm |\n`;
+    s += `| Cellules occupées | ${q.raw.occCells} | ${q.clean.occCells} |\n`;
+    s += `| Surface libre | ${q.raw.freeArea.toFixed(1)} m² | ${q.clean.freeArea.toFixed(1)} m² |\n`;
+    s += `| Netteté (cellules observées tranchées) | ${pc(q.raw.sharpness)} | ${pc(q.clean.sharpness)} |\n`;
+    s += `| Cellules en conflit (persistance 25–75 %) | ${q.raw.conflicts} | ${q.clean.conflicts} |\n`;
+    if (R.refineLog) {
+      s += '\n## Recalage des poses\n\n| Passe | Scan | dx (cm) | dy (cm) | dθ (°) | Score avant | Score après | Acceptée |\n|---|---|---|---|---|---|---|---|\n';
+      for (const l of R.refineLog) s += `| ${l.pass} | ${l.name} | ${(l.dx * 100).toFixed(1)} | ${(l.dy * 100).toFixed(1)} | ${l.dth.toFixed(2)} | ${l.before.toFixed(3)} | ${l.after.toFixed(3)} | ${l.accepted ? 'oui' : 'non'} |\n`;
+    }
+    s += '\n## Obstacles de la grille\n\n| Classe | Nombre | Surface |\n|---|---|---|\n';
+    for (const c of ['structure', 'objet', 'petit']) { const L = R.obstacles.filter(o => o.cls === c); s += `| ${c} | ${L.length} | ${L.reduce((a, o) => a + o.area, 0).toFixed(2)} m² |\n`; }
+    return s;
+  }
+
+  return {
+    PRE_DEFAULTS, FEAT_DEFAULTS, OM_DEFAULTS, REG_DEFAULTS, PIPE_DEFAULTS, COST,
+    preprocessScan, clusterScan, fitCircle, douglasPeucker, dpSegments, ransacLines, smallObjectCircle, extractFeatures,
+    createObstacleMap, updateObstacleMap, pruneObstaclesOnWalls, obstaclesToCSV,
+    createLayers, updateGridLayered, buildLayeredGrid, cloneGrid, cloneLayers,
+    decayGrid, clearObsolete, removeMobile, labelComponents, removeSpeckles, smoothGrid, closeGaps, gridObstacles,
+    dominantDirection, snapDirections, alignCollinear, mergeKeepProps, joinCorners, trimCollisions, regularizeVectorMap,
+    costmap, costmapToPGM, planPath, mapQuality, refinePoses,
+    clipSegmentDisc, eraseDisc, filterSmall, filterNearPoses, refreshDerived, processMap, reportToMarkdown
   };
 });
 
@@ -1814,8 +3187,10 @@
   if (typeof module === 'object' && module.exports) {
     module.exports = factory();
     if (require.main === module) {
-      let LL = null; try { LL = require('./lidar_loc.js'); } catch (e) { /* localisation absente */ }
-      const res = module.exports.runTests(require('./lidar_core.js'), LL);
+      let LL = null, LM = null;
+      try { LL = require('./lidar_loc.js'); } catch (e) { /* localisation absente */ }
+      try { LM = require('./lidar_maptools.js'); } catch (e) { /* traitement absent */ }
+      const res = module.exports.runTests(require('./lidar_core.js'), LL, LM);
       for (const r of res.results) console.log(`${r.ok ? '  OK ' : 'ÉCHEC'}  [${r.group}] ${r.name}${r.ok ? '' : '  -> ' + r.msg}`);
       console.log(`\n${res.passed}/${res.total} tests réussis`);
       process.exit(res.passed === res.total ? 0 : 1);
@@ -1824,7 +3199,7 @@
 })(typeof self !== 'undefined' ? self : this, function () {
   'use strict';
 
-  function runTests(LC, LL) {
+  function runTests(LC, LL, LM) {
     const { seg, EPS } = LC;
     const results = []; let group = '';
     const near = (a, b, tol = 1e-9) => Math.abs(a - b) <= tol;
@@ -2255,12 +3630,204 @@
       test('méthode locale hors de son domaine : le gradient ne converge pas depuis 1 m / 40° (attendu)', () => {
         const e = LL.poseError(LL.gridGradient(sim.R.field, sim.pts, far1), sim.truth); return expect(e.pos > 0.05 || e.ang > 2, 'a convergé quand même');
       });
+      // robot en direct : carte fixe, aucune pose de départ, puis suivi et robot « kidnappé »
+      const live = (() => { const D = LL.demoScenario(3); return { D, M: LL.prepareMap(D.refs.grid, D.refs.vmap.features) }; })();
+      const lvScan = (p) => LL.uniformSubsample(LL.localPoints(LL.simulateScan(live.D.scene.walls, p, { tours: 1 }, live.D.rng)), { max: 350 });
+      test('robot en direct · localisation globale sans pose de départ (toute la carte, 360°), jugée « sûr »', () => {
+        const truth = { x: 7.3, y: 3.2, th: 123 }, g = LL.globalLocalize(live.M, lvScan(truth)), e = LL.poseError(g.pose, truth);
+        return expect(e.pos <= 0.05 && e.ang <= 2 && g.confidence === 'sûr', `${(e.pos * 100).toFixed(1)} cm ${e.ang.toFixed(2)}° ${g.confidence}`);
+      });
+      test('robot en direct · suivi sur 40 pas, puis robot déplacé à la main : relocalisé au scan suivant', () => {
+        const T = LL.createTracker(live.M), P = live.D.path; let okN = 0;
+        for (let k = 0; k < 40; k++) { LL.trackerUpdate(T, lvScan(P[k]), k ? LL.relPose(P[k - 1], P[k]) : null); const e = LL.poseError(T.pose, P[k]); if (e.pos <= 0.05 && e.ang <= 2) okN++; }
+        const far = P[Math.floor(P.length * 0.7)];
+        const r = LL.trackerUpdate(T, lvScan(far), null), e = LL.poseError(T.pose, far);
+        return expect(okN === 40 && e.pos <= 0.05 && e.ang <= 2 && r.mode === 'relocalisation', `${okN}/40, après kidnapping ${(e.pos * 100).toFixed(1)} cm (${r.mode}, ${r.status})`);
+      });
+      test('robot en direct · la part de points qui collent à la carte chute quand la pose est fausse', () => {
+        const truth = live.D.path[10], pts = lvScan(truth), good = LL.inlierRatio(live.M.field, pts, truth), bad = LL.inlierRatio(live.M.field, pts, { ...truth, x: truth.x + 0.5, th: truth.th + 20 });
+        return expect(good > 0.9 && bad < 0.5, `${good.toFixed(2)} / ${bad.toFixed(2)}`);
+      });
       test('banc : mêmes poses initiales pour toutes les méthodes, un essai par cas et par niveau', () => {
         // (exécution synchrone d'une mini configuration via la fonction résumé)
         const rows = [{ ref: 'grid', method: 'a', label: 'A', level: 0, dp: 0, da: 0, epos: 0.01, eang: 0.1, ms: 1, ok: true, okCoarse: true },
                       { ref: 'grid', method: 'a', label: 'A', level: 0, dp: 0, da: 0, epos: 0.3, eang: 9, ms: 3, ok: false, okCoarse: false }];
         const S = LL.summarize(rows);
         return expect(S.length === 1 && S[0].success === 0.5 && near(S[0].meanMs, 2), JSON.stringify(S[0]));
+      });
+    }
+
+
+    if (LM && LL) {
+      group = 'Traitement';
+      const S = LC.seg;
+      // scan synthétique : un point par degré sur un cercle de rayon r autour du lidar
+      const ring = (r, extra = []) => { const a = [], d = []; for (let k = 0; k < 360; k++) { a.push(k); d.push(r * 1000); } for (const [aa, dd] of extra) { a.push(aa); d.push(dd); } return { a, d }; };
+      test('prétraitement : portée, point isolé et point mixte retirés, le reste gardé', () => {
+        const sc = { a: [], d: [] };
+        for (let k = 0; k < 360; k++) { sc.a.push(k); sc.d.push(k >= 100 && k < 110 ? 1000 : 3000); }  // objet à 1 m devant un mur à 3 m
+        sc.a.push(200.4); sc.d.push(1500);                // point isolé (rien autour)
+        sc.a.push(0.5); sc.d.push(30);                    // trop proche : le robot lui-même
+        const i110 = sc.a.indexOf(110); sc.d[i110] = 2000; // point mixte entre l'objet (1 m) et le mur (3 m)
+        const r = LM.preprocessScan(sc, { x: 0, y: 0, th: 0 });
+        return expect(r.removed.range === 1 && r.removed.isolated === 1 && r.removed.mixed === 1 && r.kept === 360 - 1, JSON.stringify(r.removed) + ' gardés ' + r.kept);
+      });
+      test('segmentation en clusters : rupture de distance et trou angulaire', () => {
+        const pts = [];
+        for (let k = 0; k < 40; k++) pts.push({ x: 2, y: -1 + k * 0.025 });          // mur A
+        for (let k = 0; k < 20; k++) pts.push({ x: 1, y: 0.6 + k * 0.025 });         // objet plus proche : rupture de distance
+        for (let k = 0; k < 20; k++) pts.push({ x: 1 - k * 0.02, y: 1.5 });          // après un trou angulaire (points à 1,5 m)
+        const C = LM.clusterScan(pts, { x: 0, y: 0 }, { angGap: 4 });
+        return expect(C.length === 3 && C.map(c => c.length).sort((a, b) => a - b).join() === '20,20,40', C.map(c => c.length).join());
+      });
+      test('cercle : ajustement exact sur un quart d’arc, et sur des points bruités (±5 mm)', () => {
+        const P = [], Q = [], rng = LL.mulberry32(9);
+        for (let k = 0; k <= 30; k++) { const t = (200 + k * 3) * Math.PI / 180; P.push({ x: 1 + 0.3 * Math.cos(t), y: 2 + 0.3 * Math.sin(t) }); Q.push({ x: P[k].x + (rng() - 0.5) * 0.01, y: P[k].y + (rng() - 0.5) * 0.01 }); }
+        const a = LM.fitCircle(P), b = LM.fitCircle(Q);
+        return expect(Math.hypot(a.x - 1, a.y - 2) < 1e-6 && near(a.r, 0.3, 1e-6) && Math.hypot(b.x - 1, b.y - 2) < 0.02 && Math.abs(b.r - 0.3) < 0.02, JSON.stringify([a, b]));
+      });
+      test('Douglas-Peucker : une polyligne en L garde ses 3 sommets', () => {
+        const P = []; for (let k = 0; k <= 20; k++) P.push({ x: k * 0.05, y: 0 }); for (let k = 1; k <= 20; k++) P.push({ x: 1, y: k * 0.05 });
+        const v = LM.douglasPeucker(P, 0.02); return expect(v.join() === '0,20,40', v.join());
+      });
+      test('RANSAC : deux murs perpendiculaires retrouvés malgré 25 % de points aberrants', () => {
+        const P = [], rng = LL.mulberry32(4);
+        for (let k = 0; k < 60; k++) P.push({ x: k * 0.05, y: (rng() - 0.5) * 0.01 });
+        for (let k = 0; k < 60; k++) P.push({ x: 3 + (rng() - 0.5) * 0.01, y: 0.2 + k * 0.05 });
+        for (let k = 0; k < 40; k++) P.push({ x: rng() * 3, y: 0.3 + rng() * 2.5 });
+        const segs = LM.ransacLines(P, { tol: 0.03, minInliers: 15, rng: LL.mulberry32(1) }).filter(s => LC.segLen(s) > 1.5);
+        return expect(segs.length === 2 && Math.abs(LC.angleBetween(segs[0], segs[1]).lines - 90) < 1, segs.map(fmt).join(' '));
+      });
+      test('features : pied de chaise (petit) et poteau Ø 30 cm (cercle) reconnus, mur en segment', () => {
+        const walls = [S(-3, 2, 3, 2), S(0.98, 0.98, 1.02, 0.98), S(1.02, 0.98, 1.02, 1.02), S(1.02, 1.02, 0.98, 1.02), S(0.98, 1.02, 0.98, 0.98)];
+        const sc = LL.simulateScan(walls, { x: 0, y: 0, th: 0 }, { tours: 2, noise: 0.003, angNoise: 0, dropout: 0, step: 0.5 }, LL.mulberry32(2));
+        // poteau : on remplace par des points exacts sur un cercle centré (−1,5 ; 0,8), r = 0,15 (face visible)
+        const pts = LC.polarToGlobal(sc, { x: 0, y: 0, th: 0 });
+        const c0 = { x: -1.5, y: 0.8 }, bear = Math.atan2(c0.y, c0.x);
+        for (let k = -60; k <= 60; k += 3) { const t = bear + Math.PI + k * Math.PI / 180; pts.push({ x: c0.x + 0.15 * Math.cos(t), y: c0.y + 0.15 * Math.sin(t) }); }
+        pts.sort((p, q) => Math.atan2(p.y, p.x) - Math.atan2(q.y, q.x));
+        const F = LM.extractFeatures(pts, { x: 0, y: 0 });
+        const leg = F.circles.find(c => Math.hypot(c.x - 1, c.y - 1) < 0.05), post = F.circles.find(c => c.kind === 'cercle');
+        const wall = F.segments.find(s => LC.segLen(s) > 3);
+        return expect(leg && leg.kind === 'petit' && post && Math.hypot(post.x - c0.x, post.y - c0.y) < 0.01 && Math.abs(post.r - 0.15) < 0.01 && wall,
+          JSON.stringify({ leg, post, nseg: F.segments.length }));
+      });
+      test('obstacles circulaires : fusion des observations, puis absence (faisceaux qui traversent) -> mobile puis supprimé', () => {
+        const M = LM.createObstacleMap(), robot = { x: 0, y: 0 };
+        LM.updateObstacleMap(M, robot, [], [{ x: 1, y: 0, r: 0.05, kind: 'petit' }]);
+        LM.updateObstacleMap(M, robot, [], [{ x: 1.02, y: 0, r: 0.05, kind: 'petit' }]);
+        const it = M.items[0], ok1 = M.items.length === 1 && it.nObs === 2 && it.conf === 2 && near(it.x, 1.01, 1e-9);
+        const through = []; for (let k = -2; k <= 2; k++) through.push({ x: 3, y: k * 0.01 });   // le mur à 3 m est vu à travers
+        LM.updateObstacleMap(M, robot, through, []);
+        const ok2 = M.items.length === 1 && M.items[0].misses === 1 && M.items[0].conf === 1;
+        LM.updateObstacleMap(M, robot, through, []);
+        return expect(ok1 && ok2 && M.items.length === 0, JSON.stringify(M.items));
+      });
+      test('grid map enrichie : impacts, observations et horodatage par cellule', () => {
+        const g = LC.createGrid({ xMin: -1, yMin: -1, xMax: 3, yMax: 1, res: 0.1 }), L = LM.createLayers(g);
+        LM.updateGridLayered(g, L, { x: 0, y: 0 }, [{ x: 2.05, y: 0.05 }]);
+        LM.updateGridLayered(g, L, { x: 0, y: 0 }, [{ x: 2.55, y: 0.05 }]);       // 2e scan : la cellule à 2 m est traversée
+        const [i, j] = LC.worldToCell(g, 2.05, 0.05), k = j * g.W + i, [i2, j2] = LC.worldToCell(g, 2.55, 0.05), k2 = j2 * g.W + i2;
+        return expect(L.hits[k] === 1 && L.seen[k] === 2 && L.lastOcc[k] === 1 && L.last[k] === 2 && L.hits[k2] === 1 && L.seen[k2] === 1 && L.t === 2, [L.hits[k], L.seen[k], L.lastOcc[k], L.last[k]].join());
+      });
+      test('obstacle mobile : impact dans 1 scan sur 4 -> trace effacée ; pied vu 3 fois gardé', () => {
+        const g = LC.createGrid({ xMin: -1, yMin: -1, xMax: 3, yMax: 1, res: 0.1 }), L = LM.createLayers(g), R = { x: 0, y: 0 };
+        LM.updateGridLayered(g, L, R, [{ x: 1.05, y: 0.05 }, { x: 0.05, y: 0.55 }]);
+        for (let n = 0; n < 3; n++) LM.updateGridLayered(g, L, R, [{ x: 2.05, y: 0.05 }, { x: 0.05, y: 0.55 }]);
+        const [i, j] = LC.worldToCell(g, 1.05, 0.05), [a, b] = LC.worldToCell(g, 0.05, 0.55), r = LM.removeMobile(g, L);
+        return expect(r.mobile[j * g.W + i] === 1 && g.data[j * g.W + i] <= LC.FREE_T && r.mobile[b * g.W + a] === 0 && g.data[b * g.W + a] >= LC.OCC_T, JSON.stringify(r.removed));
+      });
+      test('taches isolées : bruit vu une fois retiré, petit obstacle vu 3 fois gardé', () => {
+        const g = LC.createGrid({ xMin: 0, yMin: 0, xMax: 1, yMax: 1, res: 0.1 }), L = LM.createLayers(g);
+        g.data[2 * g.W + 2] = 200; L.hits[2 * g.W + 2] = 1; g.data[7 * g.W + 7] = 230; L.hits[7 * g.W + 7] = 3;
+        const r = LM.removeSpeckles(g, L);
+        return expect(g.data[2 * g.W + 2] === LC.UNKNOWN && g.data[7 * g.W + 7] === 230 && r.keptInterest === 1, JSON.stringify(r));
+      });
+      test('lissage majoritaire : trou inconnu au milieu du libre comblé, mur d’une cellule préservé', () => {
+        const g = LC.createGrid({ xMin: 0, yMin: 0, xMax: 1, yMax: 1, res: 0.1, init: 0 });
+        for (let i = 0; i < 10; i++) g.data[5 * g.W + i] = 255;        // mur horizontal d'une cellule
+        g.data[2 * g.W + 2] = LC.UNKNOWN;
+        LM.smoothGrid(g); let wall = true; for (let i = 0; i < 10; i++) wall = wall && g.data[5 * g.W + i] === 255;
+        return expect(g.data[2 * g.W + 2] <= LC.FREE_T && wall, g.data[2 * g.W + 2]);
+      });
+      test('fermeture : trou d’une cellule dans un mur bouché, passage franchement libre respecté', () => {
+        const g = LC.createGrid({ xMin: 0, yMin: 0, xMax: 2, yMax: 1, res: 0.1, init: LC.UNKNOWN });
+        for (let i = 0; i < 20; i++) g.data[5 * g.W + i] = 255;
+        g.data[5 * g.W + 6] = 120;                                     // trou d'une cellule, état incertain
+        g.data[5 * g.W + 14] = 10;                                     // cellule traversée plusieurs fois (porte ouverte)
+        const r = LM.closeGaps(g);
+        return expect(g.data[5 * g.W + 6] >= LC.OCC_T && g.data[5 * g.W + 14] === 10, JSON.stringify(r));
+      });
+      test('obstacles de la grille : composantes et classes (petit, objet, structure)', () => {
+        const g = LC.createGrid({ xMin: 0, yMin: 0, xMax: 4, yMax: 2, res: 0.05, init: 0 });
+        g.data[5 * g.W + 5] = g.data[5 * g.W + 6] = 255;                          // 10 cm : petit
+        for (let i = 20; i < 30; i++) g.data[10 * g.W + i] = 255;                 // 50 cm : objet
+        for (let i = 35; i < 75; i++) g.data[30 * g.W + i] = 255;                 // 2 m : structure
+        const { obstacles: O } = LM.gridObstacles(g, null), cls = O.map(o => o.cls).sort().join();
+        const big = O.find(o => o.cls === 'structure');
+        return expect(O.length === 3 && cls === 'objet,petit,structure' && Math.abs(big.len - 2) < 0.06 && Math.abs(big.angle) < 1e-6, cls + ' ' + (big && big.len));
+      });
+      test('régularisation : murs redressés exactement parallèles / perpendiculaires, coins raccordés exactement', () => {
+        const rot = (s, d) => { const mx = (s.x1 + s.x2) / 2, my = (s.y1 + s.y2) / 2, c = Math.cos(d * Math.PI / 180), n = Math.sin(d * Math.PI / 180);
+          const r = (x, y) => [mx + c * (x - mx) - n * (y - my), my + n * (x - mx) + c * (y - my)]; const [a, b] = r(s.x1, s.y1), [e, f] = r(s.x2, s.y2); return S(a, b, e, f); };
+        const room = [rot(S(0.1, 0, 3.9, 0), 2), rot(S(4, 0.1, 4, 2.9), -3), rot(S(3.9, 3, 0.1, 3), 1.5), rot(S(0, 2.9, 0, 0.1), -2)];
+        const map = { features: room.map((s, k) => Object.assign(s, { id: k + 1, conf: 3, nObs: 3, firstSeen: 1, lastSeen: 1 })), corners: [], scans: 1, nextId: 5 };
+        const { map: M, report } = LM.regularizeVectorMap(map);
+        // les axes sont la direction dominante mesurée (pas forcément 0°) : tous les murs y sont exactement parallèles ou perpendiculaires
+        const angOk = M.features.every(f => { const a = (((LC.segAngle(f) * 180 / Math.PI - report.theta0) % 90) + 90) % 90; return Math.min(a, 90 - a) < 1e-6; });
+        const ends = M.features.flatMap(f => [[f.x1, f.y1], [f.x2, f.y2]]);
+        const joined = ends.every(([x, y]) => ends.filter(([u, v]) => Math.hypot(u - x, v - y) < 1e-9).length === 2);
+        return expect(M.features.length === 4 && angOk && joined && M.corners.length === 4, JSON.stringify(report));
+      });
+      test('alignement : deux morceaux d’un même mur décalés de 3 cm ramenés sur une droite', () => {
+        const r = LM.alignCollinear([Object.assign(S(0, 0, 2, 0), { conf: 1 }), Object.assign(S(2.5, 0.03, 4, 0.03), { conf: 1 })]);
+        const [a, b] = r.segments; return expect(near(a.y1, b.y1, 1e-12) && a.y1 > 0 && a.y1 < 0.03, JSON.stringify(r.segments.map(fmt)));
+      });
+      test('collision : dépassement de 5 cm d’un mur à travers un autre rogné', () => {
+        const r = LM.trimCollisions([S(0, -0.05, 0, 2), S(-1, 0, 1, 0)]);
+        return expect(r.trimmed === 1 && sameSeg(r.segments[0], 0, 0, 0, 2, 1e-12), fmt(r.segments[0]));
+      });
+      test('carte de coût et trajet A* : contourne un mur, garde ses distances, refuse une arrivée dans l’obstacle', () => {
+        const g = LC.createGrid({ xMin: 0, yMin: 0, xMax: 4, yMax: 3, res: 0.05, init: 0 });
+        for (let j = 0; j < 45; j++) g.data[j * g.W + 40] = 255;                  // mur x = 2 m, de y = 0 à 2,25 m
+        const cm = LM.costmap(g, { robotRadius: 0.15, inflation: 0.3 });
+        const k = (x, y) => { const [i, j] = LC.worldToCell(g, x, y); return cm.cost[j * g.W + i]; };
+        const costOk = k(2.02, 1) === 254 && k(2.14, 1) === 253 && k(3.5, 1) === 0 && k(2.3, 1) > 0 && k(2.3, 1) < 253;
+        const r = LM.planPath(cm, { x: 1, y: 0.5 }, { x: 3, y: 0.5 });
+        let clear = r.ok; if (r.ok) for (const c of r.raw) clear = clear && cm.cost[c.j * g.W + c.i] < 253;
+        const bad = LM.planPath(cm, { x: 1, y: 0.5 }, { x: 2.02, y: 1 });
+        return expect(costOk && clear && r.length > 3.5 && Math.max(...r.path.map(p => p.y)) > 2.25 + 0.15 && !bad.ok, JSON.stringify({ costOk, len: r.length, bad: bad.reason }));
+      });
+      test('gomme : segment coupé en deux au bord du disque, cellules et cercles effacés, segment entièrement dedans supprimé', () => {
+        const g = LC.createGrid({ xMin: 0, yMin: 0, xMax: 4, yMax: 2, res: 0.05, init: 0 });
+        for (let i = 0; i < 80; i++) g.data[20 * g.W + i] = 255;                    // mur y ≈ 1 m
+        const vmap = { features: [Object.assign(S(0, 1, 4, 1), { id: 1, conf: 5 }), Object.assign(S(1.9, 0.5, 2.1, 0.5), { id: 2, conf: 1 })], corners: [], nextId: 3 };
+        const omap = { items: [{ id: 1, x: 2, y: 1.3, r: 0.02 }, { id: 2, x: 3.5, y: 0.3, r: 0.02 }] };
+        const R = { grid: g, vmap, omap }, st = LM.eraseDisc(R, 2, 0.9, 0.5);
+        const [a, b] = vmap.features, cut = vmap.features.length === 2 && near(a.x2, 2 - Math.sqrt(0.24), 1e-9) && near(b.x1, 2 + Math.sqrt(0.24), 1e-9) && a.conf === 5 && b.id === 3;
+        const cellsOk = g.data[20 * g.W + 40] === LC.FREE_T - 25 && g.data[20 * g.W + 5] === 255;
+        return expect(cut && cellsOk && st.segCut === 1 && st.segRemoved === 1 && st.circles === 1 && omap.items[0].id === 2, JSON.stringify(st) + ' ' + vmap.features.map(fmt).join(' '));
+      });
+      test('filtres de taille : segments courts, petits cercles et petites taches supprimés ; le reste intact', () => {
+        const g = LC.createGrid({ xMin: 0, yMin: 0, xMax: 4, yMax: 2, res: 0.05, init: 0 });
+        g.data[5 * g.W + 5] = 255;                                                    // tache de 5 cm
+        for (let i = 20; i < 60; i++) g.data[30 * g.W + i] = 255;                     // mur de 2 m
+        const R = { grid: g, vmap: { features: [S(0, 0, 0.2, 0), S(0, 1, 2, 1)], corners: [] }, omap: { items: [{ x: 1, y: 1, r: 0.01 }, { x: 2, y: 1, r: 0.1 }] } };
+        const st = LM.filterSmall(R, { minSegLen: 0.5, minCircleD: 0.05, minBlob: 0.1 });
+        return expect(st.segments === 1 && st.circles === 1 && st.blobs === 1 && g.data[5 * g.W + 5] < LC.FREE_T && g.data[30 * g.W + 30] === 255 && R.vmap.features.length === 1, JSON.stringify(st));
+      });
+      test('filtre de distance au robot : ce qui touche une position de scan est effacé, pas le reste', () => {
+        const g = LC.createGrid({ xMin: 0, yMin: 0, xMax: 4, yMax: 2, res: 0.05, init: 0 });
+        g.data[20 * g.W + 22] = 255; g.data[20 * g.W + 60] = 255;                      // à 8 cm du robot (1 ; 1), et loin
+        const R = { grid: g, vmap: { features: [], corners: [], nextId: 1 }, omap: { items: [{ x: 1.1, y: 1, r: 0.02 }] } };
+        const st = LM.filterNearPoses(R, [{ x: 1, y: 1, th: 0 }], 0.2);
+        return expect(st.cells === 1 && st.circles === 1 && g.data[20 * g.W + 60] === 255, JSON.stringify(st));
+      });
+      test('qualité : scans simulés à poses exactes -> plus de 90 % des points sur un obstacle', () => {
+        const sc = LL.classroomScene(3, { legs: 0 }), rng = LL.mulberry32(8), poses = [{ x: 2, y: 2, th: 0 }, { x: 6, y: 5, th: 90 }, { x: 11, y: 6, th: 200 }];
+        const data = poses.map(p => ({ robot: p, pts: LM.preprocessScan(LL.simulateScan(sc.walls, p, { tours: 2 }, rng), p).pts }));
+        const { grid, layers } = LM.buildLayeredGrid(data), q = LM.mapQuality(grid, data, layers);
+        return expect(q.pointsOnObstacle > 0.9 && q.meanDist < 0.03, JSON.stringify(q));
       });
     }
 
@@ -2600,9 +4167,11 @@ function render(){
   pending = false;
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   ctx.fillStyle = '#0f1216'; ctx.fillRect(0, 0, W, H);
+  if (TAB === 'live' && typeof drawLiveView === 'function'){ drawLiveView(); return; }
   if (S.opt.grid) drawGrid();
   if (typeof drawGridMap === 'function') drawGridMap();
-  const hidePts = (TAB === 'grid' && GRID.g && $('gShow').checked && !$('gPts').checked) || (TAB === 'seg' && $('sHidePts').checked) || (TAB === 'vec' && $('vHidePts').checked);
+  if (typeof drawProcUnder === 'function' && TAB === 'proc') drawProcUnder();
+  const hidePts = (TAB === 'proc' && typeof PROC !== 'undefined' && PROC.res && !$('pShowPts').checked) || (TAB === 'grid' && GRID.g && $('gShow').checked && !$('gPts').checked) || (TAB === 'seg' && $('sHidePts').checked) || (TAB === 'vec' && $('vHidePts').checked);
   const order = S.scans.map((s, k) => k).filter(k => k !== S.sel);
   if (S.sel >= 0) order.push(S.sel);
   const r = S.opt.ptSize;
@@ -2621,6 +4190,7 @@ function render(){
   const ss = selScan(); if (TAB === 'scans' && ss && ss.visible && !ss.locked) drawRotHandle(ss);
   if (typeof drawSegments === 'function' && TAB === 'seg') drawSegments();
   if (typeof drawVectorMap === 'function') drawVectorMap();
+  if (typeof drawProcOver === 'function' && TAB === 'proc') drawProcOver();
   if (SER.live && SER.liveScan) drawLive(SER.liveScan, r);
   // axes de la carte
   const [ox, oy] = w2s(0, 0);
@@ -2801,6 +4371,11 @@ cv.addEventListener('contextmenu', e => e.preventDefault());
 cv.addEventListener('pointerdown', e => {
   const r = cv.getBoundingClientRect(), mx = e.clientX - r.left, my = e.clientY - r.top;
   cv.setPointerCapture(e.pointerId);
+  if (TAB === 'live'){ livePointerDown(e, mx, my); return; }
+  if (TAB === 'proc'){
+    if (procPointerDown(e, mx, my)) return;
+    drag = { mode: 'pan', m0: [mx, my], v0: { ...S.view } }; cv.style.cursor = 'grabbing'; return;
+  }
   if (TAB === 'vec'){
     if (vecPointerDown(e, mx, my)) return;
     drag = { mode: 'pan', m0: [mx, my], v0: { ...S.view } }; cv.style.cursor = 'grabbing'; return;
@@ -2835,7 +4410,9 @@ cv.addEventListener('pointerdown', e => {
 cv.addEventListener('pointermove', e => {
   const r = cv.getBoundingClientRect(), mx = e.clientX - r.left, my = e.clientY - r.top;
   const [wx, wy] = s2w(mx, my);
-  $('hud').textContent = `x ${wx.toFixed(3)} m   y ${wy.toFixed(3)} m   ·   ${(100/S.view.s*100).toFixed(1)} cm / 100 px` + (TAB === 'grid' ? gridHud(wx, wy) : '');
+  $('hud').textContent = `x ${wx.toFixed(3)} m   y ${wy.toFixed(3)} m   ·   ${(100/S.view.s*100).toFixed(1)} cm / 100 px` + (TAB === 'grid' ? gridHud(wx, wy) : TAB === 'proc' ? procHud(wx, wy) : '');
+  if (TAB === 'live' && livePointerMove(mx, my)) return;
+  if (TAB === 'proc' && procPointerMove(mx, my)) return;
   if (TAB === 'seg' && segPointerMove(mx, my)) return;
   if (!drag){ cv.style.cursor = TAB === 'scans' && onRotHandle(mx, my) ? 'grab' : TAB === 'seg' && SEG.tool === 'select' && segHit(mx, my) >= 0 ? 'pointer' : 'crosshair'; return; }
   if (drag.mode === 'pan'){
@@ -2853,10 +4430,15 @@ cv.addEventListener('pointermove', e => {
   }
   draw();
 });
-cv.addEventListener('pointerup', () => { if (TAB === 'seg') segPointerUp(); drag = null; cv.style.cursor = 'crosshair'; });
+cv.addEventListener('pointerup', () => { if (TAB === 'live') livePointerUp(); if (TAB === 'proc') procPointerUp(); if (TAB === 'seg') segPointerUp(); drag = null; cv.style.cursor = 'crosshair'; });
 
 cv.addEventListener('wheel', e => {
   e.preventDefault();
+  if (TAB === 'live' && typeof LIVE !== 'undefined'){ liveWheel(e); return; }
+  if (TAB === 'proc' && e.shiftKey && typeof PROC !== 'undefined' && PROC.eraser){
+    const b = $('pBrush'), v = Math.max(0.02, Math.min(3, +b.value * (Math.sign(e.deltaY || e.deltaX) > 0 ? 1 / 1.15 : 1.15)));
+    b.value = v.toFixed(2); draw(); return;
+  }
   const s = selScan();
   if (e.shiftKey && s){
     if (!canMove(s)) return;
@@ -2875,7 +4457,8 @@ cv.addEventListener('wheel', e => {
 window.addEventListener('keydown', e => {
   if (e.target.tagName === 'INPUT' && e.target.type !== 'checkbox' && e.target.type !== 'range') return;
   const s = selScan();
-  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z'){ e.preventDefault(); if (TAB === 'seg') segUndo(); else if (TAB === 'vec') vecUndo(); else if (TAB === 'grid') $('gUndo').click(); else undo(); return; }
+  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z'){ e.preventDefault(); if (TAB === 'seg') segUndo(); else if (TAB === 'proc') procUndo(); else if (TAB === 'vec') vecUndo(); else if (TAB === 'grid') $('gUndo').click(); else undo(); return; }
+  if (TAB === 'live'){ if (e.key.toLowerCase() === 'c' && typeof liveSetView === 'function') liveSetView(LIVE.view === 'free' ? 'head' : LIVE.view); return; }
   if (TAB === 'seg'){
     if ((e.key === 'Delete' || e.key === 'Backspace') && SEG.A >= 0){ e.preventDefault(); $('sDel').click(); }
     if (e.key.toLowerCase() === 'f') fitView();
@@ -3594,6 +5177,7 @@ function drive(mv){
   if (!SER.wifi) return;
   const t = Math.max(1, Math.min(2000, Math.round(parseFloat($('driveMs').value) || 300)));
   robotCmd(`/${mv}?time=${t}`);
+  if (typeof liveOnDrive === 'function') liveOnDrive(mv, t);
   setStatus(`${mv} ${t} ms`, 'busy'); clearTimeout(SER.driveT);
   SER.driveT = setTimeout(() => { if (SER.wifi) setStatus('connecté', 'on'); }, t + 200);
 }
@@ -3694,6 +5278,7 @@ function onSerialText(txt){
 }
 function onSerialScan(b){
   if (SER.onBlock) return SER.onBlock(b);
+  if (typeof LIVE !== 'undefined' && LIVE.running && LIVE.feed === 'robot') liveFeedScan(b);
   if (SER.live){ SER.liveScan = b; computeLocal(b); draw(); }
 }
 
@@ -3889,7 +5474,7 @@ function gridImage(){
   GRID.img = c; GRID.dirty = false; return c;
 }
 function drawGridMap(){
-  if (!GRID.g || !$('gShow').checked) return;
+  if (!GRID.g || !$('gShow').checked || TAB === 'proc') return;
   const g = GRID.g, [sx, sy] = w2s(g.x0, g.y0 + g.H * g.res);
   ctx.save(); ctx.imageSmoothingEnabled = false; ctx.globalAlpha = numVal('gAlpha');
   ctx.drawImage(gridImage(), sx, sy, g.W * g.res * S.view.s, g.H * g.res * S.view.s);
@@ -4147,7 +5732,7 @@ $('sFile').onchange = async e => {
 ['sAng', 'sLat', 'sGap'].forEach(id => $(id).addEventListener('input', segRefresh));
 $('sColor').onchange = draw; $('sHidePts').onchange = draw;
 $('sTests').onclick = () => {
-  const r = window.LidarTests.runTests(LC, window.LidarLoc), box = $('sTestOut');
+  const r = window.LidarTests.runTests(LC, window.LidarLoc, window.LidarMapTools), box = $('sTestOut');
   let html = `<b class="${r.passed === r.total ? 'ok' : 'ko'}">${r.passed}/${r.total} tests réussis</b>`, grp = '';
   for (const t of r.results){
     if (t.group !== grp){ grp = t.group; html += `<div class="tg">${grp}</div>`; }
@@ -4485,6 +6070,742 @@ $('benchPng').onclick = () => { const c = document.querySelector('.bench-chart')
     Object.entries(ms).map(([k, [l]]) => `<label class="chk"><input type="checkbox" value="${ref}.${k}" checked> ${l}</label>`).join('')).join('');
 })();
 locRefresh();
+
+// ---------------------------------------------------------------- TRAITEMENT (cartes et obstacles)
+const LM = window.LidarMapTools;
+const PROC = { res: null, imgs: {}, scans: [], busy: false, stop: false, planMode: false, plan: { start: null, goal: null, result: null } };
+function procOpt(){
+  const age = Math.round(numVal('pAge'));
+  return {
+    refine: $('pRefine').checked,
+    pre: { dMin: numVal('pDMin'), dMax: numVal('pDMax'), iMin: numVal('pIMin'), isolated: $('pIso').checked, mixed: $('pMixed').checked },
+    res: numVal('pRes'),
+    mobile: $('pMobile').checked, mobileOpt: { maxPersist: numVal('pPersist') / 100 },
+    speckles: $('pSpeck').checked, smooth: $('pSmooth').checked, close: $('pClose').checked,
+    obsolete: $('pObsolete').checked, obsoleteOpt: { age }, decay: $('pDecay').checked, decayOpt: { age, step: 16 },
+    features: { method: $('pMethod').value, smallMax: numVal('pSmall') },
+    obstacleOpt: { smallMax: numVal('pSmall') },
+    vmOpt: { extract: Object.assign(segExtractOpt(), { minLen: 0.3 }) },
+    regularize: $('pReg').checked, regOpt: { snapTol: numVal('pSnap'), orthogonal: numVal('pSnap') > 0 },
+    filters: filterOpt(),
+    cost: { robotRadius: numVal('pRobotR'), inflation: numVal('pInfl') }
+  };
+}
+async function procRun(){
+  if (PROC.busy) return;
+  const vis = S.scans.filter(s => s.visible);
+  if (!vis.length) return toast('Aucun scan visible');
+  const o = procOpt();
+  PROC.busy = true; PROC.stop = false; $('pRun').disabled = true;
+  const overlay = o.refine && vis.length > 1;
+  if (overlay){
+    $('autoOverlay').style.display = 'flex';
+    document.querySelector('#autoOverlay .ao-title').textContent = 'Traitement de la carte';
+    $('aoStop').onclick = () => { PROC.stop = true; };
+  }
+  const prog = async (f, t) => {
+    if (PROC.stop) throw new Error('arrêt');
+    $('pStatus').textContent = `${Math.round(f * 100)} % · ${t}`;
+    if (overlay){ $('aoText').textContent = t; $('aoBar').style.width = Math.round(f * 100) + '%'; $('aoSub').textContent = `${Math.round(f * 100)} %`; }
+    await sleep(0);
+  };
+  try {
+    PROC.scans = vis.map(s => ({ id: s.id, name: s.name, a: s.a, d: s.d, i: s.i, scale: s.scale || 1, pose: { ...s.pose } }));
+    const t0 = performance.now();
+    PROC.res = await LM.processMap(PROC.scans, o, prog);
+    PROC.res.ms = performance.now() - t0;
+    PROC.imgs = {}; PROC.plan = { start: null, goal: null, result: null }; PROC.undo = [];
+    $('pStatus').textContent = `terminé en ${(PROC.res.ms / 1000).toFixed(1)} s`;
+    procInfo(); procPlanInfo(); if (typeof procEInfo === 'function') procEInfo();
+  } catch (e){ $('pStatus').textContent = ''; toast(e.message === 'arrêt' ? 'Traitement arrêté' : 'Erreur : ' + e.message); console.error(e); }
+  finally {
+    PROC.busy = false; $('pRun').disabled = false;
+    if (overlay){
+      $('autoOverlay').style.display = 'none';
+      document.querySelector('#autoOverlay .ao-title').textContent = 'Superposition automatique en cours';
+      $('aoStop').onclick = () => { autoCancel = true; setAutoStatus('Arrêt après le scan en cours…'); };
+    }
+    draw();
+  }
+}
+function procInfo(){
+  const R = PROC.res; if (!R){ $('pInfo').innerHTML = 'Aucun traitement.'; return; }
+  const q = R.quality, pc = v => (v * 100).toFixed(1) + ' %';
+  const row = (l, a, b) => `<tr><td>${l}</td><td>${a}</td><td>${b}</td></tr>`;
+  let h = `<b>${PROC.scans.length} scans traités</b> en ${(R.ms / 1000).toFixed(1)} s<table class="bench" style="margin-top:6px"><tr><th>Étape</th><th>Résultat</th><th>ms</th></tr>`;
+  for (const st of R.steps) h += `<tr><td>${st.step}</td><td style="text-align:left">${st.detail}</td><td>${st.ms.toFixed(0)}</td></tr>`;
+  h += `</table><table class="bench" style="margin-top:6px"><tr><th>Qualité de la grid map</th><th>brute</th><th>traitée</th></tr>` +
+    row('Points des scans sur un obstacle', pc(q.raw.pointsOnObstacle), pc(q.clean.pointsOnObstacle)) +
+    row('Distance moyenne point → obstacle', (q.raw.meanDist * 100).toFixed(1) + ' cm', (q.clean.meanDist * 100).toFixed(1) + ' cm') +
+    row('Cellules occupées', q.raw.occCells, q.clean.occCells) +
+    row('Surface libre', q.raw.freeArea.toFixed(1) + ' m²', q.clean.freeArea.toFixed(1) + ' m²') +
+    row('Netteté (cellules tranchées)', pc(q.raw.sharpness), pc(q.clean.sharpness)) +
+    row('Cellules en conflit', q.raw.conflicts, q.clean.conflicts) + '</table>';
+  if (R.refineLog){
+    const last = new Map(); R.refineLog.forEach(l => last.set(l.name, l));
+    const moved = R.poses.map((p, k) => ({ n: PROC.scans[k].name, d: Math.hypot(p.x - PROC.scans[k].pose.x, p.y - PROC.scans[k].pose.y), a: Math.abs(((p.th - PROC.scans[k].pose.th + 540) % 360) - 180) }));
+    const mx = moved.reduce((a, m) => m.d > a.d ? m : a, { d: 0 });
+    h += `<div class="res">Recalage : correction médiane ${(median(moved.map(m => m.d)) * 100).toFixed(1)} cm, max ${(mx.d * 100).toFixed(1)} cm (${mx.n || '–'}). « Appliquer les poses recalées » pour les garder.</div>`;
+  }
+  $('pInfo').innerHTML = h;
+}
+function median(a){ const b = a.slice().sort((x, y) => x - y); return b.length ? b[Math.floor(b.length / 2)] : 0; }
+
+// --- images des couches (1 pixel par cellule, mises en cache)
+function procLayerImage(kind){
+  const R = PROC.res; if (!R || kind === 'none') return null;
+  if (PROC.imgs[kind]) return PROC.imgs[kind];
+  const g = R.grid, Wg = g.W, Hg = g.H, c = document.createElement('canvas'); c.width = Wg; c.height = Hg;
+  const cx = c.getContext('2d'), im = cx.createImageData(Wg, Hg), D = im.data, L = R.layers;
+  const CLS = { structure: [227, 231, 236], objet: [255, 179, 71], petit: [255, 92, 138] };
+  const clsOf = R.obstacles.map(o => CLS[o.cls]);
+  for (let j = 0; j < Hg; j++) for (let i = 0; i < Wg; i++){
+    const k = j * Wg + i, o = ((Hg - 1 - j) * Wg + i) * 4;
+    let r, gg, b, a = 255;
+    const gray = v => { const x = 255 - v; return [x, x, x]; };
+    if (kind === 'clean') [r, gg, b] = gray(g.data[k]);
+    else if (kind === 'raw') [r, gg, b] = gray(R.gridRaw.data[k]);
+    else if (kind === 'diff'){
+      const before = R.gridRaw.data[k] >= LC.OCC_T, after = g.data[k] >= LC.OCC_T;
+      if (before && !after) [r, gg, b] = [255, 70, 70];
+      else if (!before && after) [r, gg, b] = [70, 230, 110];
+      else if (R.mobile[k]) [r, gg, b] = [190, 90, 255];
+      else { const x = 255 - g.data[k]; [r, gg, b] = [x * 0.55, x * 0.55, x * 0.55]; }
+    } else if (kind === 'persist'){
+      if (!L.seen[k]) [r, gg, b] = [20, 24, 30];
+      else if (!L.hits[k]) [r, gg, b] = [45, 52, 64];
+      else { const p = L.hits[k] / L.seen[k]; [r, gg, b] = [Math.round(80 + 175 * p), Math.round(60 + 170 * p), Math.round(200 * (1 - p))]; }
+    } else if (kind === 'obst'){
+      const id = R.labels[k];
+      if (id >= 0) [r, gg, b] = clsOf[id];
+      else { const v = g.data[k]; [r, gg, b] = v <= LC.FREE_T ? [70, 76, 86] : [26, 30, 36]; }
+    } else if (kind === 'cost'){
+      const v = R.cost.cost[k];
+      if (v === 254) [r, gg, b] = [0, 0, 0];
+      else if (v === 253) [r, gg, b] = [120, 40, 160];
+      else if (v === 255) [r, gg, b] = [40, 48, 60];
+      else if (v === 0) [r, gg, b] = [235, 240, 235];
+      else { const t = v / 252; [r, gg, b] = [255, Math.round(230 - 180 * t), Math.round(120 - 110 * t)]; }
+    }
+    D[o] = r; D[o + 1] = gg; D[o + 2] = b; D[o + 3] = a;
+  }
+  cx.putImageData(im, 0, 0);
+  return PROC.imgs[kind] = c;
+}
+function drawProcUnder(){
+  const R = PROC.res; if (!R) return;
+  const img = procLayerImage($('pLayer').value); if (!img) return;
+  const g = R.grid, [sx, sy] = w2s(g.x0, g.y0 + g.H * g.res);
+  ctx.save(); ctx.imageSmoothingEnabled = false; ctx.globalAlpha = numVal('pAlpha');
+  ctx.drawImage(img, sx, sy, g.W * g.res * S.view.s, g.H * g.res * S.view.s);
+  ctx.restore();
+}
+function drawProcOver(){
+  const R = PROC.res;
+  ctx.save(); ctx.lineCap = 'round';
+  const line = (f) => { const [x1, y1] = w2s(f.x1, f.y1), [x2, y2] = w2s(f.x2, f.y2); ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke(); };
+  if (R && $('pShowVecRaw').checked){
+    ctx.strokeStyle = 'rgba(255,214,77,.9)'; ctx.lineWidth = 1.5; ctx.setLineDash([5, 4]);
+    R.vmapRaw.features.forEach(line); ctx.setLineDash([]);
+  }
+  if (R && $('pShowVec').checked){
+    ctx.strokeStyle = '#4da3ff'; ctx.lineWidth = 3; R.vmap.features.forEach(line);
+    for (const c of R.vmap.corners){
+      const [x, y] = w2s(c.x, c.y); ctx.strokeStyle = '#ffe14d'; ctx.fillStyle = 'rgba(255,225,77,.3)'; ctx.lineWidth = 1.5;
+      ctx.beginPath(); ctx.rect(x - 4, y - 4, 8, 8); ctx.fill(); ctx.stroke();
+    }
+  }
+  if (R && $('pShowCirc').checked){
+    const mc = numVal('pMinConf');
+    for (const it of R.omap.items){
+      if (it.conf < mc && !it.mobile) continue;
+      const [x, y] = w2s(it.x, it.y), rr = Math.max(3, it.r * S.view.s);
+      ctx.strokeStyle = it.mobile ? '#ff4d4d' : '#ff9b3d'; ctx.lineWidth = it.kind === 'cercle' ? 2.2 : 1.6;
+      ctx.beginPath(); ctx.arc(x, y, rr, 0, 2 * Math.PI); ctx.stroke();
+    }
+  }
+  // trajet
+  const P = PROC.plan, rob = numVal('pRobotR') * S.view.s;
+  const mark = (p, col) => { const [x, y] = w2s(p.x, p.y); ctx.fillStyle = col + '55'; ctx.strokeStyle = col; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(x, y, Math.max(5, rob), 0, 2 * Math.PI); ctx.fill(); ctx.stroke(); };
+  if (P.result && P.result.ok){
+    ctx.strokeStyle = 'rgba(62,230,230,.35)'; ctx.lineWidth = Math.max(2, 2 * rob); ctx.lineJoin = 'round';
+    ctx.beginPath(); P.result.path.forEach((p, k) => { const [x, y] = w2s(p.x, p.y); k ? ctx.lineTo(x, y) : ctx.moveTo(x, y); }); ctx.stroke();
+    ctx.strokeStyle = '#3ee6e6'; ctx.lineWidth = 2.5; ctx.stroke();
+    ctx.fillStyle = '#3ee6e6'; for (const p of P.result.path){ const [x, y] = w2s(p.x, p.y); ctx.beginPath(); ctx.arc(x, y, 3.5, 0, 2 * Math.PI); ctx.fill(); }
+  }
+  if (P.start) mark(P.start, '#4cd97b');
+  if (P.goal) mark(P.goal, '#ff6b6b');
+  ctx.restore();
+}
+function procHud(wx, wy){
+  const R = PROC.res; if (!R) return '';
+  const g = R.grid, [i, j] = LC.worldToCell(g, wx, wy); if (!LC.inGrid(g, i, j)) return '   ·   hors carte';
+  const k = j * g.W + i, L = R.layers, c = R.cost.cost[k];
+  const cs = c === 254 ? 'obstacle' : c === 253 ? 'trop près (inscrit)' : c === 255 ? 'inconnu' : c ? `coût ${c}` : 'libre';
+  const ob = R.labels[k] >= 0 ? ` · obstacle n°${R.labels[k]} (${R.obstacles[R.labels[k]].cls})` : '';
+  return `   ·   cellule ${g.data[k]} (brute ${R.gridRaw.data[k]}) · impacts ${L.hits[k]}/${L.seen[k]} obs.${ob} · ${cs}`;
+}
+function procPointerDown(e, mx, my){
+  if (!PROC.planMode || e.button !== 0) return false;
+  if (!PROC.res) { toast('Lance d’abord le traitement'); return true; }
+  const [x, y] = s2w(mx, my), P = PROC.plan;
+  if (!P.start || P.goal){ P.start = { x, y }; P.goal = null; P.result = null; }
+  else { P.goal = { x, y }; procPlan(); }
+  procPlanInfo(); draw(); return true;
+}
+function procPlan(){
+  const P = PROC.plan; if (!P.start || !P.goal || !PROC.res) return;
+  const t0 = performance.now();
+  P.result = LM.planPath(PROC.res.cost, P.start, P.goal, { allowUnknown: $('pPlanUnk').checked });
+  P.result.ms = performance.now() - t0;
+}
+function procPlanInfo(){
+  const P = PROC.plan, el = $('pPlanInfo');
+  $('pPlanMode').classList.toggle('on', PROC.planMode);
+  if (!PROC.res){ el.textContent = 'Lance d’abord le traitement.'; return; }
+  if (!P.start){ el.textContent = PROC.planMode ? 'Clique le départ.' : 'Active « Placer départ / arrivée » puis clique le départ et l’arrivée.'; return; }
+  if (!P.goal){ el.textContent = `Départ (${P.start.x.toFixed(2)} ; ${P.start.y.toFixed(2)}) m · clique l’arrivée.`; return; }
+  const r = P.result;
+  if (!r.ok){ el.innerHTML = `<span style="color:#ff6b6b">Pas de trajet : ${r.reason}.</span>`; return; }
+  const direct = Math.hypot(P.goal.x - P.start.x, P.goal.y - P.start.y);
+  el.innerHTML = `<b>Trajet : ${r.length.toFixed(2)} m</b> (ligne droite ${direct.toFixed(2)} m), ${r.path.length - 1} tronçon(s) droits, ${r.raw.length} cellules · ${r.expanded} cellules explorées en ${r.ms.toFixed(0)} ms` +
+    `<br><span class="mono">${r.path.map(p => `(${p.x.toFixed(2)} ; ${p.y.toFixed(2)})`).join(' → ')}</span>`;
+}
+$('pRun').onclick = procRun;
+['pLayer'].forEach(id => $(id).onchange = draw);
+['pShowVec', 'pShowVecRaw', 'pShowCirc', 'pShowPts'].forEach(id => $(id).onchange = draw);
+$('pAlpha').oninput = draw;
+$('pMinConf').oninput = () => { $('pMinConfV').textContent = $('pMinConf').value; draw(); };
+$('pPlanMode').onclick = () => { PROC.planMode = !PROC.planMode; procPlanInfo(); };
+$('pPlanClear').onclick = () => { PROC.plan = { start: null, goal: null, result: null }; procPlanInfo(); draw(); };
+$('pPlanUnk').onchange = () => { procPlan(); procPlanInfo(); draw(); };
+['pRobotR', 'pInfl'].forEach(id => $(id).onchange = () => {
+  if (!PROC.res) return;
+  PROC.res.cost = LM.costmap(PROC.res.grid, { robotRadius: numVal('pRobotR'), inflation: numVal('pInfl') });
+  delete PROC.imgs.cost; procPlan(); procPlanInfo(); draw();
+});
+const needProc = () => { if (!PROC.res){ toast('Lance d’abord le traitement'); return false; } return true; };
+$('pApply').onclick = () => {
+  if (!needProc()) return;
+  if (!PROC.res.refineLog) return toast('Coche « Recaler toutes les poses » puis relance le traitement');
+  let n = 0;
+  PROC.scans.forEach((ps, k) => {
+    const s = S.scans.find(x => x.id === ps.id); if (!s) return;
+    const p = PROC.res.poses[k];
+    if (Math.hypot(p.x - s.pose.x, p.y - s.pose.y) < 1e-6 && Math.abs(p.th - s.pose.th) < 1e-6) return;
+    pushUndo(s); s.pose = { x: p.x, y: p.y, th: p.th }; n++;
+  });
+  if (typeof renderList === 'function') renderList();
+  toast(`${n} pose(s) mise(s) à jour`); draw();
+};
+$('pToGrid').onclick = () => { if (!needProc()) return; gridSet(LM.cloneGrid(PROC.res.grid), 'Grid map traitée (onglet Traitement)'); toast('Carte envoyée vers l’onglet Grid map'); };
+$('pToVec').onclick = () => {
+  if (!needProc()) return;
+  vecPush(); VEC.map = JSON.parse(JSON.stringify(PROC.res.vmap)); VEC.last = null; VEC.sel = -1; vecRefresh();
+  toast('Carte envoyée vers l’onglet Vectorielle');
+};
+$('pExpPgm').onclick = () => {
+  if (!needProc()) return;
+  const { pgm, yaml } = LC.gridToPGM(PROC.res.grid, 'carte_traitee');
+  download('carte_traitee.pgm', pgm, 'image/x-portable-graymap'); setTimeout(() => download('carte_traitee.yaml', yaml, 'text/yaml'), 300);
+};
+$('pExpPng').onclick = () => {
+  if (!needProc()) return;
+  const src = procLayerImage($('pLayer').value === 'none' ? 'clean' : $('pLayer').value), k = Math.max(1, Math.min(8, Math.floor(2400 / Math.max(src.width, src.height))));
+  const c = document.createElement('canvas'); c.width = src.width * k; c.height = src.height * k;
+  const x = c.getContext('2d'); x.imageSmoothingEnabled = false; x.drawImage(src, 0, 0, c.width, c.height);
+  // superposition de la carte vectorielle et des obstacles circulaires
+  const g = PROC.res.grid, tw = (X, Y) => [(X - g.x0) / g.res * k, (g.y0 + g.H * g.res - Y) / g.res * k];
+  if ($('pShowVec').checked){ x.strokeStyle = '#4da3ff'; x.lineWidth = Math.max(2, k * 0.8); x.lineCap = 'round';
+    for (const f of PROC.res.vmap.features){ const [a, b] = tw(f.x1, f.y1), [c2, d] = tw(f.x2, f.y2); x.beginPath(); x.moveTo(a, b); x.lineTo(c2, d); x.stroke(); } }
+  if ($('pShowCirc').checked){ for (const it of PROC.res.omap.items){ if (it.conf < numVal('pMinConf') && !it.mobile) continue;
+    const [a, b] = tw(it.x, it.y); x.strokeStyle = it.mobile ? '#ff4d4d' : '#ff9b3d'; x.lineWidth = Math.max(1.5, k * 0.4); x.beginPath(); x.arc(a, b, Math.max(3, it.r / g.res * k), 0, 2 * Math.PI); x.stroke(); } }
+  download(`carte_${$('pLayer').value}.png`, c.toDataURL('image/png'));
+};
+$('pExpVec').onclick = () => { if (!needProc()) return; download('carte_vectorielle_reguliere.txt', LC.vectorMapToText(PROC.res.vmap), 'text/plain'); };
+$('pExpObs').onclick = () => {
+  if (!needProc()) return;
+  let s = '# Obstacles circulaires suivis (features cercle)\n' + LM.obstaclesToCSV(PROC.res.omap);
+  s += '\n# Obstacles de la grid map (composantes connexes)\nid,classe,cellules,surface_m2,cx_m,cy_m,longueur_m,largeur_m,angle_deg,impacts_max\n';
+  for (const o of PROC.res.obstacles) s += [o.id, o.cls, o.cells, o.area.toFixed(4), o.cx.toFixed(3), o.cy.toFixed(3), o.len.toFixed(3), o.wid.toFixed(3), o.angle.toFixed(1), o.support].join(',') + '\n';
+  download('obstacles.csv', s, 'text/csv');
+};
+$('pExpCost').onclick = () => { if (!needProc()) return; download('carte_de_cout.pgm', LM.costmapToPGM(PROC.res.cost), 'image/x-portable-graymap'); };
+$('pExpRep').onclick = () => { if (!needProc()) return; download('rapport_traitement.md', LM.reportToMarkdown(PROC.res), 'text/markdown'); };
+procPlanInfo();
+
+// ---------------------------------------------------------------- TRAITEMENT : gomme et filtres
+PROC.eraser = false; PROC.erasing = false; PROC.cursor = null; PROC.undo = []; PROC.lastErase = null;
+function procSnapshot(){
+  const R = PROC.res;
+  PROC.undo.push({ grid: R.grid.data.slice(), vmap: JSON.stringify(R.vmap), omap: JSON.stringify(R.omap), manual: { ...R.manual } });
+  if (PROC.undo.length > 40) PROC.undo.shift();
+}
+function procRefresh(){
+  LM.refreshDerived(PROC.res, { cost: { robotRadius: numVal('pRobotR'), inflation: numVal('pInfl') } });
+  PROC.imgs = {}; procPlan(); procPlanInfo(); procInfo(); procEInfo(); draw();
+}
+function procUndo(){
+  const u = PROC.undo.pop(); if (!u || !PROC.res) return toast('Rien à annuler');
+  const R = PROC.res; R.grid.data.set(u.grid); R.vmap = JSON.parse(u.vmap); R.omap = JSON.parse(u.omap); R.manual = u.manual;
+  procRefresh(); toast('Retouche annulée');
+}
+function procEInfo(){
+  const R = PROC.res, m = R && R.manual;
+  $('pEraser').classList.toggle('on', PROC.eraser);
+  if (!m){ $('pEInfo').textContent = 'Lance d’abord le traitement.'; return; }
+  $('pEInfo').innerHTML = (m.cells || m.segCut || m.segRemoved || m.circles)
+    ? `Retouches : <b>${m.cells}</b> cellules effacées, <b>${m.segCut}</b> segments coupés, <b>${m.segRemoved}</b> supprimés, <b>${m.circles}</b> cercles supprimés · ${PROC.undo.length} étape(s) annulable(s)`
+    : 'Aucune retouche.';
+}
+function eraseOpt(){ return { grid: $('pEGrid').checked, segments: $('pESeg').checked, circles: $('pECirc').checked, fill: $('pFill').value }; }
+function eraseAt(x, y){
+  const r = numVal('pBrush'), o = eraseOpt(), R = PROC.res;
+  // on interpole depuis le point précédent pour ne pas laisser de trous quand la souris va vite
+  const prev = PROC.lastErase, pts = [];
+  if (prev){ const d = Math.hypot(x - prev.x, y - prev.y), n = Math.ceil(d / (r * 0.5)); for (let k = 1; k <= n; k++) pts.push([prev.x + (x - prev.x) * k / n, prev.y + (y - prev.y) * k / n]); }
+  else pts.push([x, y]);
+  for (const [a, b] of pts){
+    const st = LM.eraseDisc(R, a, b, r, o);
+    R.manual.cells += st.cells; R.manual.circles += st.circles; R.manual.segRemoved += st.segRemoved;
+    for (const id of st.cutIds) if (!PROC.strokeIds.has(id)){ PROC.strokeIds.add(id); R.manual.segCut++; }   // un segment compte une fois par coup de gomme
+  }
+  PROC.lastErase = { x, y };
+  delete PROC.imgs.clean; delete PROC.imgs.diff; delete PROC.imgs.obst; delete PROC.imgs.cost;   // couches à redessiner
+}
+// remplace le gestionnaire de clic : gomme prioritaire, puis trajet
+const procPointerDownPlan = procPointerDown;
+procPointerDown = function(e, mx, my){
+  if (PROC.eraser && e.button === 0){
+    if (!PROC.res){ toast('Lance d’abord le traitement'); return true; }
+    procSnapshot(); PROC.erasing = true; PROC.lastErase = null; PROC.strokeIds = new Set();
+    const [x, y] = s2w(mx, my); eraseAt(x, y); draw(); return true;
+  }
+  return procPointerDownPlan(e, mx, my);
+};
+function procPointerMove(mx, my){
+  if (!PROC.eraser) return false;
+  PROC.cursor = [mx, my];
+  if (PROC.erasing){ const [x, y] = s2w(mx, my); eraseAt(x, y); }
+  draw();
+  return PROC.erasing;
+}
+function procPointerUp(){
+  if (!PROC.erasing) return;
+  PROC.erasing = false; PROC.lastErase = null; procRefresh();
+}
+// curseur de la gomme (dessiné par-dessus le reste)
+const drawProcOverBase = drawProcOver;
+drawProcOver = function(){
+  drawProcOverBase();
+  if (!PROC.eraser || !PROC.cursor) return;
+  const [mx, my] = PROC.cursor, r = numVal('pBrush') * S.view.s;
+  ctx.save(); ctx.strokeStyle = '#ff6bd5'; ctx.fillStyle = 'rgba(255,107,213,.12)'; ctx.lineWidth = 1.5; ctx.setLineDash([4, 3]);
+  ctx.beginPath(); ctx.arc(mx, my, Math.max(2, r), 0, 2 * Math.PI); ctx.fill(); ctx.stroke(); ctx.restore();
+};
+$('pEraser').onclick = () => {
+  PROC.eraser = !PROC.eraser;
+  if (PROC.eraser && PROC.planMode){ PROC.planMode = false; procPlanInfo(); }
+  if (!PROC.eraser) PROC.cursor = null;
+  procEInfo(); draw();
+};
+$('pPlanMode').addEventListener('click', () => { if (PROC.planMode && PROC.eraser){ PROC.eraser = false; PROC.cursor = null; procEInfo(); draw(); } });
+$('pEUndo').onclick = procUndo;
+$('pBrush').oninput = draw;
+cv.addEventListener('pointerleave', () => { if (PROC.cursor){ PROC.cursor = null; if (TAB === 'proc') draw(); } });
+function filterOpt(){ return { minSegLen: numVal('pFSeg') || 0, minCircleD: numVal('pFCirc') || 0, minBlob: numVal('pFBlob') || 0, nearPoses: numVal('pFNear') || 0, fill: $('pFill').value }; }
+$('pFApply').onclick = () => {
+  if (!needProc()) return;
+  const F = filterOpt(), R = PROC.res;
+  if (!(F.minSegLen || F.minCircleD || F.minBlob || F.nearPoses)) return toast('Tous les filtres sont à 0');
+  procSnapshot();
+  const a = LM.filterSmall(R, F), b = F.nearPoses > 0 ? LM.filterNearPoses(R, R.poses, F.nearPoses, { fill: F.fill }) : { cells: 0, segCut: 0, segRemoved: 0, circles: 0 };
+  R.manual.cells += a.cells + b.cells; R.manual.segRemoved += a.segments + b.segRemoved; R.manual.segCut += b.segCut; R.manual.circles += a.circles + b.circles;
+  procRefresh();
+  toast(`Supprimés : ${a.segments + b.segRemoved} segments (${b.segCut} coupés), ${a.circles + b.circles} cercles, ${a.blobs} taches, ${a.cells + b.cells} cellules`);
+};
+procEInfo();
+
+// ---------------------------------------------------------------- ROBOT EN DIRECT (localisation sur la carte du Jour 1, vue GPS)
+const R2D = 180 / Math.PI;
+const LIVE = { map: null, mapImg: null, mapKey: '', tracker: null, running: false, feed: 'robot', busy: false, pending: null,
+               view: 'head', zoom: 60, free: null, drag: null, hint: false, hintDrag: null, motion: null, cur: null, trail: [],
+               replay: { i: 0, list: [] }, sim: null, simIdx: 0, timer: null, looCache: new Map(), stats: { n: 0, global: 0, reloc: 0 } };
+const lvSetInfo = h => { $('lvMapInfo').innerHTML = h; };
+function lvRaw(s){                         // scan brut avec la convention d'angle de l'affichage (miroir, décalage)
+  const o = S.opt, sg = o.mirror ? -1 : 1, a = s.a.map(v => ((sg * v + (o.aOff || 0)) % 360 + 360) % 360);
+  return { name: s.name, a, d: s.d, i: s.i, pose: s.pose ? { ...s.pose } : null, id: s.id };
+}
+// --- carte de référence
+function livePrepare(silent){
+  const src = $('lvSrc').value, t0 = performance.now();
+  let grid = null, segs = null, label = '';
+  try {
+    if (src === 'scans'){
+      const vis = S.scans.filter(s => s.visible); if (!vis.length) throw new Error('aucun scan visible');
+      const R = LL.buildReferences(vis.map(lvRaw), -1); grid = R.grid; segs = R.vmap.features; label = `${vis.length} scans visibles`;
+    } else if (src === 'proc'){
+      if (!PROC.res) throw new Error('lance d’abord le traitement (onglet Traitement)');
+      grid = PROC.res.grid; segs = PROC.res.vmap.features; label = 'grid map traitée + carte vectorielle régularisée';
+    } else if (src === 'file'){
+      if (!LIVE.fileGrid) throw new Error('charge d’abord la grid map (.json)');
+      grid = LIVE.fileGrid; segs = LIVE.fileVec ? LIVE.fileVec.features : null; label = 'fichiers' + (segs ? '' : ' (sans carte vectorielle)');
+    } else {
+      LIVE.sim = LL.demoScenario(3); grid = LIVE.sim.refs.grid; segs = LIVE.sim.refs.vmap.features; label = 'salle simulée (9 scans)';
+    }
+    LIVE.map = LL.prepareMap(grid, segs); LIVE.map.label = label; LIVE.mapImg = null; LIVE.looCache.clear();
+    liveReset(false);
+    const st = LC.gridStats(grid);
+    lvSetInfo(`<b>Carte prête</b> : ${label}<br>${grid.W} × ${grid.H} cellules de ${(grid.res * 100).toFixed(0)} cm · ${(st.free * grid.res * grid.res).toFixed(0)} m² libres · ` +
+      `${segs ? segs.length + ' segments' : 'pas de segments'} · ${LIVE.map.cands.length} positions candidates · ${(performance.now() - t0).toFixed(0)} ms`);
+    if (!LIVE.pose) liveCenterOnMap();
+    draw(); return true;
+  } catch (e){ if (!silent) toast('Carte : ' + e.message); lvSetInfo('Aucune carte : ' + e.message); return false; }
+}
+function liveReset(clearTrail = true){
+  LIVE.tracker = LIVE.map ? LL.createTracker(LIVE.map) : null; LIVE.cur = null; LIVE.motion = null;
+  if (clearTrail){ LIVE.trail = []; LIVE.stats = { n: 0, global: 0, reloc: 0 }; }
+  liveState();
+}
+function liveCenterOnMap(){
+  const g = LIVE.map && LIVE.map.grid; if (!g) return;
+  LIVE.free = { x: g.x0 + g.W * g.res / 2, y: g.y0 + g.H * g.res / 2, phi: 0 };
+  LIVE.zoom = Math.min(W / (g.W * g.res), H / (g.H * g.res)) * 0.9;
+  if (!LIVE.cur) LIVE.view = 'free', liveViewButtons();
+}
+// --- traitement d'un scan
+function liveFeedScan(b, truth){
+  if (!LIVE.map) return;
+  if (LIVE.busy){ LIVE.pending = [b, truth]; return; }      // on garde seulement le plus récent
+  LIVE.busy = true;
+  try {
+    const raw = b.pose !== undefined && b.name ? b : lvRaw(b);
+    // relecture honnête : carte construite sans ce scan
+    if (LIVE.feed === 'replay' && $('lvLOO').checked && $('lvSrc').value === 'scans' && raw.id !== undefined){
+      let M = LIVE.looCache.get(raw.id);
+      if (!M){
+        const vis = S.scans.filter(s => s.visible && s.id !== raw.id).map(lvRaw);
+        const R = LL.buildReferences(vis, -1); M = LL.prepareMap(R.grid, R.vmap.features); LIVE.looCache.set(raw.id, M);
+      }
+      LIVE.tracker.M = M;
+    } else if (LIVE.tracker) LIVE.tracker.M = LIVE.map;
+    const local = LL.localPoints(raw), pts = LL.uniformSubsample(local, { max: 350 });
+    const motion = $('lvOdom').checked ? LIVE.motion : null; LIVE.motion = null;
+    const r = LL.trackerUpdate(LIVE.tracker, pts, motion);
+    LIVE.stats.n++; if (r.mode === 'global') LIVE.stats.global++; if (r.mode === 'relocalisation') LIVE.stats.reloc++;
+    const T = LIVE.tracker;
+    LIVE.cur = { local, res: r, truth: truth || null, t: Date.now() };
+    if (T.pose){
+      LIVE.trail.push({ x: T.pose.x, y: T.pose.y, th: T.pose.th, inliers: r.inliers, mode: r.mode, status: r.status, ms: r.ms, t: Date.now(),
+                        err: truth ? LL.poseError(T.pose, truth) : null });
+      if (LIVE.trail.length > 5000) LIVE.trail.shift();
+      if ($('lvSendPose').checked && SER.wifi && (r.status === 'localisé' || r.status === 'relocalisé')){
+        const mm = v => Math.max(-32768, Math.min(32767, Math.round(v * 1000)));
+        robotCmd(`/pose?x=${mm(T.pose.x)}&y=${mm(T.pose.y)}&z=${Math.round(((T.pose.th % 360) + 360) % 360 * 100) % 36000}`);
+      }
+    }
+    liveState(); draw();
+  } catch (e){ console.error(e); toast('Localisation : ' + e.message); }
+  finally {
+    LIVE.busy = false;
+    if (LIVE.onceStop){ LIVE.onceStop = false; LIVE.running = false; }
+    if (LIVE.pending){ const [pb, pt] = LIVE.pending; LIVE.pending = null; setTimeout(() => liveFeedScan(pb, pt), 0); }
+  }
+}
+// déplacement commandé (pilotage WiFi) -> prédiction pour le prochain scan, dans le repère du robot
+function liveOnDrive(mv, ms){
+  if (!LIVE.running) return;
+  const v = numVal('lvV') * ms / 1000, w = numVal('lvW') * ms / 1000;
+  const d = { forward: [v, 0, 0], backward: [-v, 0, 0], left: [0, v, 0], right: [0, -v, 0], rotateleft: [0, 0, w], rotateright: [0, 0, -w] }[mv];
+  if (!d) return;
+  const m = { x: d[0], y: d[1], th: d[2] };
+  LIVE.motion = LIVE.motion ? LL.compose(LIVE.motion, m) : m;
+}
+function liveState(){
+  const T = LIVE.tracker, r = LIVE.cur && LIVE.cur.res, el = $('lvState');
+  if (!LIVE.map){ el.textContent = 'Prépare d’abord la carte.'; return; }
+  if (!T || !r){ el.innerHTML = 'Pas encore de scan. <b>Démarrer</b> pour commencer.'; return; }
+  const col = { 'localisé': '#4cd97b', 'relocalisé': '#4cd97b', 'ambigu': '#ffb347', 'incertain': '#ffb347', 'perdu': '#ff6b6b', 'non localisé': '#ff6b6b' }[r.status] || '#ccc';
+  const p = T.pose, tr = LIVE.cur.truth;
+  let h = `<span style="color:${col};font-weight:700;font-size:15px">● ${r.status}</span> · ${r.mode} · ${r.ms.toFixed(0)} ms`;
+  if (p) h += `<br>x <b>${p.x.toFixed(2)}</b> m · y <b>${p.y.toFixed(2)}</b> m · cap <b>${p.th.toFixed(1)}°</b>`;
+  h += `<br>points du scan sur la carte : <b>${(r.inliers * 100).toFixed(0)} %</b>`;
+  if (r.status === 'ambigu' && T.hyps) h += `<br><span style="color:#ffb347">${T.hyps.length} positions possibles : déplacer le robot pour lever le doute, ou l’indiquer à la main.</span>`;
+  if (tr && p){ const e = LL.poseError(p, tr); h += `<br>écart à la vraie pose : <b style="color:${e.pos <= 0.05 && e.ang <= 2 ? '#4cd97b' : '#ff6b6b'}">${(e.pos * 100).toFixed(1)} cm, ${e.ang.toFixed(2)}°</b>`; }
+  const okN = LIVE.trail.filter(t => t.err).length ? LIVE.trail.filter(t => t.err && t.err.pos <= 0.05 && t.err.ang <= 2).length : null;
+  h += `<br><span class="help">${LIVE.stats.n} scans · ${LIVE.stats.global} recherches globales · ${LIVE.stats.reloc} relocalisations` +
+       (okN !== null ? ` · justes ${okN}/${LIVE.trail.filter(t => t.err).length}` : '') + '</span>';
+  el.innerHTML = h;
+}
+// --- sources de scans
+function liveStart(){
+  if (!LIVE.map && !livePrepare()) return;
+  const feed = LIVE.feed = $('lvFeed').value;
+  if (feed === 'sim' && !LIVE.sim){ $('lvSrc').value = 'sim'; if (!livePrepare()) return; toast('Carte : salle simulée'); }
+  if (feed === 'sim' && $('lvSrc').value !== 'sim'){ $('lvSrc').value = 'sim'; livePrepare(); }
+  liveStop(true); liveReset(true); LIVE.running = true; liveViewButtons();
+  if (feed === 'robot'){
+    if (!isConnected()){ LIVE.running = false; return toast('Connecte d’abord le robot (onglet Scans, USB ou WiFi)'); }
+    if (!SER.live){ $('live').checked = true; $('live').onchange({ target: $('live') }); }
+    toast('Localisation en direct : en attente des scans du robot');
+  } else if (feed === 'replay'){
+    LIVE.replay = { i: 0, list: S.scans.filter(s => s.visible) };
+    if (!LIVE.replay.list.length){ LIVE.running = false; return toast('Aucun scan visible'); }
+    liveTick();
+  } else { LIVE.simIdx = 0; LIVE.simPrev = null; liveTick(); }
+  if (LIVE.view === 'free') LIVE.zoom = Math.max(LIVE.zoom, 70);          // vue GPS : assez près du robot
+  liveSetView(LIVE.view === 'free' ? 'head' : LIVE.view);
+}
+function liveStop(quiet){
+  LIVE.running = false; clearTimeout(LIVE.timer);
+  if (!quiet) toast('Arrêté');
+}
+function liveStep(){                       // un scan de la source relecture / simulation
+  if (LIVE.feed === 'replay'){
+    const L = LIVE.replay.list; if (!L.length) return false;
+    const s = L[LIVE.replay.i % L.length]; LIVE.replay.i++;
+    liveFeedScan(lvRaw(s), { ...s.pose });
+    return true;
+  }
+  if (LIVE.feed === 'sim'){
+    const D = LIVE.sim; if (!D) return false;
+    const truth = D.path[LIVE.simIdx % D.path.length]; LIVE.simIdx++;
+    if (LIVE.simPrev && !LIVE.kidnapped){
+      const m = LL.relPose(LIVE.simPrev, truth), g = () => (D.rng() - 0.5) * 0.2;
+      LIVE.motion = { x: m.x * (1 + g()) + 0.01, y: m.y * (1 + g()), th: m.th * (1 + g()) + 0.5 };   // odométrie bruitée
+    }
+    LIVE.kidnapped = false; LIVE.simPrev = truth;
+    liveFeedScan(Object.assign(LL.simulateScan(D.scene.walls, truth, { tours: 1 }, D.rng), { name: 'sim', pose: null }), truth);
+    return true;
+  }
+  return false;
+}
+function liveTick(){
+  if (!LIVE.running) return;
+  liveStep();
+  LIVE.timer = setTimeout(liveTick, Math.max(50, numVal('lvPeriod')));
+}
+// --- vue « GPS » : transformation monde -> écran (rotation, zoom, centrage)
+function liveXf(){
+  const T = LIVE.tracker, p = T && T.pose;
+  if (LIVE.view !== 'free' && p){
+    return { x: p.x, y: p.y, phi: LIVE.view === 'head' ? (90 - p.th) * D2R : 0, cx: W / 2, cy: LIVE.view === 'head' ? H * 0.62 : H / 2, k: LIVE.zoom };
+  }
+  const f = LIVE.free || { x: 0, y: 0, phi: 0 };
+  return { x: f.x, y: f.y, phi: f.phi, cx: W / 2, cy: H / 2, k: LIVE.zoom };
+}
+const lvW2S = (X, x, y) => { const dx = x - X.x, dy = y - X.y, c = Math.cos(X.phi), s = Math.sin(X.phi);
+  return [X.cx + (c * dx - s * dy) * X.k, X.cy - (s * dx + c * dy) * X.k]; };
+const lvS2W = (X, sx, sy) => { const u = (sx - X.cx) / X.k, v = -(sy - X.cy) / X.k, c = Math.cos(-X.phi), s = Math.sin(-X.phi);
+  return [X.x + c * u - s * v, X.y + s * u + c * v]; };
+function liveMapImage(){
+  const g = LIVE.map.grid;
+  if (LIVE.mapImg && LIVE.mapImg.g === g) return LIVE.mapImg.c;
+  const c = document.createElement('canvas'); c.width = g.W; c.height = g.H;
+  const x = c.getContext('2d'), im = x.createImageData(g.W, g.H);
+  for (let j = 0; j < g.H; j++) for (let i = 0; i < g.W; i++){
+    const v = g.data[j * g.W + i], o = ((g.H - 1 - j) * g.W + i) * 4;
+    const [r, gg, b, a] = v >= LC.OCC_T ? [214, 222, 232, 255] : v <= LC.FREE_T ? [36, 44, 56, 255] : [0, 0, 0, 0];
+    im.data[o] = r; im.data[o + 1] = gg; im.data[o + 2] = b; im.data[o + 3] = a;
+  }
+  x.putImageData(im, 0, 0); LIVE.mapImg = { g, c }; return c;
+}
+const LV_COL = { 'localisé': '#4cd97b', 'relocalisé': '#4cd97b', 'ambigu': '#ffb347', 'incertain': '#ffb347', 'perdu': '#ff6b6b', 'non localisé': '#ff6b6b' };
+function drawLiveView(){
+  ctx.fillStyle = '#0b0e12'; ctx.fillRect(0, 0, W, H);
+  if (!LIVE.map){
+    ctx.fillStyle = '#9aa3ad'; ctx.font = '15px system-ui'; ctx.textAlign = 'center';
+    ctx.fillText('Robot en direct : prépare la carte (étape 1), puis Démarrer.', W / 2, H / 2); ctx.textAlign = 'left'; return;
+  }
+  const X = liveXf(), g = LIVE.map.grid, P = (x, y) => lvW2S(X, x, y);
+  // carte (image affine : tourne avec la vue)
+  const ytop = g.y0 + g.H * g.res, o = P(g.x0, ytop), di = P(g.x0 + g.res, ytop), dj = P(g.x0, ytop - g.res);
+  ctx.save(); ctx.imageSmoothingEnabled = false;
+  ctx.setTransform(dpr * (di[0] - o[0]), dpr * (di[1] - o[1]), dpr * (dj[0] - o[0]), dpr * (dj[1] - o[1]), dpr * o[0], dpr * o[1]);
+  ctx.drawImage(liveMapImage(), 0, 0); ctx.restore();
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  // grille métrique légère (repère : tous les mètres)
+  ctx.save(); ctx.lineCap = 'round';
+  if ($('lvShowVec').checked && LIVE.map.segs.length){
+    ctx.strokeStyle = 'rgba(77,163,255,.85)'; ctx.lineWidth = 2;
+    ctx.beginPath(); for (const f of LIVE.map.segs){ const a = P(f.x1, f.y1), b = P(f.x2, f.y2); ctx.moveTo(a[0], a[1]); ctx.lineTo(b[0], b[1]); } ctx.stroke();
+  }
+  // trajectoire
+  if ($('lvShowTrail').checked && LIVE.trail.length > 1){
+    ctx.lineWidth = 3; ctx.lineJoin = 'round';
+    for (let k = 1; k < LIVE.trail.length; k++){
+      const a = LIVE.trail[k - 1], b = LIVE.trail[k];
+      if (Math.hypot(a.x - b.x, a.y - b.y) > 1.5) continue;            // saut (relocalisation) : pas de trait
+      const u = k / LIVE.trail.length;
+      ctx.strokeStyle = `rgba(62,230,230,${0.15 + 0.7 * u})`;
+      const pa = P(a.x, a.y), pb = P(b.x, b.y); ctx.beginPath(); ctx.moveTo(pa[0], pa[1]); ctx.lineTo(pb[0], pb[1]); ctx.stroke();
+    }
+  }
+  const T = LIVE.tracker, cur = LIVE.cur, r = cur && cur.res;
+  const robotR = Math.max(9, (numVal('pRobotR') || 0.15) * X.k);
+  const drawRobot = (p, fill, stroke, alpha, dashed) => {
+    const [x, y] = P(p.x, p.y), a = p.th * D2R + X.phi;               // cap à l'écran
+    const ux = Math.cos(a), uy = -Math.sin(a);
+    ctx.save(); ctx.globalAlpha = alpha;
+    if (dashed) ctx.setLineDash([5, 4]);
+    ctx.fillStyle = fill; ctx.strokeStyle = stroke; ctx.lineWidth = 2.5;
+    ctx.beginPath(); ctx.arc(x, y, robotR, 0, 2 * Math.PI); ctx.fill(); ctx.stroke();
+    ctx.setLineDash([]);
+    const L = robotR * 1.9;
+    ctx.beginPath(); ctx.moveTo(x + ux * L, y + uy * L); ctx.lineTo(x - uy * robotR * 0.7 + ux * robotR * 0.2, y + ux * robotR * 0.7 + uy * robotR * 0.2);
+    ctx.lineTo(x + uy * robotR * 0.7 + ux * robotR * 0.2, y - ux * robotR * 0.7 + uy * robotR * 0.2); ctx.closePath();
+    ctx.fillStyle = stroke; ctx.fill(); ctx.restore();
+  };
+  // hypothèses (ambiguïté)
+  if ($('lvShowHyps').checked && T && T.hyps && T.hyps.length > 1)
+    for (const h of T.hyps.slice(1)) drawRobot(h, 'rgba(255,179,71,.18)', '#ffb347', 0.8, true);
+  // scan actuel, posé à la pose trouvée : vert s'il colle à la carte, rouge sinon (obstacle nouveau)
+  if ($('lvShowScan').checked && cur && T && T.pose){
+    const p = T.pose, c = Math.cos(p.th * D2R), s = Math.sin(p.th * D2R), F = LIVE.tracker.M.field;
+    for (const q of cur.local){
+      const wx = p.x + c * q.x - s * q.y, wy = p.y + s * q.x + c * q.y, d = LL.fieldSample(F, wx, wy)[0];
+      const [sx, sy] = P(wx, wy); ctx.fillStyle = d <= 0.1 ? '#4cd97b' : '#ff5c5c';
+      ctx.fillRect(sx - 1.6, sy - 1.6, 3.2, 3.2);
+    }
+  }
+  if (cur && cur.truth) drawRobot(cur.truth, 'rgba(255,255,255,0)', 'rgba(255,255,255,.75)', 0.9, true);
+  if (T && T.pose){
+    const col = LV_COL[T.status] || '#4da3ff';
+    drawRobot(T.pose, col + '44', col, 1, false);
+  }
+  // main : indication de la pose
+  if (LIVE.hintDrag){
+    const { a, b } = LIVE.hintDrag, pa = P(a[0], a[1]), pb = P(b[0], b[1]);
+    ctx.strokeStyle = '#ff6bd5'; ctx.lineWidth = 3; ctx.beginPath(); ctx.moveTo(pa[0], pa[1]); ctx.lineTo(pb[0], pb[1]); ctx.stroke();
+    ctx.beginPath(); ctx.arc(pa[0], pa[1], robotR, 0, 2 * Math.PI); ctx.stroke();
+  }
+  ctx.restore();
+  // boussole : direction de l'axe +y de la carte (« nord ») et +x
+  const cx0 = W - 46, cy0 = 46;
+  ctx.save(); ctx.translate(cx0, cy0);
+  ctx.fillStyle = 'rgba(15,18,22,.85)'; ctx.strokeStyle = '#2a323c'; ctx.lineWidth = 1; ctx.beginPath(); ctx.arc(0, 0, 32, 0, 2 * Math.PI); ctx.fill(); ctx.stroke();
+  const ny = [-Math.sin(X.phi), -Math.cos(X.phi)], ex = [Math.cos(X.phi), -Math.sin(X.phi)];
+  ctx.strokeStyle = '#ff5c5c'; ctx.lineWidth = 3; ctx.beginPath(); ctx.moveTo(0, 0); ctx.lineTo(ny[0] * 24, ny[1] * 24); ctx.stroke();
+  ctx.strokeStyle = '#9aa3ad'; ctx.lineWidth = 2; ctx.beginPath(); ctx.moveTo(0, 0); ctx.lineTo(ex[0] * 18, ex[1] * 18); ctx.stroke();
+  ctx.fillStyle = '#ff5c5c'; ctx.font = '700 11px system-ui'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.fillText('y', ny[0] * 30 * 0.92 + 0, ny[1] * 30 * 0.92); ctx.fillStyle = '#9aa3ad'; ctx.fillText('x', ex[0] * 26, ex[1] * 26);
+  ctx.restore();
+  // échelle
+  const m = [0.5, 1, 2, 5, 10].find(v => v * X.k >= 60) || 10;
+  ctx.save(); ctx.strokeStyle = '#d6dee8'; ctx.fillStyle = '#d6dee8'; ctx.lineWidth = 2; ctx.font = '12px system-ui';
+  ctx.beginPath(); ctx.moveTo(16, H - 22); ctx.lineTo(16 + m * X.k, H - 22); ctx.moveTo(16, H - 27); ctx.lineTo(16, H - 17); ctx.moveTo(16 + m * X.k, H - 27); ctx.lineTo(16 + m * X.k, H - 17); ctx.stroke();
+  ctx.fillText(m + ' m', 20 + m * X.k, H - 18); ctx.restore();
+  // bandeau d'état
+  if (r || LIVE.running){
+    const st = T ? T.status : '…', col = LV_COL[st] || '#9aa3ad';
+    const line1 = r ? `${st}` : 'en attente du premier scan…';
+    const line2 = r ? `${(r.inliers * 100).toFixed(0)} % du scan sur la carte · ${r.mode} · ${r.ms.toFixed(0)} ms` : '';
+    ctx.save(); ctx.fillStyle = 'rgba(15,18,22,.88)'; ctx.strokeStyle = col; ctx.lineWidth = 2;
+    const w = 330, hh = r ? 52 : 34; ctx.beginPath(); ctx.roundRect ? ctx.roundRect(14, 14, w, hh, 8) : ctx.rect(14, 14, w, hh); ctx.fill(); ctx.stroke();
+    ctx.fillStyle = col; ctx.font = '700 15px system-ui'; ctx.fillText('● ' + line1, 26, 36);
+    ctx.fillStyle = '#c7cfd8'; ctx.font = '12px system-ui'; ctx.fillText(line2, 26, 55); ctx.restore();
+  }
+}
+// --- interactions
+function liveSetView(v){
+  if (v === 'free'){ const X = liveXf(); LIVE.free = { x: X.x, y: X.y, phi: X.phi }; }
+  LIVE.view = v; liveViewButtons(); draw();
+}
+function liveViewButtons(){ $('lvViewHead').classList.toggle('on', LIVE.view === 'head'); $('lvViewNorth').classList.toggle('on', LIVE.view === 'north'); $('lvViewFree').classList.toggle('on', LIVE.view === 'free'); $('lvHint').classList.toggle('on', LIVE.hint); }
+function liveWheel(e){
+  const f = (e.deltaY || e.deltaX) < 0 ? 1.15 : 1 / 1.15;
+  LIVE.zoom = Math.max(4, Math.min(600, LIVE.zoom * f)); draw();
+}
+function livePointerDown(e, mx, my){
+  if (!LIVE.map) return;
+  const X = liveXf(), w = lvS2W(X, mx, my);
+  if (LIVE.hint && e.button === 0){ LIVE.hintDrag = { a: w, b: w }; draw(); return; }
+  if (LIVE.view !== 'free') liveSetView('free');
+  LIVE.drag = { m0: [mx, my], f0: { ...LIVE.free } };
+}
+function livePointerMove(mx, my){
+  if (!LIVE.map) return true;
+  const X = liveXf(), [wx, wy] = lvS2W(X, mx, my);
+  $('hud').textContent = `x ${wx.toFixed(2)} m   y ${wy.toFixed(2)} m   ·   ${LIVE.view === 'head' ? 'cap en haut' : LIVE.view === 'north' ? 'nord en haut' : 'vue libre'}   ·   zoom ${(100 / LIVE.zoom * 100).toFixed(0)} cm / 100 px`;
+  if (LIVE.hintDrag){ LIVE.hintDrag.b = [wx, wy]; draw(); return true; }
+  if (LIVE.drag){
+    const d = LIVE.drag, F = d.f0, c = Math.cos(-F.phi), s = Math.sin(-F.phi);
+    const u = -(mx - d.m0[0]) / LIVE.zoom, v = (my - d.m0[1]) / LIVE.zoom;
+    LIVE.free = { x: F.x + c * u - s * v, y: F.y + s * u + c * v, phi: F.phi }; draw();
+  }
+  return true;
+}
+function livePointerUp(){
+  if (LIVE.hintDrag){
+    const { a, b } = LIVE.hintDrag; LIVE.hintDrag = null; LIVE.hint = false; liveViewButtons();
+    const th = Math.hypot(b[0] - a[0], b[1] - a[1]) > 0.05 ? Math.atan2(b[1] - a[1], b[0] - a[0]) * R2D : 0;
+    if (!LIVE.tracker) liveReset(false);
+    // pose donnée à la main : le prochain scan part de là (recherche locale élargie, comme le « 2D Pose Estimate » de ROS)
+    Object.assign(LIVE.tracker, { pose: { x: a[0], y: a[1], th }, hyps: null, lost: 0, status: 'incertain' });
+    LIVE.tracker.o.track = { rxy: 0.6, rth: 35 };
+    LIVE.handHint = true;
+    toast(`Position indiquée : (${a[0].toFixed(2)} ; ${a[1].toFixed(2)}) m, ${th.toFixed(0)}° — le prochain scan s’y recale`);
+    if (!LIVE.running && LIVE.cur) liveRelocalizeCurrent();
+    liveSetView(LIVE.view === 'free' ? 'head' : LIVE.view);
+  }
+  LIVE.drag = null;
+}
+// relance la localisation sur le dernier scan reçu (après une indication à la main)
+function liveRelocalizeCurrent(){
+  const cur = LIVE.cur; if (!cur) return;
+  const pts = LL.uniformSubsample(cur.local, { max: 350 });
+  const r = LL.trackerUpdate(LIVE.tracker, pts, null), T = LIVE.tracker; LIVE.cur.res = r;
+  T.o.track = undefined;
+  if (T.pose) LIVE.trail.push({ x: T.pose.x, y: T.pose.y, th: T.pose.th, inliers: r.inliers, mode: r.mode, status: r.status, ms: r.ms, t: Date.now(),
+                                err: cur.truth ? LL.poseError(T.pose, cur.truth) : null });
+  liveState(); draw();
+}
+// --- boutons
+$('lvSrc').onchange = () => { $('lvFileRow').style.display = $('lvSrc').value === 'file' ? '' : 'none'; };
+$('lvFeed').onchange = () => { $('lvLOORow').style.display = $('lvFeed').value === 'replay' ? '' : 'none'; $('lvKidnap').style.display = $('lvFeed').value === 'sim' ? '' : 'none'; };
+$('lvFeed').onchange();
+$('lvPrep').onclick = () => { liveStop(true); LIVE.trail = []; livePrepare(); };
+$('lvGridFile').onchange = async e => {
+  const f = e.target.files[0]; e.target.value = ''; if (!f) return;
+  try { LIVE.fileGrid = LC.gridFromJSON(JSON.parse(await f.text())); toast('Grid map chargée : ' + f.name); } catch (err){ toast('Grid map illisible : ' + err.message); }
+};
+$('lvVecFile').onchange = async e => {
+  const f = e.target.files[0]; e.target.value = ''; if (!f) return;
+  try { LIVE.fileVec = LC.vectorMapFromText(await f.text()); toast(`Carte vectorielle chargée : ${LIVE.fileVec.features.length} segments`); } catch (err){ toast('Carte vectorielle illisible : ' + err.message); }
+};
+$('lvStart').onclick = liveStart;
+$('lvStop').onclick = () => liveStop();
+$('lvOnce').onclick = () => {
+  if (!LIVE.map && !livePrepare()) return;
+  LIVE.feed = $('lvFeed').value;
+  if (LIVE.feed === 'robot'){ if (!isConnected()) return toast('Robot non connecté'); LIVE.running = true; LIVE.onceStop = true; if (!SER.live){ $('live').checked = true; $('live').onchange({ target: $('live') }); } return; }
+  if (LIVE.feed === 'sim' && !LIVE.sim){ $('lvSrc').value = 'sim'; livePrepare(); LIVE.simIdx = 0; }
+  if (LIVE.feed === 'replay' && (!LIVE.replay.list || !LIVE.replay.list.length)) LIVE.replay = { i: 0, list: S.scans.filter(s => s.visible) };
+  liveStep(); if (LIVE.view === 'free' && LIVE.tracker && LIVE.tracker.pose) liveSetView('head');
+};
+$('lvKidnap').onclick = () => {
+  if (!LIVE.sim) return toast('Démarre d’abord le robot simulé');
+  LIVE.simIdx += Math.floor(LIVE.sim.path.length / 2); LIVE.kidnapped = true;
+  toast('Robot déplacé à la main (sans commande) : il doit se rendre compte qu’il est perdu et se relocaliser');
+};
+$('lvGlobal').onclick = () => { if (!LIVE.map) return toast('Prépare d’abord la carte'); Object.assign(LIVE.tracker, { pose: null, hyps: null, status: 'non localisé' }); if (!LIVE.running && LIVE.cur) liveRelocalizeCurrent(); else liveState(); toast('Recherche sur toute la carte au prochain scan'); };
+$('lvHint').onclick = () => { if (!LIVE.map) return toast('Prépare d’abord la carte'); LIVE.hint = !LIVE.hint; liveViewButtons(); };
+$('lvViewHead').onclick = () => liveSetView('head');
+$('lvViewNorth').onclick = () => liveSetView('north');
+$('lvViewFree').onclick = () => liveSetView('free');
+['lvShowScan', 'lvShowTrail', 'lvShowHyps', 'lvShowVec'].forEach(id => $(id).onchange = draw);
+$('lvClear').onclick = () => { LIVE.trail = []; draw(); };
+$('lvExport').onclick = () => {
+  if (!LIVE.trail.length) return toast('Trajectoire vide');
+  let s = 'n,temps_ms,x_m,y_m,cap_deg,points_sur_carte,mode,etat,calcul_ms,erreur_pos_m,erreur_ang_deg\n';
+  const t0 = LIVE.trail[0].t;
+  LIVE.trail.forEach((t, k) => s += [k + 1, t.t - t0, t.x.toFixed(4), t.y.toFixed(4), t.th.toFixed(2), t.inliers.toFixed(3), t.mode, t.status, t.ms.toFixed(1),
+    t.err ? t.err.pos.toFixed(4) : '', t.err ? t.err.ang.toFixed(3) : ''].join(',') + '\n');
+  download('trajectoire_robot.csv', s, 'text/csv');
+};
+document.querySelectorAll('#lvPad [data-mv]').forEach(b => b.onclick = () => { if (!SER.wifi) return toast('Pilotage : robot connecté en WiFi'); drive(b.dataset.mv); });
+$('lvPadStop').onclick = robotStop;
+liveViewButtons();
 
 // MAPS-UI:END
 syncOptUI(); renderList(); resize();

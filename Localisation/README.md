@@ -9,7 +9,12 @@
 | `lidar_core.js` | Bibliothèque de calcul : grid map (Bresenham, mise à jour, export), segments (extraction, angle, proximité, fusion, intersection, découpe) et carte vectorielle |
 | `lidar_loc.js` | Jour 2 : localisation (grid map, carte vectorielle, entre scans), simulateur et banc d'évaluation |
 | `bench_localisation.js` | Banc d'évaluation en ligne de commande (`node bench_localisation.js --real session.json`) |
-| `test_lidar_core.js` | 88 tests automatiques (`node test_lidar_core.js`), dont les cas limites de la découpe |
+| `bench_suivi.js` | Banc du robot en direct : localisation globale sur les scans réels, suivi simulé (`node bench_suivi.js --real session.json`) |
+| `resultats_suivi.md` | Résultats de `bench_suivi.js` |
+| `lidar_maptools.js` | Traitement des cartes et des obstacles : prétraitement, clusters, cercles / RANSAC / Douglas-Peucker, grid map enrichie et nettoyée, obstacles, régularisation de la carte vectorielle, carte de coût, trajet A*, recalage global des poses |
+| `DEMARCHE_traitement_cartes.md` | Démarche et résultats du traitement des cartes et des obstacles |
+| `resultats_traitement.md` | Rapport de la chaîne de traitement sur les 14 scans réels (avec recalage) |
+| `test_lidar_core.js` | 112 tests automatiques (`node test_lidar_core.js`), dont les cas limites de la découpe |
 | `DEMARCHE_parties_3_4.md` | Démarche des parties 3 et 4 : choix techniques, hypothèses, difficultés, limites |
 | `DEMARCHE_partie_5.md` | Démarche de la partie 5 (carte vectorielle) |
 | `capture_lidar.py` | (Optionnel) capture en ligne de commande, 1 fichier CSV par position |
@@ -231,6 +236,42 @@ référence », on choisit le scan pris à proximité.
   des poses de référence ;
 - résultats en tableaux et courbes, export CSV et Markdown.
 
+## Robot en direct (onglet *Robot en direct*)
+Le robot se repère sur la carte du Jour 1 et la vue le suit comme un GPS :
+1. **Carte** : scans visibles, résultat de l'onglet Traitement, fichiers (.json + .txt) ou salle simulée → *Préparer la carte*.
+2. **Scans** : robot connecté (USB ou WiFi), relecture des scans visibles (carte sans le scan rejoué), ou robot simulé
+   (bouton *Kidnapper* : le robot est déplacé à la main).
+3. **Repérage** : recherche sur toute la carte sans pose de départ (≈ 0,2 s), puis suivi scan après scan (5 à 10 ms),
+   relocalisation automatique si le robot est perdu, plusieurs hypothèses suivies si c'est ambigu,
+   *Indiquer la position à la main* (clic + glisser). Les commandes de pilotage WiFi servent de prédiction.
+4. **Vue** : cap en haut (la carte tourne), nord en haut, ou libre ; molette = zoom ; points verts = collent à la carte,
+   rouges = obstacle nouveau ; trajectoire exportable en CSV.
+
+## Traitement des cartes et des obstacles (onglet *Traitement*)
+Chaîne complète sur les scans visibles, chaque étape activable, avec un compte rendu par étape et la qualité de la carte
+avant / après :
+1. (option) **recalage global des poses** : chaque scan est relocalisé sur la carte des autres (passe progressive puis
+   passes d'affinage) ;
+2. **prétraitement** : rayon du robot, portée, intensité, points isolés, points mixtes ;
+3. **grid map enrichie** : par cellule, nombre d'impacts, d'observations et numéro du dernier scan ;
+4. **nettoyage** : traces d'obstacles mobiles (persistance), taches isolées, lissage majoritaire, fermeture des murs,
+   et en option obstacles obsolètes et décroissance temporelle ;
+5. **obstacles** : composantes connexes classées petit / objet / structure, et obstacles circulaires suivis
+   (confiance, absence, persistance) ;
+6. **carte vectorielle** (split-and-merge, Douglas-Peucker ou RANSAC) puis **régularisation** : murs redressés sur les
+   axes de la salle, alignés, fusionnés, coins raccordés, dépassements rognés ;
+7. **carte de coût** (obstacles gonflés du rayon du robot) et **trajet A\*** : clic départ, clic arrivée.
+8. **filtres « distance minimum »** (0 = désactivé) : segments plus courts que L, cercles de diamètre inférieur à D,
+   taches de points plus petites que T, et tout ce qui est à moins de R d'une position du robot ;
+   appliqués en fin de chaîne ou à tout moment avec *Appliquer les filtres maintenant*.
+
+**Gomme** : glisser sur la carte efface les cellules d'obstacle, coupe les segments au bord du disque et supprime les
+cercles touchés (rayon réglable, Maj + molette). Ctrl+Z annule. La carte de coût, les obstacles et la qualité sont
+recalculés après chaque coup de gomme. Relancer le traitement efface les retouches.
+
+Couches affichables : grid map traitée ou brute, différences, persistance, obstacles par classe, carte de coût.
+Les résultats peuvent être envoyés aux onglets Grid map et Vectorielle, et exportés (PGM + YAML, .txt, CSV, PNG, rapport .md).
+
 ## Développement
-`lidar_viewer.html` est autonome : il contient une copie de `lidar_core.js`, `lidar_loc.js`, `test_lidar_core.js` et `src/maps_ui.js`.
+`lidar_viewer.html` est autonome : il contient une copie de `lidar_core.js`, `lidar_loc.js`, `lidar_maptools.js`, `test_lidar_core.js` et `src/maps_ui.js`.
 Après modification de ces fichiers, lancer `python3 build.py` pour mettre la page à jour.

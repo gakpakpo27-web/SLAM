@@ -98,7 +98,7 @@ function gridImage(){
   GRID.img = c; GRID.dirty = false; return c;
 }
 function drawGridMap(){
-  if (!GRID.g || !$('gShow').checked) return;
+  if (!GRID.g || !$('gShow').checked || TAB === 'proc') return;
   const g = GRID.g, [sx, sy] = w2s(g.x0, g.y0 + g.H * g.res);
   ctx.save(); ctx.imageSmoothingEnabled = false; ctx.globalAlpha = numVal('gAlpha');
   ctx.drawImage(gridImage(), sx, sy, g.W * g.res * S.view.s, g.H * g.res * S.view.s);
@@ -356,7 +356,7 @@ $('sFile').onchange = async e => {
 ['sAng', 'sLat', 'sGap'].forEach(id => $(id).addEventListener('input', segRefresh));
 $('sColor').onchange = draw; $('sHidePts').onchange = draw;
 $('sTests').onclick = () => {
-  const r = window.LidarTests.runTests(LC, window.LidarLoc), box = $('sTestOut');
+  const r = window.LidarTests.runTests(LC, window.LidarLoc, window.LidarMapTools), box = $('sTestOut');
   let html = `<b class="${r.passed === r.total ? 'ok' : 'ko'}">${r.passed}/${r.total} tests réussis</b>`, grp = '';
   for (const t of r.results){
     if (t.group !== grp){ grp = t.group; html += `<div class="tg">${grp}</div>`; }
@@ -694,3 +694,739 @@ $('benchPng').onclick = () => { const c = document.querySelector('.bench-chart')
     Object.entries(ms).map(([k, [l]]) => `<label class="chk"><input type="checkbox" value="${ref}.${k}" checked> ${l}</label>`).join('')).join('');
 })();
 locRefresh();
+
+// ---------------------------------------------------------------- TRAITEMENT (cartes et obstacles)
+const LM = window.LidarMapTools;
+const PROC = { res: null, imgs: {}, scans: [], busy: false, stop: false, planMode: false, plan: { start: null, goal: null, result: null } };
+function procOpt(){
+  const age = Math.round(numVal('pAge'));
+  return {
+    refine: $('pRefine').checked,
+    pre: { dMin: numVal('pDMin'), dMax: numVal('pDMax'), iMin: numVal('pIMin'), isolated: $('pIso').checked, mixed: $('pMixed').checked },
+    res: numVal('pRes'),
+    mobile: $('pMobile').checked, mobileOpt: { maxPersist: numVal('pPersist') / 100 },
+    speckles: $('pSpeck').checked, smooth: $('pSmooth').checked, close: $('pClose').checked,
+    obsolete: $('pObsolete').checked, obsoleteOpt: { age }, decay: $('pDecay').checked, decayOpt: { age, step: 16 },
+    features: { method: $('pMethod').value, smallMax: numVal('pSmall') },
+    obstacleOpt: { smallMax: numVal('pSmall') },
+    vmOpt: { extract: Object.assign(segExtractOpt(), { minLen: 0.3 }) },
+    regularize: $('pReg').checked, regOpt: { snapTol: numVal('pSnap'), orthogonal: numVal('pSnap') > 0 },
+    filters: filterOpt(),
+    cost: { robotRadius: numVal('pRobotR'), inflation: numVal('pInfl') }
+  };
+}
+async function procRun(){
+  if (PROC.busy) return;
+  const vis = S.scans.filter(s => s.visible);
+  if (!vis.length) return toast('Aucun scan visible');
+  const o = procOpt();
+  PROC.busy = true; PROC.stop = false; $('pRun').disabled = true;
+  const overlay = o.refine && vis.length > 1;
+  if (overlay){
+    $('autoOverlay').style.display = 'flex';
+    document.querySelector('#autoOverlay .ao-title').textContent = 'Traitement de la carte';
+    $('aoStop').onclick = () => { PROC.stop = true; };
+  }
+  const prog = async (f, t) => {
+    if (PROC.stop) throw new Error('arrêt');
+    $('pStatus').textContent = `${Math.round(f * 100)} % · ${t}`;
+    if (overlay){ $('aoText').textContent = t; $('aoBar').style.width = Math.round(f * 100) + '%'; $('aoSub').textContent = `${Math.round(f * 100)} %`; }
+    await sleep(0);
+  };
+  try {
+    PROC.scans = vis.map(s => ({ id: s.id, name: s.name, a: s.a, d: s.d, i: s.i, scale: s.scale || 1, pose: { ...s.pose } }));
+    const t0 = performance.now();
+    PROC.res = await LM.processMap(PROC.scans, o, prog);
+    PROC.res.ms = performance.now() - t0;
+    PROC.imgs = {}; PROC.plan = { start: null, goal: null, result: null }; PROC.undo = [];
+    $('pStatus').textContent = `terminé en ${(PROC.res.ms / 1000).toFixed(1)} s`;
+    procInfo(); procPlanInfo(); if (typeof procEInfo === 'function') procEInfo();
+  } catch (e){ $('pStatus').textContent = ''; toast(e.message === 'arrêt' ? 'Traitement arrêté' : 'Erreur : ' + e.message); console.error(e); }
+  finally {
+    PROC.busy = false; $('pRun').disabled = false;
+    if (overlay){
+      $('autoOverlay').style.display = 'none';
+      document.querySelector('#autoOverlay .ao-title').textContent = 'Superposition automatique en cours';
+      $('aoStop').onclick = () => { autoCancel = true; setAutoStatus('Arrêt après le scan en cours…'); };
+    }
+    draw();
+  }
+}
+function procInfo(){
+  const R = PROC.res; if (!R){ $('pInfo').innerHTML = 'Aucun traitement.'; return; }
+  const q = R.quality, pc = v => (v * 100).toFixed(1) + ' %';
+  const row = (l, a, b) => `<tr><td>${l}</td><td>${a}</td><td>${b}</td></tr>`;
+  let h = `<b>${PROC.scans.length} scans traités</b> en ${(R.ms / 1000).toFixed(1)} s<table class="bench" style="margin-top:6px"><tr><th>Étape</th><th>Résultat</th><th>ms</th></tr>`;
+  for (const st of R.steps) h += `<tr><td>${st.step}</td><td style="text-align:left">${st.detail}</td><td>${st.ms.toFixed(0)}</td></tr>`;
+  h += `</table><table class="bench" style="margin-top:6px"><tr><th>Qualité de la grid map</th><th>brute</th><th>traitée</th></tr>` +
+    row('Points des scans sur un obstacle', pc(q.raw.pointsOnObstacle), pc(q.clean.pointsOnObstacle)) +
+    row('Distance moyenne point → obstacle', (q.raw.meanDist * 100).toFixed(1) + ' cm', (q.clean.meanDist * 100).toFixed(1) + ' cm') +
+    row('Cellules occupées', q.raw.occCells, q.clean.occCells) +
+    row('Surface libre', q.raw.freeArea.toFixed(1) + ' m²', q.clean.freeArea.toFixed(1) + ' m²') +
+    row('Netteté (cellules tranchées)', pc(q.raw.sharpness), pc(q.clean.sharpness)) +
+    row('Cellules en conflit', q.raw.conflicts, q.clean.conflicts) + '</table>';
+  if (R.refineLog){
+    const last = new Map(); R.refineLog.forEach(l => last.set(l.name, l));
+    const moved = R.poses.map((p, k) => ({ n: PROC.scans[k].name, d: Math.hypot(p.x - PROC.scans[k].pose.x, p.y - PROC.scans[k].pose.y), a: Math.abs(((p.th - PROC.scans[k].pose.th + 540) % 360) - 180) }));
+    const mx = moved.reduce((a, m) => m.d > a.d ? m : a, { d: 0 });
+    h += `<div class="res">Recalage : correction médiane ${(median(moved.map(m => m.d)) * 100).toFixed(1)} cm, max ${(mx.d * 100).toFixed(1)} cm (${mx.n || '–'}). « Appliquer les poses recalées » pour les garder.</div>`;
+  }
+  $('pInfo').innerHTML = h;
+}
+function median(a){ const b = a.slice().sort((x, y) => x - y); return b.length ? b[Math.floor(b.length / 2)] : 0; }
+
+// --- images des couches (1 pixel par cellule, mises en cache)
+function procLayerImage(kind){
+  const R = PROC.res; if (!R || kind === 'none') return null;
+  if (PROC.imgs[kind]) return PROC.imgs[kind];
+  const g = R.grid, Wg = g.W, Hg = g.H, c = document.createElement('canvas'); c.width = Wg; c.height = Hg;
+  const cx = c.getContext('2d'), im = cx.createImageData(Wg, Hg), D = im.data, L = R.layers;
+  const CLS = { structure: [227, 231, 236], objet: [255, 179, 71], petit: [255, 92, 138] };
+  const clsOf = R.obstacles.map(o => CLS[o.cls]);
+  for (let j = 0; j < Hg; j++) for (let i = 0; i < Wg; i++){
+    const k = j * Wg + i, o = ((Hg - 1 - j) * Wg + i) * 4;
+    let r, gg, b, a = 255;
+    const gray = v => { const x = 255 - v; return [x, x, x]; };
+    if (kind === 'clean') [r, gg, b] = gray(g.data[k]);
+    else if (kind === 'raw') [r, gg, b] = gray(R.gridRaw.data[k]);
+    else if (kind === 'diff'){
+      const before = R.gridRaw.data[k] >= LC.OCC_T, after = g.data[k] >= LC.OCC_T;
+      if (before && !after) [r, gg, b] = [255, 70, 70];
+      else if (!before && after) [r, gg, b] = [70, 230, 110];
+      else if (R.mobile[k]) [r, gg, b] = [190, 90, 255];
+      else { const x = 255 - g.data[k]; [r, gg, b] = [x * 0.55, x * 0.55, x * 0.55]; }
+    } else if (kind === 'persist'){
+      if (!L.seen[k]) [r, gg, b] = [20, 24, 30];
+      else if (!L.hits[k]) [r, gg, b] = [45, 52, 64];
+      else { const p = L.hits[k] / L.seen[k]; [r, gg, b] = [Math.round(80 + 175 * p), Math.round(60 + 170 * p), Math.round(200 * (1 - p))]; }
+    } else if (kind === 'obst'){
+      const id = R.labels[k];
+      if (id >= 0) [r, gg, b] = clsOf[id];
+      else { const v = g.data[k]; [r, gg, b] = v <= LC.FREE_T ? [70, 76, 86] : [26, 30, 36]; }
+    } else if (kind === 'cost'){
+      const v = R.cost.cost[k];
+      if (v === 254) [r, gg, b] = [0, 0, 0];
+      else if (v === 253) [r, gg, b] = [120, 40, 160];
+      else if (v === 255) [r, gg, b] = [40, 48, 60];
+      else if (v === 0) [r, gg, b] = [235, 240, 235];
+      else { const t = v / 252; [r, gg, b] = [255, Math.round(230 - 180 * t), Math.round(120 - 110 * t)]; }
+    }
+    D[o] = r; D[o + 1] = gg; D[o + 2] = b; D[o + 3] = a;
+  }
+  cx.putImageData(im, 0, 0);
+  return PROC.imgs[kind] = c;
+}
+function drawProcUnder(){
+  const R = PROC.res; if (!R) return;
+  const img = procLayerImage($('pLayer').value); if (!img) return;
+  const g = R.grid, [sx, sy] = w2s(g.x0, g.y0 + g.H * g.res);
+  ctx.save(); ctx.imageSmoothingEnabled = false; ctx.globalAlpha = numVal('pAlpha');
+  ctx.drawImage(img, sx, sy, g.W * g.res * S.view.s, g.H * g.res * S.view.s);
+  ctx.restore();
+}
+function drawProcOver(){
+  const R = PROC.res;
+  ctx.save(); ctx.lineCap = 'round';
+  const line = (f) => { const [x1, y1] = w2s(f.x1, f.y1), [x2, y2] = w2s(f.x2, f.y2); ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke(); };
+  if (R && $('pShowVecRaw').checked){
+    ctx.strokeStyle = 'rgba(255,214,77,.9)'; ctx.lineWidth = 1.5; ctx.setLineDash([5, 4]);
+    R.vmapRaw.features.forEach(line); ctx.setLineDash([]);
+  }
+  if (R && $('pShowVec').checked){
+    ctx.strokeStyle = '#4da3ff'; ctx.lineWidth = 3; R.vmap.features.forEach(line);
+    for (const c of R.vmap.corners){
+      const [x, y] = w2s(c.x, c.y); ctx.strokeStyle = '#ffe14d'; ctx.fillStyle = 'rgba(255,225,77,.3)'; ctx.lineWidth = 1.5;
+      ctx.beginPath(); ctx.rect(x - 4, y - 4, 8, 8); ctx.fill(); ctx.stroke();
+    }
+  }
+  if (R && $('pShowCirc').checked){
+    const mc = numVal('pMinConf');
+    for (const it of R.omap.items){
+      if (it.conf < mc && !it.mobile) continue;
+      const [x, y] = w2s(it.x, it.y), rr = Math.max(3, it.r * S.view.s);
+      ctx.strokeStyle = it.mobile ? '#ff4d4d' : '#ff9b3d'; ctx.lineWidth = it.kind === 'cercle' ? 2.2 : 1.6;
+      ctx.beginPath(); ctx.arc(x, y, rr, 0, 2 * Math.PI); ctx.stroke();
+    }
+  }
+  // trajet
+  const P = PROC.plan, rob = numVal('pRobotR') * S.view.s;
+  const mark = (p, col) => { const [x, y] = w2s(p.x, p.y); ctx.fillStyle = col + '55'; ctx.strokeStyle = col; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(x, y, Math.max(5, rob), 0, 2 * Math.PI); ctx.fill(); ctx.stroke(); };
+  if (P.result && P.result.ok){
+    ctx.strokeStyle = 'rgba(62,230,230,.35)'; ctx.lineWidth = Math.max(2, 2 * rob); ctx.lineJoin = 'round';
+    ctx.beginPath(); P.result.path.forEach((p, k) => { const [x, y] = w2s(p.x, p.y); k ? ctx.lineTo(x, y) : ctx.moveTo(x, y); }); ctx.stroke();
+    ctx.strokeStyle = '#3ee6e6'; ctx.lineWidth = 2.5; ctx.stroke();
+    ctx.fillStyle = '#3ee6e6'; for (const p of P.result.path){ const [x, y] = w2s(p.x, p.y); ctx.beginPath(); ctx.arc(x, y, 3.5, 0, 2 * Math.PI); ctx.fill(); }
+  }
+  if (P.start) mark(P.start, '#4cd97b');
+  if (P.goal) mark(P.goal, '#ff6b6b');
+  ctx.restore();
+}
+function procHud(wx, wy){
+  const R = PROC.res; if (!R) return '';
+  const g = R.grid, [i, j] = LC.worldToCell(g, wx, wy); if (!LC.inGrid(g, i, j)) return '   ·   hors carte';
+  const k = j * g.W + i, L = R.layers, c = R.cost.cost[k];
+  const cs = c === 254 ? 'obstacle' : c === 253 ? 'trop près (inscrit)' : c === 255 ? 'inconnu' : c ? `coût ${c}` : 'libre';
+  const ob = R.labels[k] >= 0 ? ` · obstacle n°${R.labels[k]} (${R.obstacles[R.labels[k]].cls})` : '';
+  return `   ·   cellule ${g.data[k]} (brute ${R.gridRaw.data[k]}) · impacts ${L.hits[k]}/${L.seen[k]} obs.${ob} · ${cs}`;
+}
+function procPointerDown(e, mx, my){
+  if (!PROC.planMode || e.button !== 0) return false;
+  if (!PROC.res) { toast('Lance d’abord le traitement'); return true; }
+  const [x, y] = s2w(mx, my), P = PROC.plan;
+  if (!P.start || P.goal){ P.start = { x, y }; P.goal = null; P.result = null; }
+  else { P.goal = { x, y }; procPlan(); }
+  procPlanInfo(); draw(); return true;
+}
+function procPlan(){
+  const P = PROC.plan; if (!P.start || !P.goal || !PROC.res) return;
+  const t0 = performance.now();
+  P.result = LM.planPath(PROC.res.cost, P.start, P.goal, { allowUnknown: $('pPlanUnk').checked });
+  P.result.ms = performance.now() - t0;
+}
+function procPlanInfo(){
+  const P = PROC.plan, el = $('pPlanInfo');
+  $('pPlanMode').classList.toggle('on', PROC.planMode);
+  if (!PROC.res){ el.textContent = 'Lance d’abord le traitement.'; return; }
+  if (!P.start){ el.textContent = PROC.planMode ? 'Clique le départ.' : 'Active « Placer départ / arrivée » puis clique le départ et l’arrivée.'; return; }
+  if (!P.goal){ el.textContent = `Départ (${P.start.x.toFixed(2)} ; ${P.start.y.toFixed(2)}) m · clique l’arrivée.`; return; }
+  const r = P.result;
+  if (!r.ok){ el.innerHTML = `<span style="color:#ff6b6b">Pas de trajet : ${r.reason}.</span>`; return; }
+  const direct = Math.hypot(P.goal.x - P.start.x, P.goal.y - P.start.y);
+  el.innerHTML = `<b>Trajet : ${r.length.toFixed(2)} m</b> (ligne droite ${direct.toFixed(2)} m), ${r.path.length - 1} tronçon(s) droits, ${r.raw.length} cellules · ${r.expanded} cellules explorées en ${r.ms.toFixed(0)} ms` +
+    `<br><span class="mono">${r.path.map(p => `(${p.x.toFixed(2)} ; ${p.y.toFixed(2)})`).join(' → ')}</span>`;
+}
+$('pRun').onclick = procRun;
+['pLayer'].forEach(id => $(id).onchange = draw);
+['pShowVec', 'pShowVecRaw', 'pShowCirc', 'pShowPts'].forEach(id => $(id).onchange = draw);
+$('pAlpha').oninput = draw;
+$('pMinConf').oninput = () => { $('pMinConfV').textContent = $('pMinConf').value; draw(); };
+$('pPlanMode').onclick = () => { PROC.planMode = !PROC.planMode; procPlanInfo(); };
+$('pPlanClear').onclick = () => { PROC.plan = { start: null, goal: null, result: null }; procPlanInfo(); draw(); };
+$('pPlanUnk').onchange = () => { procPlan(); procPlanInfo(); draw(); };
+['pRobotR', 'pInfl'].forEach(id => $(id).onchange = () => {
+  if (!PROC.res) return;
+  PROC.res.cost = LM.costmap(PROC.res.grid, { robotRadius: numVal('pRobotR'), inflation: numVal('pInfl') });
+  delete PROC.imgs.cost; procPlan(); procPlanInfo(); draw();
+});
+const needProc = () => { if (!PROC.res){ toast('Lance d’abord le traitement'); return false; } return true; };
+$('pApply').onclick = () => {
+  if (!needProc()) return;
+  if (!PROC.res.refineLog) return toast('Coche « Recaler toutes les poses » puis relance le traitement');
+  let n = 0;
+  PROC.scans.forEach((ps, k) => {
+    const s = S.scans.find(x => x.id === ps.id); if (!s) return;
+    const p = PROC.res.poses[k];
+    if (Math.hypot(p.x - s.pose.x, p.y - s.pose.y) < 1e-6 && Math.abs(p.th - s.pose.th) < 1e-6) return;
+    pushUndo(s); s.pose = { x: p.x, y: p.y, th: p.th }; n++;
+  });
+  if (typeof renderList === 'function') renderList();
+  toast(`${n} pose(s) mise(s) à jour`); draw();
+};
+$('pToGrid').onclick = () => { if (!needProc()) return; gridSet(LM.cloneGrid(PROC.res.grid), 'Grid map traitée (onglet Traitement)'); toast('Carte envoyée vers l’onglet Grid map'); };
+$('pToVec').onclick = () => {
+  if (!needProc()) return;
+  vecPush(); VEC.map = JSON.parse(JSON.stringify(PROC.res.vmap)); VEC.last = null; VEC.sel = -1; vecRefresh();
+  toast('Carte envoyée vers l’onglet Vectorielle');
+};
+$('pExpPgm').onclick = () => {
+  if (!needProc()) return;
+  const { pgm, yaml } = LC.gridToPGM(PROC.res.grid, 'carte_traitee');
+  download('carte_traitee.pgm', pgm, 'image/x-portable-graymap'); setTimeout(() => download('carte_traitee.yaml', yaml, 'text/yaml'), 300);
+};
+$('pExpPng').onclick = () => {
+  if (!needProc()) return;
+  const src = procLayerImage($('pLayer').value === 'none' ? 'clean' : $('pLayer').value), k = Math.max(1, Math.min(8, Math.floor(2400 / Math.max(src.width, src.height))));
+  const c = document.createElement('canvas'); c.width = src.width * k; c.height = src.height * k;
+  const x = c.getContext('2d'); x.imageSmoothingEnabled = false; x.drawImage(src, 0, 0, c.width, c.height);
+  // superposition de la carte vectorielle et des obstacles circulaires
+  const g = PROC.res.grid, tw = (X, Y) => [(X - g.x0) / g.res * k, (g.y0 + g.H * g.res - Y) / g.res * k];
+  if ($('pShowVec').checked){ x.strokeStyle = '#4da3ff'; x.lineWidth = Math.max(2, k * 0.8); x.lineCap = 'round';
+    for (const f of PROC.res.vmap.features){ const [a, b] = tw(f.x1, f.y1), [c2, d] = tw(f.x2, f.y2); x.beginPath(); x.moveTo(a, b); x.lineTo(c2, d); x.stroke(); } }
+  if ($('pShowCirc').checked){ for (const it of PROC.res.omap.items){ if (it.conf < numVal('pMinConf') && !it.mobile) continue;
+    const [a, b] = tw(it.x, it.y); x.strokeStyle = it.mobile ? '#ff4d4d' : '#ff9b3d'; x.lineWidth = Math.max(1.5, k * 0.4); x.beginPath(); x.arc(a, b, Math.max(3, it.r / g.res * k), 0, 2 * Math.PI); x.stroke(); } }
+  download(`carte_${$('pLayer').value}.png`, c.toDataURL('image/png'));
+};
+$('pExpVec').onclick = () => { if (!needProc()) return; download('carte_vectorielle_reguliere.txt', LC.vectorMapToText(PROC.res.vmap), 'text/plain'); };
+$('pExpObs').onclick = () => {
+  if (!needProc()) return;
+  let s = '# Obstacles circulaires suivis (features cercle)\n' + LM.obstaclesToCSV(PROC.res.omap);
+  s += '\n# Obstacles de la grid map (composantes connexes)\nid,classe,cellules,surface_m2,cx_m,cy_m,longueur_m,largeur_m,angle_deg,impacts_max\n';
+  for (const o of PROC.res.obstacles) s += [o.id, o.cls, o.cells, o.area.toFixed(4), o.cx.toFixed(3), o.cy.toFixed(3), o.len.toFixed(3), o.wid.toFixed(3), o.angle.toFixed(1), o.support].join(',') + '\n';
+  download('obstacles.csv', s, 'text/csv');
+};
+$('pExpCost').onclick = () => { if (!needProc()) return; download('carte_de_cout.pgm', LM.costmapToPGM(PROC.res.cost), 'image/x-portable-graymap'); };
+$('pExpRep').onclick = () => { if (!needProc()) return; download('rapport_traitement.md', LM.reportToMarkdown(PROC.res), 'text/markdown'); };
+procPlanInfo();
+
+// ---------------------------------------------------------------- TRAITEMENT : gomme et filtres
+PROC.eraser = false; PROC.erasing = false; PROC.cursor = null; PROC.undo = []; PROC.lastErase = null;
+function procSnapshot(){
+  const R = PROC.res;
+  PROC.undo.push({ grid: R.grid.data.slice(), vmap: JSON.stringify(R.vmap), omap: JSON.stringify(R.omap), manual: { ...R.manual } });
+  if (PROC.undo.length > 40) PROC.undo.shift();
+}
+function procRefresh(){
+  LM.refreshDerived(PROC.res, { cost: { robotRadius: numVal('pRobotR'), inflation: numVal('pInfl') } });
+  PROC.imgs = {}; procPlan(); procPlanInfo(); procInfo(); procEInfo(); draw();
+}
+function procUndo(){
+  const u = PROC.undo.pop(); if (!u || !PROC.res) return toast('Rien à annuler');
+  const R = PROC.res; R.grid.data.set(u.grid); R.vmap = JSON.parse(u.vmap); R.omap = JSON.parse(u.omap); R.manual = u.manual;
+  procRefresh(); toast('Retouche annulée');
+}
+function procEInfo(){
+  const R = PROC.res, m = R && R.manual;
+  $('pEraser').classList.toggle('on', PROC.eraser);
+  if (!m){ $('pEInfo').textContent = 'Lance d’abord le traitement.'; return; }
+  $('pEInfo').innerHTML = (m.cells || m.segCut || m.segRemoved || m.circles)
+    ? `Retouches : <b>${m.cells}</b> cellules effacées, <b>${m.segCut}</b> segments coupés, <b>${m.segRemoved}</b> supprimés, <b>${m.circles}</b> cercles supprimés · ${PROC.undo.length} étape(s) annulable(s)`
+    : 'Aucune retouche.';
+}
+function eraseOpt(){ return { grid: $('pEGrid').checked, segments: $('pESeg').checked, circles: $('pECirc').checked, fill: $('pFill').value }; }
+function eraseAt(x, y){
+  const r = numVal('pBrush'), o = eraseOpt(), R = PROC.res;
+  // on interpole depuis le point précédent pour ne pas laisser de trous quand la souris va vite
+  const prev = PROC.lastErase, pts = [];
+  if (prev){ const d = Math.hypot(x - prev.x, y - prev.y), n = Math.ceil(d / (r * 0.5)); for (let k = 1; k <= n; k++) pts.push([prev.x + (x - prev.x) * k / n, prev.y + (y - prev.y) * k / n]); }
+  else pts.push([x, y]);
+  for (const [a, b] of pts){
+    const st = LM.eraseDisc(R, a, b, r, o);
+    R.manual.cells += st.cells; R.manual.circles += st.circles; R.manual.segRemoved += st.segRemoved;
+    for (const id of st.cutIds) if (!PROC.strokeIds.has(id)){ PROC.strokeIds.add(id); R.manual.segCut++; }   // un segment compte une fois par coup de gomme
+  }
+  PROC.lastErase = { x, y };
+  delete PROC.imgs.clean; delete PROC.imgs.diff; delete PROC.imgs.obst; delete PROC.imgs.cost;   // couches à redessiner
+}
+// remplace le gestionnaire de clic : gomme prioritaire, puis trajet
+const procPointerDownPlan = procPointerDown;
+procPointerDown = function(e, mx, my){
+  if (PROC.eraser && e.button === 0){
+    if (!PROC.res){ toast('Lance d’abord le traitement'); return true; }
+    procSnapshot(); PROC.erasing = true; PROC.lastErase = null; PROC.strokeIds = new Set();
+    const [x, y] = s2w(mx, my); eraseAt(x, y); draw(); return true;
+  }
+  return procPointerDownPlan(e, mx, my);
+};
+function procPointerMove(mx, my){
+  if (!PROC.eraser) return false;
+  PROC.cursor = [mx, my];
+  if (PROC.erasing){ const [x, y] = s2w(mx, my); eraseAt(x, y); }
+  draw();
+  return PROC.erasing;
+}
+function procPointerUp(){
+  if (!PROC.erasing) return;
+  PROC.erasing = false; PROC.lastErase = null; procRefresh();
+}
+// curseur de la gomme (dessiné par-dessus le reste)
+const drawProcOverBase = drawProcOver;
+drawProcOver = function(){
+  drawProcOverBase();
+  if (!PROC.eraser || !PROC.cursor) return;
+  const [mx, my] = PROC.cursor, r = numVal('pBrush') * S.view.s;
+  ctx.save(); ctx.strokeStyle = '#ff6bd5'; ctx.fillStyle = 'rgba(255,107,213,.12)'; ctx.lineWidth = 1.5; ctx.setLineDash([4, 3]);
+  ctx.beginPath(); ctx.arc(mx, my, Math.max(2, r), 0, 2 * Math.PI); ctx.fill(); ctx.stroke(); ctx.restore();
+};
+$('pEraser').onclick = () => {
+  PROC.eraser = !PROC.eraser;
+  if (PROC.eraser && PROC.planMode){ PROC.planMode = false; procPlanInfo(); }
+  if (!PROC.eraser) PROC.cursor = null;
+  procEInfo(); draw();
+};
+$('pPlanMode').addEventListener('click', () => { if (PROC.planMode && PROC.eraser){ PROC.eraser = false; PROC.cursor = null; procEInfo(); draw(); } });
+$('pEUndo').onclick = procUndo;
+$('pBrush').oninput = draw;
+cv.addEventListener('pointerleave', () => { if (PROC.cursor){ PROC.cursor = null; if (TAB === 'proc') draw(); } });
+function filterOpt(){ return { minSegLen: numVal('pFSeg') || 0, minCircleD: numVal('pFCirc') || 0, minBlob: numVal('pFBlob') || 0, nearPoses: numVal('pFNear') || 0, fill: $('pFill').value }; }
+$('pFApply').onclick = () => {
+  if (!needProc()) return;
+  const F = filterOpt(), R = PROC.res;
+  if (!(F.minSegLen || F.minCircleD || F.minBlob || F.nearPoses)) return toast('Tous les filtres sont à 0');
+  procSnapshot();
+  const a = LM.filterSmall(R, F), b = F.nearPoses > 0 ? LM.filterNearPoses(R, R.poses, F.nearPoses, { fill: F.fill }) : { cells: 0, segCut: 0, segRemoved: 0, circles: 0 };
+  R.manual.cells += a.cells + b.cells; R.manual.segRemoved += a.segments + b.segRemoved; R.manual.segCut += b.segCut; R.manual.circles += a.circles + b.circles;
+  procRefresh();
+  toast(`Supprimés : ${a.segments + b.segRemoved} segments (${b.segCut} coupés), ${a.circles + b.circles} cercles, ${a.blobs} taches, ${a.cells + b.cells} cellules`);
+};
+procEInfo();
+
+// ---------------------------------------------------------------- ROBOT EN DIRECT (localisation sur la carte du Jour 1, vue GPS)
+const R2D = 180 / Math.PI;
+const LIVE = { map: null, mapImg: null, mapKey: '', tracker: null, running: false, feed: 'robot', busy: false, pending: null,
+               view: 'head', zoom: 60, free: null, drag: null, hint: false, hintDrag: null, motion: null, cur: null, trail: [],
+               replay: { i: 0, list: [] }, sim: null, simIdx: 0, timer: null, looCache: new Map(), stats: { n: 0, global: 0, reloc: 0 } };
+const lvSetInfo = h => { $('lvMapInfo').innerHTML = h; };
+function lvRaw(s){                         // scan brut avec la convention d'angle de l'affichage (miroir, décalage)
+  const o = S.opt, sg = o.mirror ? -1 : 1, a = s.a.map(v => ((sg * v + (o.aOff || 0)) % 360 + 360) % 360);
+  return { name: s.name, a, d: s.d, i: s.i, pose: s.pose ? { ...s.pose } : null, id: s.id };
+}
+// --- carte de référence
+function livePrepare(silent){
+  const src = $('lvSrc').value, t0 = performance.now();
+  let grid = null, segs = null, label = '';
+  try {
+    if (src === 'scans'){
+      const vis = S.scans.filter(s => s.visible); if (!vis.length) throw new Error('aucun scan visible');
+      const R = LL.buildReferences(vis.map(lvRaw), -1); grid = R.grid; segs = R.vmap.features; label = `${vis.length} scans visibles`;
+    } else if (src === 'proc'){
+      if (!PROC.res) throw new Error('lance d’abord le traitement (onglet Traitement)');
+      grid = PROC.res.grid; segs = PROC.res.vmap.features; label = 'grid map traitée + carte vectorielle régularisée';
+    } else if (src === 'file'){
+      if (!LIVE.fileGrid) throw new Error('charge d’abord la grid map (.json)');
+      grid = LIVE.fileGrid; segs = LIVE.fileVec ? LIVE.fileVec.features : null; label = 'fichiers' + (segs ? '' : ' (sans carte vectorielle)');
+    } else {
+      LIVE.sim = LL.demoScenario(3); grid = LIVE.sim.refs.grid; segs = LIVE.sim.refs.vmap.features; label = 'salle simulée (9 scans)';
+    }
+    LIVE.map = LL.prepareMap(grid, segs); LIVE.map.label = label; LIVE.mapImg = null; LIVE.looCache.clear();
+    liveReset(false);
+    const st = LC.gridStats(grid);
+    lvSetInfo(`<b>Carte prête</b> : ${label}<br>${grid.W} × ${grid.H} cellules de ${(grid.res * 100).toFixed(0)} cm · ${(st.free * grid.res * grid.res).toFixed(0)} m² libres · ` +
+      `${segs ? segs.length + ' segments' : 'pas de segments'} · ${LIVE.map.cands.length} positions candidates · ${(performance.now() - t0).toFixed(0)} ms`);
+    if (!LIVE.pose) liveCenterOnMap();
+    draw(); return true;
+  } catch (e){ if (!silent) toast('Carte : ' + e.message); lvSetInfo('Aucune carte : ' + e.message); return false; }
+}
+function liveReset(clearTrail = true){
+  LIVE.tracker = LIVE.map ? LL.createTracker(LIVE.map) : null; LIVE.cur = null; LIVE.motion = null;
+  if (clearTrail){ LIVE.trail = []; LIVE.stats = { n: 0, global: 0, reloc: 0 }; }
+  liveState();
+}
+function liveCenterOnMap(){
+  const g = LIVE.map && LIVE.map.grid; if (!g) return;
+  LIVE.free = { x: g.x0 + g.W * g.res / 2, y: g.y0 + g.H * g.res / 2, phi: 0 };
+  LIVE.zoom = Math.min(W / (g.W * g.res), H / (g.H * g.res)) * 0.9;
+  if (!LIVE.cur) LIVE.view = 'free', liveViewButtons();
+}
+// --- traitement d'un scan
+function liveFeedScan(b, truth){
+  if (!LIVE.map) return;
+  if (LIVE.busy){ LIVE.pending = [b, truth]; return; }      // on garde seulement le plus récent
+  LIVE.busy = true;
+  try {
+    const raw = b.pose !== undefined && b.name ? b : lvRaw(b);
+    // relecture honnête : carte construite sans ce scan
+    if (LIVE.feed === 'replay' && $('lvLOO').checked && $('lvSrc').value === 'scans' && raw.id !== undefined){
+      let M = LIVE.looCache.get(raw.id);
+      if (!M){
+        const vis = S.scans.filter(s => s.visible && s.id !== raw.id).map(lvRaw);
+        const R = LL.buildReferences(vis, -1); M = LL.prepareMap(R.grid, R.vmap.features); LIVE.looCache.set(raw.id, M);
+      }
+      LIVE.tracker.M = M;
+    } else if (LIVE.tracker) LIVE.tracker.M = LIVE.map;
+    const local = LL.localPoints(raw), pts = LL.uniformSubsample(local, { max: 350 });
+    const motion = $('lvOdom').checked ? LIVE.motion : null; LIVE.motion = null;
+    const r = LL.trackerUpdate(LIVE.tracker, pts, motion);
+    LIVE.stats.n++; if (r.mode === 'global') LIVE.stats.global++; if (r.mode === 'relocalisation') LIVE.stats.reloc++;
+    const T = LIVE.tracker;
+    LIVE.cur = { local, res: r, truth: truth || null, t: Date.now() };
+    if (T.pose){
+      LIVE.trail.push({ x: T.pose.x, y: T.pose.y, th: T.pose.th, inliers: r.inliers, mode: r.mode, status: r.status, ms: r.ms, t: Date.now(),
+                        err: truth ? LL.poseError(T.pose, truth) : null });
+      if (LIVE.trail.length > 5000) LIVE.trail.shift();
+      if ($('lvSendPose').checked && SER.wifi && (r.status === 'localisé' || r.status === 'relocalisé')){
+        const mm = v => Math.max(-32768, Math.min(32767, Math.round(v * 1000)));
+        robotCmd(`/pose?x=${mm(T.pose.x)}&y=${mm(T.pose.y)}&z=${Math.round(((T.pose.th % 360) + 360) % 360 * 100) % 36000}`);
+      }
+    }
+    liveState(); draw();
+  } catch (e){ console.error(e); toast('Localisation : ' + e.message); }
+  finally {
+    LIVE.busy = false;
+    if (LIVE.onceStop){ LIVE.onceStop = false; LIVE.running = false; }
+    if (LIVE.pending){ const [pb, pt] = LIVE.pending; LIVE.pending = null; setTimeout(() => liveFeedScan(pb, pt), 0); }
+  }
+}
+// déplacement commandé (pilotage WiFi) -> prédiction pour le prochain scan, dans le repère du robot
+function liveOnDrive(mv, ms){
+  if (!LIVE.running) return;
+  const v = numVal('lvV') * ms / 1000, w = numVal('lvW') * ms / 1000;
+  const d = { forward: [v, 0, 0], backward: [-v, 0, 0], left: [0, v, 0], right: [0, -v, 0], rotateleft: [0, 0, w], rotateright: [0, 0, -w] }[mv];
+  if (!d) return;
+  const m = { x: d[0], y: d[1], th: d[2] };
+  LIVE.motion = LIVE.motion ? LL.compose(LIVE.motion, m) : m;
+}
+function liveState(){
+  const T = LIVE.tracker, r = LIVE.cur && LIVE.cur.res, el = $('lvState');
+  if (!LIVE.map){ el.textContent = 'Prépare d’abord la carte.'; return; }
+  if (!T || !r){ el.innerHTML = 'Pas encore de scan. <b>Démarrer</b> pour commencer.'; return; }
+  const col = { 'localisé': '#4cd97b', 'relocalisé': '#4cd97b', 'ambigu': '#ffb347', 'incertain': '#ffb347', 'perdu': '#ff6b6b', 'non localisé': '#ff6b6b' }[r.status] || '#ccc';
+  const p = T.pose, tr = LIVE.cur.truth;
+  let h = `<span style="color:${col};font-weight:700;font-size:15px">● ${r.status}</span> · ${r.mode} · ${r.ms.toFixed(0)} ms`;
+  if (p) h += `<br>x <b>${p.x.toFixed(2)}</b> m · y <b>${p.y.toFixed(2)}</b> m · cap <b>${p.th.toFixed(1)}°</b>`;
+  h += `<br>points du scan sur la carte : <b>${(r.inliers * 100).toFixed(0)} %</b>`;
+  if (r.status === 'ambigu' && T.hyps) h += `<br><span style="color:#ffb347">${T.hyps.length} positions possibles : déplacer le robot pour lever le doute, ou l’indiquer à la main.</span>`;
+  if (tr && p){ const e = LL.poseError(p, tr); h += `<br>écart à la vraie pose : <b style="color:${e.pos <= 0.05 && e.ang <= 2 ? '#4cd97b' : '#ff6b6b'}">${(e.pos * 100).toFixed(1)} cm, ${e.ang.toFixed(2)}°</b>`; }
+  const okN = LIVE.trail.filter(t => t.err).length ? LIVE.trail.filter(t => t.err && t.err.pos <= 0.05 && t.err.ang <= 2).length : null;
+  h += `<br><span class="help">${LIVE.stats.n} scans · ${LIVE.stats.global} recherches globales · ${LIVE.stats.reloc} relocalisations` +
+       (okN !== null ? ` · justes ${okN}/${LIVE.trail.filter(t => t.err).length}` : '') + '</span>';
+  el.innerHTML = h;
+}
+// --- sources de scans
+function liveStart(){
+  if (!LIVE.map && !livePrepare()) return;
+  const feed = LIVE.feed = $('lvFeed').value;
+  if (feed === 'sim' && !LIVE.sim){ $('lvSrc').value = 'sim'; if (!livePrepare()) return; toast('Carte : salle simulée'); }
+  if (feed === 'sim' && $('lvSrc').value !== 'sim'){ $('lvSrc').value = 'sim'; livePrepare(); }
+  liveStop(true); liveReset(true); LIVE.running = true; liveViewButtons();
+  if (feed === 'robot'){
+    if (!isConnected()){ LIVE.running = false; return toast('Connecte d’abord le robot (onglet Scans, USB ou WiFi)'); }
+    if (!SER.live){ $('live').checked = true; $('live').onchange({ target: $('live') }); }
+    toast('Localisation en direct : en attente des scans du robot');
+  } else if (feed === 'replay'){
+    LIVE.replay = { i: 0, list: S.scans.filter(s => s.visible) };
+    if (!LIVE.replay.list.length){ LIVE.running = false; return toast('Aucun scan visible'); }
+    liveTick();
+  } else { LIVE.simIdx = 0; LIVE.simPrev = null; liveTick(); }
+  if (LIVE.view === 'free') LIVE.zoom = Math.max(LIVE.zoom, 70);          // vue GPS : assez près du robot
+  liveSetView(LIVE.view === 'free' ? 'head' : LIVE.view);
+}
+function liveStop(quiet){
+  LIVE.running = false; clearTimeout(LIVE.timer);
+  if (!quiet) toast('Arrêté');
+}
+function liveStep(){                       // un scan de la source relecture / simulation
+  if (LIVE.feed === 'replay'){
+    const L = LIVE.replay.list; if (!L.length) return false;
+    const s = L[LIVE.replay.i % L.length]; LIVE.replay.i++;
+    liveFeedScan(lvRaw(s), { ...s.pose });
+    return true;
+  }
+  if (LIVE.feed === 'sim'){
+    const D = LIVE.sim; if (!D) return false;
+    const truth = D.path[LIVE.simIdx % D.path.length]; LIVE.simIdx++;
+    if (LIVE.simPrev && !LIVE.kidnapped){
+      const m = LL.relPose(LIVE.simPrev, truth), g = () => (D.rng() - 0.5) * 0.2;
+      LIVE.motion = { x: m.x * (1 + g()) + 0.01, y: m.y * (1 + g()), th: m.th * (1 + g()) + 0.5 };   // odométrie bruitée
+    }
+    LIVE.kidnapped = false; LIVE.simPrev = truth;
+    liveFeedScan(Object.assign(LL.simulateScan(D.scene.walls, truth, { tours: 1 }, D.rng), { name: 'sim', pose: null }), truth);
+    return true;
+  }
+  return false;
+}
+function liveTick(){
+  if (!LIVE.running) return;
+  liveStep();
+  LIVE.timer = setTimeout(liveTick, Math.max(50, numVal('lvPeriod')));
+}
+// --- vue « GPS » : transformation monde -> écran (rotation, zoom, centrage)
+function liveXf(){
+  const T = LIVE.tracker, p = T && T.pose;
+  if (LIVE.view !== 'free' && p){
+    return { x: p.x, y: p.y, phi: LIVE.view === 'head' ? (90 - p.th) * D2R : 0, cx: W / 2, cy: LIVE.view === 'head' ? H * 0.62 : H / 2, k: LIVE.zoom };
+  }
+  const f = LIVE.free || { x: 0, y: 0, phi: 0 };
+  return { x: f.x, y: f.y, phi: f.phi, cx: W / 2, cy: H / 2, k: LIVE.zoom };
+}
+const lvW2S = (X, x, y) => { const dx = x - X.x, dy = y - X.y, c = Math.cos(X.phi), s = Math.sin(X.phi);
+  return [X.cx + (c * dx - s * dy) * X.k, X.cy - (s * dx + c * dy) * X.k]; };
+const lvS2W = (X, sx, sy) => { const u = (sx - X.cx) / X.k, v = -(sy - X.cy) / X.k, c = Math.cos(-X.phi), s = Math.sin(-X.phi);
+  return [X.x + c * u - s * v, X.y + s * u + c * v]; };
+function liveMapImage(){
+  const g = LIVE.map.grid;
+  if (LIVE.mapImg && LIVE.mapImg.g === g) return LIVE.mapImg.c;
+  const c = document.createElement('canvas'); c.width = g.W; c.height = g.H;
+  const x = c.getContext('2d'), im = x.createImageData(g.W, g.H);
+  for (let j = 0; j < g.H; j++) for (let i = 0; i < g.W; i++){
+    const v = g.data[j * g.W + i], o = ((g.H - 1 - j) * g.W + i) * 4;
+    const [r, gg, b, a] = v >= LC.OCC_T ? [214, 222, 232, 255] : v <= LC.FREE_T ? [36, 44, 56, 255] : [0, 0, 0, 0];
+    im.data[o] = r; im.data[o + 1] = gg; im.data[o + 2] = b; im.data[o + 3] = a;
+  }
+  x.putImageData(im, 0, 0); LIVE.mapImg = { g, c }; return c;
+}
+const LV_COL = { 'localisé': '#4cd97b', 'relocalisé': '#4cd97b', 'ambigu': '#ffb347', 'incertain': '#ffb347', 'perdu': '#ff6b6b', 'non localisé': '#ff6b6b' };
+function drawLiveView(){
+  ctx.fillStyle = '#0b0e12'; ctx.fillRect(0, 0, W, H);
+  if (!LIVE.map){
+    ctx.fillStyle = '#9aa3ad'; ctx.font = '15px system-ui'; ctx.textAlign = 'center';
+    ctx.fillText('Robot en direct : prépare la carte (étape 1), puis Démarrer.', W / 2, H / 2); ctx.textAlign = 'left'; return;
+  }
+  const X = liveXf(), g = LIVE.map.grid, P = (x, y) => lvW2S(X, x, y);
+  // carte (image affine : tourne avec la vue)
+  const ytop = g.y0 + g.H * g.res, o = P(g.x0, ytop), di = P(g.x0 + g.res, ytop), dj = P(g.x0, ytop - g.res);
+  ctx.save(); ctx.imageSmoothingEnabled = false;
+  ctx.setTransform(dpr * (di[0] - o[0]), dpr * (di[1] - o[1]), dpr * (dj[0] - o[0]), dpr * (dj[1] - o[1]), dpr * o[0], dpr * o[1]);
+  ctx.drawImage(liveMapImage(), 0, 0); ctx.restore();
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  // grille métrique légère (repère : tous les mètres)
+  ctx.save(); ctx.lineCap = 'round';
+  if ($('lvShowVec').checked && LIVE.map.segs.length){
+    ctx.strokeStyle = 'rgba(77,163,255,.85)'; ctx.lineWidth = 2;
+    ctx.beginPath(); for (const f of LIVE.map.segs){ const a = P(f.x1, f.y1), b = P(f.x2, f.y2); ctx.moveTo(a[0], a[1]); ctx.lineTo(b[0], b[1]); } ctx.stroke();
+  }
+  // trajectoire
+  if ($('lvShowTrail').checked && LIVE.trail.length > 1){
+    ctx.lineWidth = 3; ctx.lineJoin = 'round';
+    for (let k = 1; k < LIVE.trail.length; k++){
+      const a = LIVE.trail[k - 1], b = LIVE.trail[k];
+      if (Math.hypot(a.x - b.x, a.y - b.y) > 1.5) continue;            // saut (relocalisation) : pas de trait
+      const u = k / LIVE.trail.length;
+      ctx.strokeStyle = `rgba(62,230,230,${0.15 + 0.7 * u})`;
+      const pa = P(a.x, a.y), pb = P(b.x, b.y); ctx.beginPath(); ctx.moveTo(pa[0], pa[1]); ctx.lineTo(pb[0], pb[1]); ctx.stroke();
+    }
+  }
+  const T = LIVE.tracker, cur = LIVE.cur, r = cur && cur.res;
+  const robotR = Math.max(9, (numVal('pRobotR') || 0.15) * X.k);
+  const drawRobot = (p, fill, stroke, alpha, dashed) => {
+    const [x, y] = P(p.x, p.y), a = p.th * D2R + X.phi;               // cap à l'écran
+    const ux = Math.cos(a), uy = -Math.sin(a);
+    ctx.save(); ctx.globalAlpha = alpha;
+    if (dashed) ctx.setLineDash([5, 4]);
+    ctx.fillStyle = fill; ctx.strokeStyle = stroke; ctx.lineWidth = 2.5;
+    ctx.beginPath(); ctx.arc(x, y, robotR, 0, 2 * Math.PI); ctx.fill(); ctx.stroke();
+    ctx.setLineDash([]);
+    const L = robotR * 1.9;
+    ctx.beginPath(); ctx.moveTo(x + ux * L, y + uy * L); ctx.lineTo(x - uy * robotR * 0.7 + ux * robotR * 0.2, y + ux * robotR * 0.7 + uy * robotR * 0.2);
+    ctx.lineTo(x + uy * robotR * 0.7 + ux * robotR * 0.2, y - ux * robotR * 0.7 + uy * robotR * 0.2); ctx.closePath();
+    ctx.fillStyle = stroke; ctx.fill(); ctx.restore();
+  };
+  // hypothèses (ambiguïté)
+  if ($('lvShowHyps').checked && T && T.hyps && T.hyps.length > 1)
+    for (const h of T.hyps.slice(1)) drawRobot(h, 'rgba(255,179,71,.18)', '#ffb347', 0.8, true);
+  // scan actuel, posé à la pose trouvée : vert s'il colle à la carte, rouge sinon (obstacle nouveau)
+  if ($('lvShowScan').checked && cur && T && T.pose){
+    const p = T.pose, c = Math.cos(p.th * D2R), s = Math.sin(p.th * D2R), F = LIVE.tracker.M.field;
+    for (const q of cur.local){
+      const wx = p.x + c * q.x - s * q.y, wy = p.y + s * q.x + c * q.y, d = LL.fieldSample(F, wx, wy)[0];
+      const [sx, sy] = P(wx, wy); ctx.fillStyle = d <= 0.1 ? '#4cd97b' : '#ff5c5c';
+      ctx.fillRect(sx - 1.6, sy - 1.6, 3.2, 3.2);
+    }
+  }
+  if (cur && cur.truth) drawRobot(cur.truth, 'rgba(255,255,255,0)', 'rgba(255,255,255,.75)', 0.9, true);
+  if (T && T.pose){
+    const col = LV_COL[T.status] || '#4da3ff';
+    drawRobot(T.pose, col + '44', col, 1, false);
+  }
+  // main : indication de la pose
+  if (LIVE.hintDrag){
+    const { a, b } = LIVE.hintDrag, pa = P(a[0], a[1]), pb = P(b[0], b[1]);
+    ctx.strokeStyle = '#ff6bd5'; ctx.lineWidth = 3; ctx.beginPath(); ctx.moveTo(pa[0], pa[1]); ctx.lineTo(pb[0], pb[1]); ctx.stroke();
+    ctx.beginPath(); ctx.arc(pa[0], pa[1], robotR, 0, 2 * Math.PI); ctx.stroke();
+  }
+  ctx.restore();
+  // boussole : direction de l'axe +y de la carte (« nord ») et +x
+  const cx0 = W - 46, cy0 = 46;
+  ctx.save(); ctx.translate(cx0, cy0);
+  ctx.fillStyle = 'rgba(15,18,22,.85)'; ctx.strokeStyle = '#2a323c'; ctx.lineWidth = 1; ctx.beginPath(); ctx.arc(0, 0, 32, 0, 2 * Math.PI); ctx.fill(); ctx.stroke();
+  const ny = [-Math.sin(X.phi), -Math.cos(X.phi)], ex = [Math.cos(X.phi), -Math.sin(X.phi)];
+  ctx.strokeStyle = '#ff5c5c'; ctx.lineWidth = 3; ctx.beginPath(); ctx.moveTo(0, 0); ctx.lineTo(ny[0] * 24, ny[1] * 24); ctx.stroke();
+  ctx.strokeStyle = '#9aa3ad'; ctx.lineWidth = 2; ctx.beginPath(); ctx.moveTo(0, 0); ctx.lineTo(ex[0] * 18, ex[1] * 18); ctx.stroke();
+  ctx.fillStyle = '#ff5c5c'; ctx.font = '700 11px system-ui'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.fillText('y', ny[0] * 30 * 0.92 + 0, ny[1] * 30 * 0.92); ctx.fillStyle = '#9aa3ad'; ctx.fillText('x', ex[0] * 26, ex[1] * 26);
+  ctx.restore();
+  // échelle
+  const m = [0.5, 1, 2, 5, 10].find(v => v * X.k >= 60) || 10;
+  ctx.save(); ctx.strokeStyle = '#d6dee8'; ctx.fillStyle = '#d6dee8'; ctx.lineWidth = 2; ctx.font = '12px system-ui';
+  ctx.beginPath(); ctx.moveTo(16, H - 22); ctx.lineTo(16 + m * X.k, H - 22); ctx.moveTo(16, H - 27); ctx.lineTo(16, H - 17); ctx.moveTo(16 + m * X.k, H - 27); ctx.lineTo(16 + m * X.k, H - 17); ctx.stroke();
+  ctx.fillText(m + ' m', 20 + m * X.k, H - 18); ctx.restore();
+  // bandeau d'état
+  if (r || LIVE.running){
+    const st = T ? T.status : '…', col = LV_COL[st] || '#9aa3ad';
+    const line1 = r ? `${st}` : 'en attente du premier scan…';
+    const line2 = r ? `${(r.inliers * 100).toFixed(0)} % du scan sur la carte · ${r.mode} · ${r.ms.toFixed(0)} ms` : '';
+    ctx.save(); ctx.fillStyle = 'rgba(15,18,22,.88)'; ctx.strokeStyle = col; ctx.lineWidth = 2;
+    const w = 330, hh = r ? 52 : 34; ctx.beginPath(); ctx.roundRect ? ctx.roundRect(14, 14, w, hh, 8) : ctx.rect(14, 14, w, hh); ctx.fill(); ctx.stroke();
+    ctx.fillStyle = col; ctx.font = '700 15px system-ui'; ctx.fillText('● ' + line1, 26, 36);
+    ctx.fillStyle = '#c7cfd8'; ctx.font = '12px system-ui'; ctx.fillText(line2, 26, 55); ctx.restore();
+  }
+}
+// --- interactions
+function liveSetView(v){
+  if (v === 'free'){ const X = liveXf(); LIVE.free = { x: X.x, y: X.y, phi: X.phi }; }
+  LIVE.view = v; liveViewButtons(); draw();
+}
+function liveViewButtons(){ $('lvViewHead').classList.toggle('on', LIVE.view === 'head'); $('lvViewNorth').classList.toggle('on', LIVE.view === 'north'); $('lvViewFree').classList.toggle('on', LIVE.view === 'free'); $('lvHint').classList.toggle('on', LIVE.hint); }
+function liveWheel(e){
+  const f = (e.deltaY || e.deltaX) < 0 ? 1.15 : 1 / 1.15;
+  LIVE.zoom = Math.max(4, Math.min(600, LIVE.zoom * f)); draw();
+}
+function livePointerDown(e, mx, my){
+  if (!LIVE.map) return;
+  const X = liveXf(), w = lvS2W(X, mx, my);
+  if (LIVE.hint && e.button === 0){ LIVE.hintDrag = { a: w, b: w }; draw(); return; }
+  if (LIVE.view !== 'free') liveSetView('free');
+  LIVE.drag = { m0: [mx, my], f0: { ...LIVE.free } };
+}
+function livePointerMove(mx, my){
+  if (!LIVE.map) return true;
+  const X = liveXf(), [wx, wy] = lvS2W(X, mx, my);
+  $('hud').textContent = `x ${wx.toFixed(2)} m   y ${wy.toFixed(2)} m   ·   ${LIVE.view === 'head' ? 'cap en haut' : LIVE.view === 'north' ? 'nord en haut' : 'vue libre'}   ·   zoom ${(100 / LIVE.zoom * 100).toFixed(0)} cm / 100 px`;
+  if (LIVE.hintDrag){ LIVE.hintDrag.b = [wx, wy]; draw(); return true; }
+  if (LIVE.drag){
+    const d = LIVE.drag, F = d.f0, c = Math.cos(-F.phi), s = Math.sin(-F.phi);
+    const u = -(mx - d.m0[0]) / LIVE.zoom, v = (my - d.m0[1]) / LIVE.zoom;
+    LIVE.free = { x: F.x + c * u - s * v, y: F.y + s * u + c * v, phi: F.phi }; draw();
+  }
+  return true;
+}
+function livePointerUp(){
+  if (LIVE.hintDrag){
+    const { a, b } = LIVE.hintDrag; LIVE.hintDrag = null; LIVE.hint = false; liveViewButtons();
+    const th = Math.hypot(b[0] - a[0], b[1] - a[1]) > 0.05 ? Math.atan2(b[1] - a[1], b[0] - a[0]) * R2D : 0;
+    if (!LIVE.tracker) liveReset(false);
+    // pose donnée à la main : le prochain scan part de là (recherche locale élargie, comme le « 2D Pose Estimate » de ROS)
+    Object.assign(LIVE.tracker, { pose: { x: a[0], y: a[1], th }, hyps: null, lost: 0, status: 'incertain' });
+    LIVE.tracker.o.track = { rxy: 0.6, rth: 35 };
+    LIVE.handHint = true;
+    toast(`Position indiquée : (${a[0].toFixed(2)} ; ${a[1].toFixed(2)}) m, ${th.toFixed(0)}° — le prochain scan s’y recale`);
+    if (!LIVE.running && LIVE.cur) liveRelocalizeCurrent();
+    liveSetView(LIVE.view === 'free' ? 'head' : LIVE.view);
+  }
+  LIVE.drag = null;
+}
+// relance la localisation sur le dernier scan reçu (après une indication à la main)
+function liveRelocalizeCurrent(){
+  const cur = LIVE.cur; if (!cur) return;
+  const pts = LL.uniformSubsample(cur.local, { max: 350 });
+  const r = LL.trackerUpdate(LIVE.tracker, pts, null), T = LIVE.tracker; LIVE.cur.res = r;
+  T.o.track = undefined;
+  if (T.pose) LIVE.trail.push({ x: T.pose.x, y: T.pose.y, th: T.pose.th, inliers: r.inliers, mode: r.mode, status: r.status, ms: r.ms, t: Date.now(),
+                                err: cur.truth ? LL.poseError(T.pose, cur.truth) : null });
+  liveState(); draw();
+}
+// --- boutons
+$('lvSrc').onchange = () => { $('lvFileRow').style.display = $('lvSrc').value === 'file' ? '' : 'none'; };
+$('lvFeed').onchange = () => { $('lvLOORow').style.display = $('lvFeed').value === 'replay' ? '' : 'none'; $('lvKidnap').style.display = $('lvFeed').value === 'sim' ? '' : 'none'; };
+$('lvFeed').onchange();
+$('lvPrep').onclick = () => { liveStop(true); LIVE.trail = []; livePrepare(); };
+$('lvGridFile').onchange = async e => {
+  const f = e.target.files[0]; e.target.value = ''; if (!f) return;
+  try { LIVE.fileGrid = LC.gridFromJSON(JSON.parse(await f.text())); toast('Grid map chargée : ' + f.name); } catch (err){ toast('Grid map illisible : ' + err.message); }
+};
+$('lvVecFile').onchange = async e => {
+  const f = e.target.files[0]; e.target.value = ''; if (!f) return;
+  try { LIVE.fileVec = LC.vectorMapFromText(await f.text()); toast(`Carte vectorielle chargée : ${LIVE.fileVec.features.length} segments`); } catch (err){ toast('Carte vectorielle illisible : ' + err.message); }
+};
+$('lvStart').onclick = liveStart;
+$('lvStop').onclick = () => liveStop();
+$('lvOnce').onclick = () => {
+  if (!LIVE.map && !livePrepare()) return;
+  LIVE.feed = $('lvFeed').value;
+  if (LIVE.feed === 'robot'){ if (!isConnected()) return toast('Robot non connecté'); LIVE.running = true; LIVE.onceStop = true; if (!SER.live){ $('live').checked = true; $('live').onchange({ target: $('live') }); } return; }
+  if (LIVE.feed === 'sim' && !LIVE.sim){ $('lvSrc').value = 'sim'; livePrepare(); LIVE.simIdx = 0; }
+  if (LIVE.feed === 'replay' && (!LIVE.replay.list || !LIVE.replay.list.length)) LIVE.replay = { i: 0, list: S.scans.filter(s => s.visible) };
+  liveStep(); if (LIVE.view === 'free' && LIVE.tracker && LIVE.tracker.pose) liveSetView('head');
+};
+$('lvKidnap').onclick = () => {
+  if (!LIVE.sim) return toast('Démarre d’abord le robot simulé');
+  LIVE.simIdx += Math.floor(LIVE.sim.path.length / 2); LIVE.kidnapped = true;
+  toast('Robot déplacé à la main (sans commande) : il doit se rendre compte qu’il est perdu et se relocaliser');
+};
+$('lvGlobal').onclick = () => { if (!LIVE.map) return toast('Prépare d’abord la carte'); Object.assign(LIVE.tracker, { pose: null, hyps: null, status: 'non localisé' }); if (!LIVE.running && LIVE.cur) liveRelocalizeCurrent(); else liveState(); toast('Recherche sur toute la carte au prochain scan'); };
+$('lvHint').onclick = () => { if (!LIVE.map) return toast('Prépare d’abord la carte'); LIVE.hint = !LIVE.hint; liveViewButtons(); };
+$('lvViewHead').onclick = () => liveSetView('head');
+$('lvViewNorth').onclick = () => liveSetView('north');
+$('lvViewFree').onclick = () => liveSetView('free');
+['lvShowScan', 'lvShowTrail', 'lvShowHyps', 'lvShowVec'].forEach(id => $(id).onchange = draw);
+$('lvClear').onclick = () => { LIVE.trail = []; draw(); };
+$('lvExport').onclick = () => {
+  if (!LIVE.trail.length) return toast('Trajectoire vide');
+  let s = 'n,temps_ms,x_m,y_m,cap_deg,points_sur_carte,mode,etat,calcul_ms,erreur_pos_m,erreur_ang_deg\n';
+  const t0 = LIVE.trail[0].t;
+  LIVE.trail.forEach((t, k) => s += [k + 1, t.t - t0, t.x.toFixed(4), t.y.toFixed(4), t.th.toFixed(2), t.inliers.toFixed(3), t.mode, t.status, t.ms.toFixed(1),
+    t.err ? t.err.pos.toFixed(4) : '', t.err ? t.err.ang.toFixed(3) : ''].join(',') + '\n');
+  download('trajectoire_robot.csv', s, 'text/csv');
+};
+document.querySelectorAll('#lvPad [data-mv]').forEach(b => b.onclick = () => { if (!SER.wifi) return toast('Pilotage : robot connecté en WiFi'); drive(b.dataset.mv); });
+$('lvPadStop').onclick = robotStop;
+liveViewButtons();
