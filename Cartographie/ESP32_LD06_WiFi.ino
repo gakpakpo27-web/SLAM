@@ -206,11 +206,14 @@ void handleSerial() {
 // SETUP
 // ============================================================
 void setup() {
+  // Moteurs arrêtés AVANT tout le reste : à la mise sous tension, la carte moteur n'a encore reçu aucun ordre
+  // et les roues peuvent tourner toutes seules. On répète l'ordre pendant ~1 s, le temps que tout soit alimenté.
+  mecanumCar.Stop();
   Serial.begin(PC_BAUD);
-  delay(200);
+  for (int k = 0; k < 10; k++) { mecanumCar.Stop(); delay(20); }
 
   motorMutex = xSemaphoreCreateMutex();
-  if (!motorMutex) { while (true) delay(1000); }
+  if (!motorMutex) { while (true) { mecanumCar.Stop(); delay(1000); } }
   stopRobot();
 
   // LIDAR UART (buffer plus grand que dans le firmware du cours : l'envoi USB est bloquant)
@@ -300,6 +303,13 @@ void loop() {
   if (moving && (uint32_t)(millis() - moveStarted) >= moveDuration) {
     mecanumCar.Stop();
     moving = false;
+  }
+  // Sécurité : sans mouvement demandé, l'ordre d'arrêt est rappelé toutes les 300 ms
+  // (carte moteur réveillée dans un mauvais état, ordre perdu, parasite au démarrage).
+  static uint32_t lastStopRefresh = 0;
+  if (!moving && (uint32_t)(millis() - lastStopRefresh) >= 300) {
+    lastStopRefresh = millis();
+    mecanumCar.Stop();
   }
   xSemaphoreGive(motorMutex);
 }

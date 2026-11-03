@@ -4,7 +4,7 @@
 
 | Fichier | Rôle |
 |---|---|
-| `ESP32_LD06_WiFi.ino` | Firmware WiFi + USB : partie WiFi reprise du firmware du cours `ESP32RobotControl.ino` (réseau RobotESP32, mêmes routes), plus les commandes USB de capture |
+| `ESP32_LD06_WiFi.ino` | Firmware WiFi + USB : firmware du cours (réseau RobotESP32, mêmes routes) dans sa version avec interface web (`http://192.168.4.1/`), **verrou moteurs** (`/arm`, `/disarm`, `/status`), trajectoires (`/traj`) et moteurs arrêtés dès le démarrage, plus les commandes USB de capture |
 | `ESP32_LD06_Capture.ino` | Firmware ESP32 : envoie un scan 360° en CSV **sur demande** par USB |
 | `lidar_core.js` | Bibliothèque de calcul : grid map (Bresenham, mise à jour, export), segments (extraction, angle, proximité, fusion, intersection, découpe) et carte vectorielle |
 | `lidar_loc.js` | Jour 2 : localisation (grid map, carte vectorielle, entre scans), simulateur et banc d'évaluation |
@@ -44,6 +44,10 @@ angle_deg,distance_mm,intensite      (une ligne par point, distances nulles excl
 Autres commandes : `1`…`9` (N tours), `c` (flux continu), `t` (Teleplot temps réel), `x` (stop).
 
 ### Connexion WiFi (méthode du cours, RobotControl)
+**Moteurs verrouillés au démarrage** (sécurité du firmware) : tant qu'ils ne sont pas autorisés, les commandes de
+mouvement sont refusées (`403 LOCKED`). Dans `lidar_viewer.html`, cliquer **« Autoriser »** au-dessus des flèches de
+pilotage (ou dans l'onglet Robot en direct) ; ils se reverrouillent seuls après 2 min sans mouvement.
+
 Deux firmwares possibles, avec les mêmes routes WiFi :
 - `ESP32_LD06_WiFi.ino` (ce projet) : la partie WiFi du firmware du cours, plus les commandes USB de capture.
 - `ESP32RobotControl.ino` (ressources du module, `Tools/RobotControl/ESP32RobotControl/`).

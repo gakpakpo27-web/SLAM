@@ -1048,6 +1048,23 @@
     return out({ inliers: inl, keyframe });
   }
 
+  /**
+   * Contrôle global : le scan courant est localisé sur toute la carte, exactement comme l'outil « retrouver la
+   * position ». Si le résultat est « sûr » et diffère du suivi (> distXY ou > distTh), il l'emporte : le suivi
+   * s'était accroché à une mauvaise position (robot poussé à la main, sans commande, tourné trop vite...).
+   * Renvoie { checked: true, replaced, g }.
+   */
+  function trackerCheckGlobal(T, pts, opt = {}) {
+    const o = { distXY: 0.3, distTh: 15, cur: 0, margin: 0.02, ...opt };
+    const g = globalLocalize(T.M, pts, T.o.global);
+    let replaced = false;
+    // o.cur : part des points du scan sur la carte à la pose suivie ; la position globale doit faire au moins aussi bien
+    if (g.confidence === 'sûr' && g.inliers >= o.cur - o.margin && (!T.pose || distinctPose(g.pose, T.pose, o.distXY, o.distTh))) {
+      T.pose = { ...g.pose }; T.hyps = null; T.lost = 0; T.status = 'relocalisé'; T.win.length = 0; T.ref = g.inliers;
+      replaced = true;
+    }
+    return { checked: true, replaced, g };
+  }
   /** Démo simulée : la salle du simulateur, une carte faite de 9 scans (comme au Jour 1) et un trajet
    *  du robot (pas de `step` m, rotations en place), avec la vérité à chaque pas. */
   function demoScenario(seed = 3, opt = {}) {
@@ -1076,7 +1093,7 @@
     pointIndex, scanICPPoint, scanICPLine, scanCorrelative,
     buildReferences, runLocBench, summarize, benchToCSV, benchToMarkdown, METHODS, REF_LABEL,
     structurePoints, structureGrid, seeThrough, scanStepOk,
-    createMapper, mapperUpdate, mapperCommit, inlierKnown,
+    createMapper, mapperUpdate, mapperCommit, inlierKnown, trackerCheckGlobal,
     prepareMap, inlierRatio, globalLocalize, locateScan, trackStep, createTracker, trackerUpdate, demoScenario
   };
 });

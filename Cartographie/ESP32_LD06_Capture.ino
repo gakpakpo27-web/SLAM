@@ -19,6 +19,11 @@
 // ============================================================================
 
 #include "ld06.h"
+// Mettre 0 si la carte moteur n'est pas montée (ou la bibliothèque MecanumCar_v2 pas installée)
+#define STOP_MOTORS 1
+#if STOP_MOTORS
+#include "MecanumCar_v2.h"   // seulement pour garder les moteurs ARRÊTÉS (ce firmware ne fait pas rouler le robot)
+#endif
 
 #define RX_LIDAR      33
 #define TX_LIDAR      -1          // TX non utilisé
@@ -27,6 +32,9 @@
 #define PC_BAUD       115200      // 921600 possible : ~8x plus rapide (adapter --baud côté Python)
 
 LD06 ld06(Serial2, LD06_PWM_PIN);
+#if STOP_MOTORS
+mecanumCar mecanumCar(19, 21);   // mêmes broches que le firmware du cours
+#endif
 
 enum Mode { MODE_IDLE, MODE_STREAM_CSV, MODE_TELEPLOT };
 Mode     mode        = MODE_IDLE;
@@ -75,6 +83,11 @@ void handleCommands() {
 
 // ----------------------------------------------------------------------------
 void setup() {
+#if STOP_MOTORS
+  // Sans ordre, la carte moteur peut faire tourner les roues dès la mise sous tension : arrêt immédiat, répété ~1 s
+  mecanumCar.Stop();
+  for (int k = 0; k < 10; k++) { mecanumCar.Stop(); delay(20); }
+#endif
   Serial.begin(PC_BAUD);
 
   Serial2.setRxBufferSize(4096);
@@ -93,6 +106,10 @@ void setup() {
 
 void loop() {
   handleCommands();
+#if STOP_MOTORS
+  static uint32_t lastStop = 0;                  // rappel de l'arrêt toutes les 300 ms (sécurité)
+  if (millis() - lastStop >= 300) { lastStop = millis(); mecanumCar.Stop(); }
+#endif
 
   if (ld06.readScan()) {                 // true quand un tour complet est prêt
     if (skipNext) { skipNext = false; return; }

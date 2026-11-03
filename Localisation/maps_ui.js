@@ -1081,6 +1081,14 @@ function lvRaw(s){                         // scan brut avec la convention d'ang
   return { name: s.name, a, d: s.d, i: s.i, pose: s.pose ? { ...s.pose } : null, id: s.id };
 }
 // --- carte de référence
+// clé de la carte : change dès qu'un scan visible est ajouté, masqué ou déplacé, ou que la convention d'angle change
+function liveMapKey(){
+  const src = $('lvSrc').value;
+  if (src !== 'scans') return src + ':' + (src === 'proc' || src === 'plan' ? (PROC.res ? PROC.res.t || PROC.res.grid.W + 'x' + PROC.res.grid.H : '') : '');
+  return 'scans:' + (S.opt.mirror ? 'm' : '') + (S.opt.aOff || 0) + ':' + S.scans.filter(s => s.visible)
+    .map(s => s.id + '@' + (s.pose ? s.pose.x.toFixed(3) + ',' + s.pose.y.toFixed(3) + ',' + s.pose.th.toFixed(2) : '-')).join(';');
+}
+function liveMapStale(){ return LIVE.map && $('lvSrc').value !== 'sim' && LIVE.mapKey !== liveMapKey(); }
 function livePrepare(silent){
   const src = $('lvSrc').value, t0 = performance.now();
   let grid = null, segs = null, label = '';
@@ -1100,7 +1108,7 @@ function livePrepare(silent){
     } else {
       LIVE.sim = LL.demoScenario(3); grid = LIVE.sim.refs.grid; segs = LIVE.sim.refs.vmap.features; label = 'salle simulée (9 scans)';
     }
-    LIVE.map = LL.prepareMap(grid, segs); LIVE.map.label = label; LIVE.mapImg = null; LIVE.looCache.clear();
+    LIVE.map = LL.prepareMap(grid, segs); LIVE.map.label = label; LIVE.mapImg = null; LIVE.looCache.clear(); LIVE.mapKey = liveMapKey();
     liveCorrReset(true);
     liveReset(false);
     const st = LC.gridStats(grid);
@@ -1138,11 +1146,24 @@ function liveFeedScan(b, truth){
       }
       LIVE.tracker.M = M;
     } else if (LIVE.tracker) LIVE.tracker.M = LIVE.map;
-    const local = LL.localPoints(raw), pts = LL.uniformSubsample(local, { max: 350 });
+    let local = LL.localPoints(raw);
+    if (LIVE.flipLive && LIVE.feed === 'robot') local = local.map(q => ({ ...q, y: -q.y }));
+    const pts = LL.uniformSubsample(local, { max: 350 });
     const motion = $('lvOdom').checked ? LIVE.motion : null; LIVE.motion = null;
     const r = LL.trackerUpdate(LIVE.tracker, pts, motion, local);
     LIVE.stats.n++; if (r.mode === 'global') LIVE.stats.global++; if (r.mode === 'relocalisation') LIVE.stats.reloc++;
     const T = LIVE.tracker;
+    // contrôle global : le scan est aussi cherché sur TOUTE la carte, exactement comme l'outil « Retrouver la position ».
+    // Si l'outil trouve une position « sûre » ailleurs, elle l'emporte : le suivi s'était accroché à une mauvaise place
+    // (robot poussé à la main sans commande, départ « base » faux, faux départ au milieu des pieds de chaises...).
+    const every = numVal('lvCheckEvery') * 1000;
+    if ($('lvCheck').checked && r.mode !== 'global' && !(LIVE.tracker.M !== LIVE.map) && Date.now() - (LIVE.lastCheck || 0) >= every){
+      LIVE.lastCheck = Date.now();
+      const c = LL.trackerCheckGlobal(T, pts, { cur: r.inliers });
+      LIVE.check = { g: c.g, replaced: c.replaced, t: Date.now(), tracked: c.replaced ? null : (T.pose && { ...T.pose }) };
+      if (!(LIVE.mir && LIVE.mir.ok) && !LIVE.mirrorHint && (!LIVE.mir || LIVE.mir.n < 10)) liveMirrorTest(local, c.g);
+      if (c.replaced){ LIVE.stats.fixed = (LIVE.stats.fixed || 0) + 1; r.status = 'relocalisé'; r.mode = 'corrigé par le contrôle global'; r.inliers = c.g.inliers; }
+    }
     LIVE.cur = { local, res: r, truth: truth || null, t: Date.now() };
     if ($('lvLearn').checked && LIVE.corr && T.pose && (r.status === 'localisé' || r.status === 'relocalisé') && !(T.hyps && T.hyps.length > 1)){
       LM.correctorAdd(LIVE.corr, T.pose, local);
@@ -1190,18 +1211,34 @@ function liveState(){
   if (r.mode === 'relocalisation à confirmer') h += `<br><span style="color:#ffb347">Une autre position est possible : le robot ne saute pas, il garde les deux et laisse son déplacement trancher.</span>`;
   if (r.status === 'ambigu' && T.hyps) h += `<br><span style="color:#ffb347">${T.hyps.length} positions possibles : déplacer le robot pour lever le doute, ou l’indiquer à la main.</span>`;
   if (tr && p){ const e = LL.poseError(p, tr); h += `<br>écart à la vraie pose : <b style="color:${e.pos <= 0.05 && e.ang <= 2 ? '#4cd97b' : '#ff6b6b'}">${(e.pos * 100).toFixed(1)} cm, ${e.ang.toFixed(2)}°</b>`; }
+  const ck = LIVE.check;
+  if (ck && Date.now() - ck.t < 15000){
+    const g = ck.g, gc = { 'sûr': '#4cd97b', 'ambigu': '#ffb347', 'incertain': '#ff6b6b' }[g.confidence] || '#ccc';
+    h += `<br><span class="help">Contrôle global (comme l’outil) : (${g.pose.x.toFixed(2)} ; ${g.pose.y.toFixed(2)}) m, ${g.pose.th.toFixed(0)}° · <b style="color:${gc}">${g.confidence}</b> · ${(g.inliers * 100).toFixed(0)} %`;
+    if (ck.replaced) h += ` · <b style="color:#4cd97b">a corrigé le suivi</b>`;
+    else if (p){ const e = LL.poseError(p, g.pose); h += ` · écart au suivi ${(e.pos * 100).toFixed(0)} cm, ${e.ang.toFixed(0)}°`; }
+    h += '</span>';
+  }
+  if (LIVE.mirrorHint) h += `<br><b style="color:#ff6b6b">Le scan direct semble en MIROIR par rapport à la carte</b> : retourné, il colle à ${(LIVE.mirrorHint.r1.inliers * 100).toFixed(0)} % ` +
+    `au lieu de ${(LIVE.mirrorHint.r0.inliers * 100).toFixed(0)} % (moyenne sur ${LIVE.mirrorHint.n} scan${LIVE.mirrorHint.n > 1 ? 's' : ''}). Les scans de la carte et ceux du robot n’ont pas le même sens de rotation ` +
+    `(scans importés de Teleplot, autre firmware...). <button id="lvMirFix">Corriger</button>`;
+  else if (LIVE.mir && LIVE.mir.ok) h += `<br><span class="help">Convention d’angle vérifiée : scans directs et carte dans le même sens (${(LIVE.mir.s0 / LIVE.mir.n * 100).toFixed(0)} % contre ${(LIVE.mir.s1 / LIVE.mir.n * 100).toFixed(0)} % retourné, ${LIVE.mir.n} scans) ✓</span>`;
   const okN = LIVE.trail.filter(t => t.err).length ? LIVE.trail.filter(t => t.err && t.err.pos <= 0.05 && t.err.ang <= 2).length : null;
-  h += `<br><span class="help">${LIVE.stats.n} scans · ${LIVE.stats.global} recherches globales · ${LIVE.stats.reloc} relocalisations` +
+  h += `<br><span class="help">${LIVE.stats.n} scans · ${LIVE.stats.global} recherches globales · ${LIVE.stats.reloc} relocalisations` + (LIVE.stats.fixed ? ` · ${LIVE.stats.fixed} corrections globales` : '') +
        (okN !== null ? ` · justes ${okN}/${LIVE.trail.filter(t => t.err).length}` : '') + '</span>';
   el.innerHTML = h;
+  const mf = $('lvMirFix'); if (mf) mf.onclick = () => { LIVE.flipLive = !LIVE.flipLive; LIVE.mirrorHint = null; LIVE.mir = null;
+    toast(LIVE.flipLive ? 'Scans directs retournés pour coller à la carte' : 'Scans directs non retournés');
+    if (LIVE.cur){ LIVE.cur.local = LIVE.cur.local.map(q => ({ ...q, y: -q.y })); $('lvLocate').click(); } };
 }
 // --- sources de scans
 function liveStart(){
   const feed = LIVE.feed = $('lvFeed').value;
   // le robot simulé roule dans la salle simulée : c'est sa carte
   if (feed === 'sim' && ($('lvSrc').value !== 'sim' || !LIVE.sim || !LIVE.map)){ $('lvSrc').value = 'sim'; $('lvSrc').onchange(); if (!livePrepare()) return; toast('Carte : salle simulée'); }
+  if (liveMapStale()){ livePrepare(true); toast('Carte reconstruite : des scans ont été ajoutés, masqués ou déplacés depuis sa préparation'); }
   if (!LIVE.map && !livePrepare()) return;
-  liveStop(true); liveReset(true); LIVE.running = true; liveViewButtons();
+  liveStop(true); liveReset(true); LIVE.running = true; LIVE.lastCheck = 0; LIVE.check = null; LIVE.mir = null; liveViewButtons();
   if (feed === 'robot'){
     if (!isConnected()){ LIVE.running = false; return toast('Connecte d’abord le robot (onglet Scans, USB ou WiFi)'); }
     if (!SER.live){ $('live').checked = true; $('live').onchange({ target: $('live') }); }
@@ -1474,6 +1511,47 @@ $('lvKidnap').onclick = () => {
   toast('Robot déplacé à la main (sans commande) : il doit se rendre compte qu’il est perdu et se relocaliser');
 };
 $('lvGlobal').onclick = () => { if (!LIVE.map) return toast('Prépare d’abord la carte'); Object.assign(LIVE.tracker, { pose: null, hyps: null, status: 'non localisé' }); if (!LIVE.running && LIVE.cur) liveRelocalizeCurrent(); else liveState(); toast('Recherche sur toute la carte au prochain scan'); };
+$('lvBase').onclick = () => {
+  if (!LIVE.map && !livePrepare()) return;
+  if (!LIVE.tracker) liveReset(false);
+  // départ connu : la base = origine de la cartographie automatique (premier scan) ; recherche locale élargie au 1er scan
+  Object.assign(LIVE.tracker, { pose: { x: 0, y: 0, th: 0 }, hyps: null, lost: 0, status: 'incertain' });
+  LIVE.tracker.o.track = { rxy: 0.6, rth: 35 }; LIVE.handHint = true;
+  if (!LIVE.running && LIVE.cur) liveRelocalizeCurrent();
+  liveSetView(LIVE.view === 'free' ? 'head' : LIVE.view);
+  toast('Départ sur la base (0 ; 0, cap 0°) : le prochain scan s’y recale, puis le robot se suit');
+};
+// Le scan direct est-il dans la même convention que la carte ? Un décalage d'angle ne gêne pas la recherche globale
+// (elle essaie toutes les orientations), mais un MIROIR (sens de rotation inversé, ex. scans importés de Teleplot,
+// autre firmware) rend le scan impossible à superposer. On essaie donc aussi le scan retourné.
+// Sur un seul scan, le test est peu tranché (un scan retourné peut même sortir « sûr », mais au mauvais endroit) :
+// on cumule sur plusieurs scans. Sur les 14 scans réels : 59 % de points sur la carte en moyenne dans le bon sens,
+// 42 % retourné. Décision quand l'écart moyen dépasse 5 points sur au moins 3 scans.
+function liveMirrorTest(local, r0){
+  const mir = local.map(q => ({ ...q, y: -q.y })), r1 = LL.locateScan(LIVE.map, mir);
+  const m = LIVE.mir || (LIVE.mir = { n: 0, s0: 0, s1: 0 });
+  m.n++; m.s0 += r0.inliers; m.s1 += r1.inliers;
+  const d = (m.s1 - m.s0) / m.n;
+  LIVE.mirrorHint = (m.n >= 3 && d > 0.05) || r1.inliers >= r0.inliers + 0.15 ? { r0: { inliers: m.s0 / m.n }, r1: { inliers: m.s1 / m.n, confidence: r1.confidence }, n: m.n, t: Date.now() } : null;
+  m.ok = m.n >= 3 && d < -0.05;                     // convention confirmée : on arrête de tester
+  return !!LIVE.mirrorHint;
+}
+$('lvLocate').onclick = () => {
+  if (liveMapStale()){ livePrepare(); toast('Carte reconstruite : les scans avaient changé'); }
+  if (!LIVE.map) return toast('Prépare d’abord la carte');
+  const L = LIVE.cur ? LIVE.cur.local : (SER.liveScan ? LL.localPoints(lvRaw(SER.liveScan)) : null);
+  if (!L) return toast('Aucun scan reçu : démarre le direct ou coche « Aperçu direct »');
+  if (!LIVE.tracker) liveReset(false);
+  const r = LL.locateScan(LIVE.map, L), T = LIVE.tracker;
+  if (!(LIVE.mir && LIVE.mir.ok)) liveMirrorTest(L, r);
+  Object.assign(T, { pose: { ...r.pose }, hyps: null, lost: 0, status: r.confidence === 'sûr' ? 'relocalisé' : r.confidence, ref: r.inliers }); T.win.length = 0;
+  LIVE.check = { g: r, replaced: true, t: Date.now() };
+  const res = { status: T.status, mode: 'outil « retrouver la position »', inliers: r.inliers, ms: r.msTotal, nScans: 1 };
+  LIVE.cur = { ...(LIVE.cur || {}), local: L, res, t: Date.now() };
+  LIVE.trail.push({ x: r.pose.x, y: r.pose.y, th: r.pose.th, inliers: r.inliers, mode: res.mode, status: res.status, ms: r.msTotal, t: Date.now(), err: null });
+  liveSetView(LIVE.view === 'free' ? 'head' : LIVE.view); liveState(); draw();
+  toast(`Scan localisé comme dans l’outil : (${r.pose.x.toFixed(2)} ; ${r.pose.y.toFixed(2)}) m, ${r.pose.th.toFixed(0)}° — ${r.confidence}, ±${(r.sigma.xy * 100).toFixed(1)} cm`);
+};
 $('lvHint').onclick = () => { if (!LIVE.map) return toast('Prépare d’abord la carte'); LIVE.hint = !LIVE.hint; liveViewButtons(); };
 $('lvViewHead').onclick = () => liveSetView('head');
 $('lvViewNorth').onclick = () => liveSetView('north');
