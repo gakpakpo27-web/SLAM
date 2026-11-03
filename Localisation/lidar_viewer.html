@@ -244,6 +244,7 @@
       <label for="gModel">Modèle des cellules</label><select id="gModel"><option value="proba">probabiliste (uint8)</option><option value="binary">binaire</option></select>
       <label for="gFree">Libre : décrément par scan</label><input type="number" id="gFree" value="45" step="5" min="1" max="127">
       <label for="gOcc">Impact : incrément par scan</label><input type="number" id="gOcc" value="70" step="5" min="1" max="128">
+      <label for="gOccFree" title="Un faisceau rasant ou une pose décalée de 1–2 cm traverse souvent la cellule d'un mur vu par un autre scan : une cellule déjà occupée ne perd que cette valeur (45 = comme une cellule libre). Plus petit = murs plus continus.">Cellule déjà occupée traversée : décrément</label><input type="number" id="gOccFree" value="15" step="5" min="1" max="127">
     </div>
     <label class="chk"><input type="checkbox" id="gExpand" checked> Agrandir la carte si le scan dépasse</label>
     <label class="chk" title="Loin du robot, deux faisceaux voisins sont écartés de plus d'une cellule : sans ce remplissage, des stries de cellules inconnues apparaissent"><input type="checkbox" id="gFill" checked> Remplir entre deux faisceaux voisins (évite les stries)</label>
@@ -466,6 +467,16 @@
     </div>
     <label class="chk" title="Murs ramenés aux directions dominantes, segments d'un même mur alignés et fusionnés, coins raccordés, dépassements rognés"><input type="checkbox" id="pReg" checked> Régulariser la carte vectorielle</label>
     <div class="frm"><label for="pSnap">Redresser si l’écart aux axes de la salle ≤ (°)</label><input type="number" id="pSnap" value="6" step="1" min="0" max="20"></div>
+    <label class="chk" title="Les cellules de mur bruitées (épaisses, pointillées) à moins de 10 cm d'un mur de la carte vectorielle sont effacées, puis le mur est tracé en trait continu"><input type="checkbox" id="pSharp" checked> Murs nets : redessiner les murs (≥ 50 cm) de la carte vectorielle dans la grid map</label>
+    <h2>Plan de la salle (contours seuls, obstacles supprimés)</h2>
+    <label class="chk" title="Contour de la salle détecté automatiquement et redessiné proprement (côtés sur les axes de la salle, coins exacts) ; chaises, pieds, sacs, personnes effacés ; grands meubles fixes gardés en rectangles"><input type="checkbox" id="pPlan" checked> Construire le plan de la salle</label>
+    <div class="frm">
+      <label for="pObjMax" title="Tache d'obstacle plus petite : effacée (chaise, pied, sac, personne). Plus grande et loin des murs : meuble gardé en rectangle.">Effacer les obstacles plus petits que (m)</label><input type="number" id="pObjMax" value="1.0" step="0.1" min="0.1">
+      <label for="pLeak" title="Le lidar voit par les portes ouvertes et les fentes : ces zones sont coupées si l'ouverture est plus étroite">Couper les ouvertures plus étroites que (m)</label><input type="number" id="pLeak" value="0.9" step="0.1" min="0">
+      <label for="pNotch" title="Creux du contour plus étroits : bouchés (objets contre les murs)">Boucher les creux du contour plus étroits que (m)</label><input type="number" id="pNotch" value="0.6" step="0.1" min="0">
+    </div>
+    <div class="row"><button id="pPlanRedo" title="Après des retouches à la gomme sur la grid map traitée">Recalculer le plan</button><button id="pPlanSend">Envoyer le plan → Grid map et Vectorielle</button></div>
+
     <h2>5 · Carte de coût (navigation)</h2>
     <div class="frm">
       <label for="pRobotR">Rayon du robot (m)</label><input type="number" id="pRobotR" value="0.15" step="0.01" min="0.05">
@@ -485,6 +496,7 @@
 
     <h2>Affichage</h2>
     <div class="frm"><label for="pLayer">Couche</label><select id="pLayer">
+      <option value="plan">Plan de la salle (contours, sans obstacles)</option>
       <option value="clean">Grid map traitée</option><option value="raw">Grid map brute</option>
       <option value="diff">Différences (rouge retiré, vert ajouté, violet mobile)</option>
       <option value="persist">Persistance (impacts ÷ observations)</option>
@@ -521,6 +533,7 @@
       <button id="pExpPgm">Grid map traitée (PGM + YAML)</button><button id="pExpPng">Image de la couche (PNG)</button>
       <button id="pExpVec">Carte vectorielle (.txt)</button><button id="pExpObs">Obstacles (CSV)</button>
       <button id="pExpCost">Carte de coût (PGM)</button><button id="pExpRep">Rapport (.md)</button>
+      <button id="pExpPlan">Plan (PGM + YAML)</button><button id="pExpPlanTxt">Plan (.txt, segments)</button>
     </div>
   </div>
   <!-- ===================================================== ROBOT EN DIRECT -->
@@ -528,7 +541,7 @@
     <div class="help">Le robot se repère sur la carte du Jour 1 : d’abord sur toute la carte (sans savoir où il est), puis scan après scan. La vue suit le robot comme un GPS.</div>
     <h2>1 · Carte de référence</h2>
     <div class="frm"><label for="lvSrc">Carte</label><select id="lvSrc">
-      <option value="scans">Scans visibles (carte du Jour 1)</option><option value="proc">Résultat de l’onglet Traitement</option>
+      <option value="scans">Scans visibles (carte du Jour 1)</option><option value="proc">Résultat de l’onglet Traitement</option><option value="plan">Plan de la salle (onglet Traitement)</option>
       <option value="file">Fichiers (grid map .json + vectorielle .txt)</option><option value="sim">Salle simulée (démo)</option></select></div>
     <div class="row" id="lvFileRow" style="display:none">
       <label class="btn">Grid map (.json)<input type="file" id="lvGridFile" accept=".json" hidden></label>
@@ -770,7 +783,11 @@
       for (const k of freeSet) d[k] = 0;
       for (const k of occSet) d[k] = 255;
     } else {
-      for (const k of freeSet) d[k] = Math.max(0, d[k] - free);
+      // occFree : décrément appliqué à une cellule DÉJÀ occupée. Un faisceau rasant, ou une pose décalée de
+      // 1–2 cm, traverse souvent la cellule d'un mur vu par un autre scan : sans cette « résistance », les murs
+      // deviennent gris et pointillés. Par défaut = free (comportement d'origine).
+      const occFree = p.occFree ?? free;
+      for (const k of freeSet) d[k] = Math.max(0, d[k] - (d[k] >= OCC_T ? occFree : free));
       for (const k of occSet) d[k] = Math.min(255, d[k] + occ);
     }
     if (p.onCells) p.onCells(freeSet, occSet);         // couches annexes (compteurs, horodatage) : voir lidar_maptools.js
@@ -2504,7 +2521,7 @@
 
   /** Carte couvrant tous les scans ; data : [{ robot, pts }] (repère carte) */
   function buildLayeredGrid(data, opt = {}) {
-    const o = Object.assign({ res: 0.05, margin: 0.5, fillBetween: true }, opt);
+    const o = Object.assign({ res: 0.05, margin: 0.5, fillBetween: true, occFree: 15 }, opt);
     let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
     for (const { robot, pts } of data) for (const q of [robot, ...pts]) { if (q.x < x0) x0 = q.x; if (q.x > x1) x1 = q.x; if (q.y < y0) y0 = q.y; if (q.y > y1) y1 = q.y; }
     const g = LC.createGrid({ xMin: x0 - o.margin, yMin: y0 - o.margin, xMax: x1 + o.margin, yMax: y1 + o.margin, res: o.res });
@@ -2798,6 +2815,275 @@
     return { map: out, report: rep };
   }
 
+  /**
+   * Murs nets : les murs de la carte vectorielle (régularisée) sont redessinés dans la grid map.
+   *  1. pour chaque segment d'au moins minLen, on repère le côté « intérieur » (celui où l'on trouve le plus
+   *     de cellules libres à `side` mètres) ;
+   *  2. les cellules occupées à moins de `band` du segment (mur épais, pointillé, décalé de 1–2 cm entre
+   *     scans) sont effacées : libres côté intérieur, inconnues côté extérieur ;
+   *  3. le segment est tracé (Bresenham) en cellules occupées : un trait continu d'une cellule.
+   * Toutes les bandes sont effacées avant de tracer, pour ne pas effacer un mur voisin aux coins.
+   */
+  function sharpenWalls(g, segs, opt = {}) {
+    const o = Object.assign({ minLen: 0.5, band: 0.10, side: 0.3 }, opt), S = segs.filter(f => LC.segLen(f) >= o.minLen);
+    const st = { walls: S.length, cleared: 0, drawn: 0 }, freeV = FREE_T - 25;
+    const isFree = (x, y) => { const [i, j] = LC.worldToCell(g, x, y), v = LC.getCell(g, i, j); return v !== undefined && v <= FREE_T; };
+    for (const f of S) {
+      const L = LC.segLen(f), ux = (f.x2 - f.x1) / L, uy = (f.y2 - f.y1) / L, nx = -uy, ny = ux;
+      let plus = 0, minus = 0;
+      for (let t = 0; t <= L; t += 0.1) { const x = f.x1 + ux * t, y = f.y1 + uy * t; if (isFree(x + nx * o.side, y + ny * o.side)) plus++; if (isFree(x - nx * o.side, y - ny * o.side)) minus++; }
+      const inSign = plus >= minus ? 1 : -1;
+      const x0 = Math.min(f.x1, f.x2) - o.band, x1 = Math.max(f.x1, f.x2) + o.band, y0 = Math.min(f.y1, f.y2) - o.band, y1 = Math.max(f.y1, f.y2) + o.band;
+      const [i0, j0] = LC.worldToCell(g, x0, y0), [i1, j1] = LC.worldToCell(g, x1, y1);
+      for (let j = Math.max(0, j0); j <= Math.min(g.H - 1, j1); j++) for (let i = Math.max(0, i0); i <= Math.min(g.W - 1, i1); i++) {
+        const k = j * g.W + i; if (g.data[k] < OCC_T) continue;
+        const [cx, cy] = LC.cellCenter(g, i, j), t = (cx - f.x1) * ux + (cy - f.y1) * uy, d = (cx - f.x1) * nx + (cy - f.y1) * ny;
+        if (t < -o.band || t > L + o.band || Math.abs(d) > o.band) continue;
+        g.data[k] = d * inSign >= 0 ? freeV : UNKNOWN; st.cleared++;
+      }
+    }
+    for (const f of S) {
+      const [a, b] = LC.worldToCell(g, f.x1, f.y1), [c, d] = LC.worldToCell(g, f.x2, f.y2);
+      LC.bresenham(a, b, c, d, (i, j) => { if (LC.inGrid(g, i, j)) { const k = j * g.W + i; if (g.data[k] !== 255) st.drawn++; g.data[k] = 255; } });
+    }
+    return st;
+  }
+
+  // ==========================================================================
+  //  8 bis. Plan de la salle : contours seuls, obstacles supprimés
+  // ==========================================================================
+  // Opérations sur masques binaires (Uint8Array W×H), élément structurant carré de rayon r cellules
+  function maskMorph(m, W, H, r, dilate) {
+    const tmp = new Uint8Array(W * H), out = new Uint8Array(W * H);
+    for (let j = 0; j < H; j++) for (let i = 0; i < W; i++) {          // passe horizontale
+      let v = dilate ? 0 : 1;
+      for (let d = -r; d <= r; d++) { const a = i + d, x = a < 0 || a >= W ? 0 : m[j * W + a]; if (dilate ? x : !x) { v = dilate ? 1 : 0; break; } }
+      tmp[j * W + i] = v;
+    }
+    for (let j = 0; j < H; j++) for (let i = 0; i < W; i++) {          // passe verticale
+      let v = dilate ? 0 : 1;
+      for (let d = -r; d <= r; d++) { const b = j + d, x = b < 0 || b >= H ? 0 : tmp[b * W + i]; if (dilate ? x : !x) { v = dilate ? 1 : 0; break; } }
+      out[j * W + i] = v;
+    }
+    return out;
+  }
+  function maskFlood(m, W, H, seeds) {                                  // 4-connexité, depuis des indices de cellules
+    const out = new Uint8Array(W * H), st = [];
+    for (const k of seeds) if (m[k] && !out[k]) { out[k] = 1; st.push(k); }
+    while (st.length) {
+      const k = st.pop(), i = k % W, j = (k - i) / W;
+      if (i > 0 && m[k - 1] && !out[k - 1]) { out[k - 1] = 1; st.push(k - 1); }
+      if (i < W - 1 && m[k + 1] && !out[k + 1]) { out[k + 1] = 1; st.push(k + 1); }
+      if (j > 0 && m[k - W] && !out[k - W]) { out[k - W] = 1; st.push(k - W); }
+      if (j < H - 1 && m[k + W] && !out[k + W]) { out[k + W] = 1; st.push(k + W); }
+    }
+    return out;
+  }
+  // graine la plus proche dans le masque (spirale de rayon rmax cellules)
+  function nearestIn(m, W, H, i0, j0, rmax) {
+    for (let r = 0; r <= rmax; r++) for (let dj = -r; dj <= r; dj++) for (let di = -r; di <= r; di++) {
+      if (Math.max(Math.abs(di), Math.abs(dj)) !== r) continue;
+      const i = i0 + di, j = j0 + dj; if (i >= 0 && j >= 0 && i < W && j < H && m[j * W + i]) return j * W + i;
+    }
+    return -1;
+  }
+  /** Bords d'une région (masque) : boucles fermées de coins de cellules, région à gauche (contour
+   *  extérieur dans le sens trigonométrique, trous dans l'autre sens). Aux points de contact en diagonale,
+   *  on tourne à gauche (4-connexité). Renvoie [{ pts: [[x, y]...], area (m², signée) }]. */
+  function traceLoops(m, W, H, g) {
+    const out = new Map(), key = (i, j) => j * (W + 1) + i, edges = [];
+    const add = (a, b, c, d) => { const e = { a: key(a, b), b: key(c, d), ai: a, aj: b, bi: c, bj: d, used: false }; edges.push(e); const L = out.get(e.a); L ? L.push(e) : out.set(e.a, [e]); };
+    const In = (i, j) => i >= 0 && j >= 0 && i < W && j < H && m[j * W + i];
+    for (let j = 0; j < H; j++) for (let i = 0; i < W; i++) {
+      if (!m[j * W + i]) continue;
+      if (!In(i, j - 1)) add(i, j, i + 1, j);
+      if (!In(i + 1, j)) add(i + 1, j, i + 1, j + 1);
+      if (!In(i, j + 1)) add(i + 1, j + 1, i, j + 1);
+      if (!In(i - 1, j)) add(i, j + 1, i, j);
+    }
+    const loops = [];
+    for (const e0 of edges) {
+      if (e0.used) continue;
+      const P = []; let e = e0;
+      while (e && !e.used) {
+        e.used = true; P.push([e.ai, e.aj]);
+        const dx = e.bi - e.ai, dy = e.bj - e.aj, cand = (out.get(e.b) || []).filter(f => !f.used);
+        if (!cand.length) break;
+        const turn = f => { const fx = f.bi - f.ai, fy = f.bj - f.aj, cr = dx * fy - dy * fx, dot = dx * fx + dy * fy; return cr > 0 ? 0 : dot > 0 ? 1 : 2; };   // gauche, tout droit, droite
+        cand.sort((p, q) => turn(p) - turn(q)); e = cand[0];
+      }
+      // sommets utiles seulement (changements de direction)
+      const Q = [];
+      for (let k = 0; k < P.length; k++) {
+        const a = P[(k - 1 + P.length) % P.length], b = P[k], c = P[(k + 1) % P.length];
+        if ((b[0] - a[0]) * (c[1] - b[1]) - (b[1] - a[1]) * (c[0] - b[0]) !== 0) Q.push([g.x0 + b[0] * g.res, g.y0 + b[1] * g.res]);
+      }
+      let A = 0; for (let k = 0; k < Q.length; k++) { const a = Q[k], b = Q[(k + 1) % Q.length]; A += a[0] * b[1] - b[0] * a[1]; }
+      if (Q.length >= 4) loops.push({ pts: Q, area: A / 2 });
+    }
+    return loops;
+  }
+  /** Polygone en escalier (cellules) -> polygone propre : Douglas-Peucker, droite ajustée sur chaque côté,
+   *  côtés calés sur les axes de la salle (à snapTol près), côtés alignés fusionnés, petits crans retirés,
+   *  coins = intersections des côtés voisins. */
+  function regularizePolygon(Q, opt = {}) {
+    const o = Object.assign({ tol: 0.08, snapTol: 8, minEdge: 0.15, theta0: 0 }, opt), n = Q.length;
+    if (n < 4) return Q.slice();
+    // Douglas-Peucker sur polygone fermé : on coupe au point le plus éloigné du premier
+    let far = 0, fd = -1; for (let k = 1; k < n; k++) { const d = Math.hypot(Q[k][0] - Q[0][0], Q[k][1] - Q[0][1]); if (d > fd) { fd = d; far = k; } }
+    const P = Q.map(([x, y]) => ({ x, y }));
+    const ch1 = P.slice(0, far + 1), ch2 = P.slice(far).concat([P[0]]);
+    const v1 = douglasPeucker(ch1, o.tol), v2 = douglasPeucker(ch2, o.tol).map(k => (k + far) % n);
+    const V = [...new Set(v1.concat(v2.slice(1, -1)))].sort((a, b) => a - b);
+    if (V.length < 3) return Q.slice();
+    // côtés : points d'origine entre deux sommets, droite ajustée
+    const axisSnap = (ux, uy) => {
+      const a = Math.atan2(uy, ux) * R2D;
+      let best = null; for (let k = 0; k < 4; k++) { const t = o.theta0 + 90 * k, d = normDeg(t - a); if (!best || Math.abs(d) < Math.abs(best.d)) best = { t, d }; }
+      if (Math.abs(best.d) <= o.snapTol) return [Math.cos(best.t * D2R), Math.sin(best.t * D2R)];
+      return [ux, uy];
+    };
+    const mkEdge = pts => {
+      const f = LC.fitLine(pts), a = pts[0], b = pts[pts.length - 1];
+      let ux = f.ux, uy = f.uy; if ((b.x - a.x) * ux + (b.y - a.y) * uy < 0) { ux = -ux; uy = -uy; }
+      [ux, uy] = axisSnap(ux, uy);
+      let mx = 0, my = 0; for (const p of pts) { mx += p.x; my += p.y; } mx /= pts.length; my /= pts.length;
+      return { pts, ux, uy, mx, my, len: Math.hypot(b.x - a.x, b.y - a.y) };
+    };
+    let E = V.map((v, k) => { const w = V[(k + 1) % V.length], pts = []; for (let q = v; ; q = (q + 1) % n) { pts.push(P[q]); if (q === w) break; } return mkEdge(pts); });
+    const ang = (a, b) => Math.abs(normDeg(Math.atan2(a.uy, a.ux) * R2D - Math.atan2(b.uy, b.ux) * R2D));
+    const lat = (a, b) => Math.abs((b.mx - a.mx) * -a.uy + (b.my - a.my) * a.ux);
+    // fusion des côtés consécutifs alignés, puis suppression des petits crans entre deux côtés non parallèles
+    for (let changed = true, guard = 0; changed && guard < 200 && E.length > 3; guard++) {
+      changed = false;
+      for (let k = 0; k < E.length && E.length > 3; k++) {
+        const a = E[k], b = E[(k + 1) % E.length];
+        if (ang(a, b) < 10 && lat(a, b) < 0.10) { E.splice(k, 2, mkEdge(a.pts.concat(b.pts.slice(1)))); if (k === E.length) E.unshift(E.pop()); changed = true; break; }
+      }
+      if (changed) continue;
+      for (let k = 0; k < E.length && E.length > 3; k++) {
+        const e = E[k], p = E[(k - 1 + E.length) % E.length], q = E[(k + 1) % E.length];
+        if (e.len < o.minEdge && ang(p, q) > 30) { E.splice(k, 1); changed = true; break; }
+      }
+    }
+    // coins
+    const out = [];
+    for (let k = 0; k < E.length; k++) {
+      const a = E[(k - 1 + E.length) % E.length], b = E[k], cr = a.ux * b.uy - a.uy * b.ux;
+      const ref = b.pts[0];
+      if (Math.abs(cr) < Math.sin(5 * D2R)) { out.push([ref.x, ref.y]); continue; }
+      const t = ((b.mx - a.mx) * b.uy - (b.my - a.my) * b.ux) / cr, x = a.mx + a.ux * t, y = a.my + a.uy * t;
+      out.push(Math.hypot(x - ref.x, y - ref.y) > 0.6 ? [ref.x, ref.y] : [x, y]);
+    }
+    return out;
+  }
+  function fillHoles(m, W, H) {                         // bouche tout ce qui n'est pas relié au bord de la carte
+    const N = W * H, notM = new Uint8Array(N); for (let k = 0; k < N; k++) notM[k] = m[k] ? 0 : 1;
+    const border = []; for (let i = 0; i < W; i++) border.push(i, (H - 1) * W + i); for (let j = 0; j < H; j++) border.push(j * W, j * W + W - 1);
+    const ext = maskFlood(notM, W, H, border), out = new Uint8Array(N);
+    for (let k = 0; k < N; k++) out[k] = ext[k] ? 0 : 1;
+    return out;
+  }
+  /**
+   * Plan de la salle à partir d'une grid map (traitée) et des positions du robot :
+   *  1. obstacles effacés : les taches d'obstacle d'étendue ≤ objMax (chaises, pieds, sacs, personnes)
+   *     sont considérées comme du sol ;
+   *  2. sol relié aux positions du robot (remplissage), puis fuites coupées : ouverture morphologique
+   *     (passages plus étroits que `leak` : portes, rayons passés par une fente) ;
+   *  3. forme pleine de la salle : fermeture (encoches < `notch`) et trous bouchés ;
+   *  4. îlots : grandes structures (étendue > objMax) à l'intérieur, loin des murs (meuble fixe, pilier) ->
+   *     morceaux voisins regroupés, rectangle englobant orienté sur les axes de la salle ;
+   *  5. contours suivis, simplifiés et régularisés (côtés sur les axes de la salle, coins exacts) ;
+   *  6. nouvelle grid map : sol libre, contours occupés, extérieur et intérieur des îlots inconnus.
+   * Renvoie { grid, outer: [[x,y]], islands: [[[x,y]]], segments, stats }.
+   */
+  function roomPlan(g, poses, opt = {}) {
+    const o = Object.assign({ objMax: 1.0, leak: 0.9, notch: 0.6, wallGap: 0.3, thinMax: 0.25, segs: null, tol: 0.08, snapTol: 8, minEdge: 0.15, theta0: 0, keepIslands: true }, opt);
+    const W = g.W, H = g.H, N = W * H, area = m => m.reduce((a, v) => a + v, 0) * g.res * g.res;
+    // 1. obstacles à effacer / structures
+    const { labels, obstacles } = gridObstacles(g, null, { smallMax: 0.15, mediumMax: o.objMax });
+    const erase = new Set(obstacles.filter(c => c.cls !== 'structure').map(c => c.id));
+    const M = new Uint8Array(N);
+    for (let k = 0; k < N; k++) M[k] = g.data[k] <= FREE_T || (labels[k] >= 0 && erase.has(labels[k])) ? 1 : 0;
+    // 2. sol relié au robot, fuites coupées
+    const seedsIn = m => poses.map(p => { const [i, j] = LC.worldToCell(g, p.x, p.y); return nearestIn(m, W, H, i, j, 8); }).filter(k => k >= 0);
+    let R = maskFlood(M, W, H, seedsIn(M));
+    const a0 = area(R), rl = Math.round(o.leak / 2 / g.res);
+    if (rl > 0) { const O = maskMorph(maskMorph(R, W, H, rl, false), W, H, rl, true); for (let k = 0; k < N; k++) O[k] &= R[k]; R = maskFlood(O, W, H, seedsIn(O)); }
+    const a1 = area(R);
+    // 3. forme pleine
+    const rc = Math.max(1, Math.round(o.notch / 2 / g.res));
+    const Fp = fillHoles(maskMorph(maskMorph(R, W, H, rc, true), W, H, rc, false), W, H);
+    // 4. îlots : grandes structures loin des murs (≥ 90 % des cellules à plus de wallGap du bord de la salle).
+    //    Les morceaux voisins (à moins de wallGap) sont regroupés ; l'îlot est le rectangle orienté sur les axes
+    //    de la salle qui les englobe (le lidar ne voit souvent que 2 ou 3 côtés d'une table ou d'une armoire).
+    const inner = maskMorph(Fp, W, H, Math.round(o.wallGap / g.res), false), islandMasks = [], islandRects = [], innerWalls = [];
+    if (o.keepIslands) {
+      const S0 = new Uint8Array(N);
+      for (const c of obstacles) {
+        if (c.cls !== 'structure') continue;
+        let n = 0, nin = 0; for (let k = 0; k < N; k++) if (labels[k] === c.id) { n++; if (inner[k]) nin++; }
+        if (nin >= 0.9 * n) for (let k = 0; k < N; k++) if (labels[k] === c.id) S0[k] = 1;
+      }
+      const D = maskMorph(S0, W, H, Math.max(1, Math.round(o.wallGap / g.res)), true), lab = new Int32Array(N).fill(-1); let nG = 0;
+      for (let k0 = 0; k0 < N; k0++) {
+        if (!D[k0] || lab[k0] >= 0) continue;
+        const grp = maskFlood(D, W, H, [k0]); for (let k = 0; k < N; k++) if (grp[k]) lab[k] = nG;
+        const c = Math.cos(-o.theta0 * D2R), sn = Math.sin(-o.theta0 * D2R);
+        let u0 = Infinity, u1 = -Infinity, v0 = Infinity, v1 = -Infinity, n = 0;
+        for (let k = 0; k < N; k++) if (grp[k] && S0[k]) {
+          const [x, y] = LC.cellCenter(g, k % W, Math.floor(k / W)), u = c * x - sn * y, v = sn * x + c * y;
+          u0 = Math.min(u0, u); u1 = Math.max(u1, u); v0 = Math.min(v0, v); v1 = Math.max(v1, v); n++;
+        }
+        nG++;
+        if (!n) continue;
+        u0 -= g.res / 2; u1 += g.res / 2; v0 -= g.res / 2; v1 += g.res / 2;
+        if (Math.max(u1 - u0, v1 - v0) < o.objMax) continue;
+        const cb = Math.cos(o.theta0 * D2R), sb = Math.sin(o.theta0 * D2R), back = (u, v) => [cb * u - sb * v, sb * u + cb * v];
+        const holdsRobot = poses.some(p => { const u = c * p.x - sn * p.y, v = sn * p.x + c * p.y; return u > u0 && u < u1 && v > v0 && v < v1; });
+        if (holdsRobot || Math.min(u1 - u0, v1 - v0) < o.thinMax) {
+          // pas un meuble plein : le robot est passé à l'intérieur (tables en U, comptoir), ou structure fine :
+          // on garde des cloisons (segments de la carte vectorielle posés sur ces cellules, sinon l'axe du rectangle)
+          const near = (o.segs || []).filter(f => { const [i, j] = LC.worldToCell(g, (f.x1 + f.x2) / 2, (f.y1 + f.y2) / 2); return LC.inGrid(g, i, j) && grp[j * W + i] && LC.segLen(f) >= 0.3; });
+          if (near.length) near.forEach(f => innerWalls.push([[f.x1, f.y1], [f.x2, f.y2]]));
+          else if (Math.min(u1 - u0, v1 - v0) < o.thinMax) {
+            const ax = u1 - u0 >= v1 - v0, m = ax ? (v0 + v1) / 2 : (u0 + u1) / 2;
+            innerWalls.push(ax ? [back(u0, m), back(u1, m)] : [back(m, v0), back(m, v1)]);
+          }
+          continue;
+        }
+        const rect = [back(u0, v0), back(u1, v0), back(u1, v1), back(u0, v1)];
+        const f = new Uint8Array(N);
+        for (let k = 0; k < N; k++) { const [x, y] = LC.cellCenter(g, k % W, Math.floor(k / W)), u = c * x - sn * y, v = sn * x + c * y; if (u >= u0 && u <= u1 && v >= v0 && v <= v1) f[k] = 1; }
+        islandMasks.push(f); islandRects.push(rect);
+      }
+    }
+    const room = Fp.slice(); for (const f of islandMasks) for (let k = 0; k < N; k++) if (f[k]) room[k] = 0;
+    // 5. contours
+    const reg = Q => regularizePolygon(Q, o);
+    const outerLoop = traceLoops(Fp, W, H, g).filter(l => l.area > 0).sort((p, q) => q.area - p.area)[0];
+    const outer = outerLoop ? reg(outerLoop.pts) : [];
+    const islands = islandRects;
+    // 6. grid map du plan
+    const P = Object.assign({}, g, { data: new Uint8Array(N).fill(UNKNOWN) });
+    for (let k = 0; k < N; k++) if (room[k]) P.data[k] = 0;
+    const segments = [], draw = (a, b) => {
+      segments.push(Object.assign(LC.seg(a[0], a[1], b[0], b[1]), { id: segments.length + 1, conf: 10, nObs: 1, firstSeen: 0, lastSeen: 0 }));
+      const [i0, j0] = LC.worldToCell(P, a[0], a[1]), [i1, j1] = LC.worldToCell(P, b[0], b[1]);
+      LC.bresenham(i0, j0, i1, j1, (i, j) => { if (LC.inGrid(P, i, j)) P.data[j * W + i] = 255; });
+    };
+    for (const [a, b] of innerWalls) draw(a, b);
+    for (const poly of [outer, ...islands]) for (let k = 0; k < poly.length; k++) {
+      const a = poly[k], b = poly[(k + 1) % poly.length];
+      draw(a, b);
+    }
+    const perim = poly => poly.reduce((s, a, k) => { const b = poly[(k + 1) % poly.length]; return s + Math.hypot(b[0] - a[0], b[1] - a[1]); }, 0);
+    const areaOf = poly => Math.abs(poly.reduce((s, a, k) => { const b = poly[(k + 1) % poly.length]; return s + a[0] * b[1] - b[0] * a[1]; }, 0)) / 2;
+    return { grid: P, outer, islands, innerWalls, segments, stats: {
+      leakArea: a0 - a1, erased: erase.size, islands: islands.length, innerWalls: innerWalls.length, corners: outer.length,
+      roomArea: areaOf(outer) - islands.reduce((s, q) => s + areaOf(q), 0), perimeter: perim(outer) } };
+  }
+
   // ==========================================================================
   //  9. Exploitation : carte de coût et trajet
   // ==========================================================================
@@ -3053,7 +3339,7 @@
     smooth: true, smoothOpt: {},
     close: true, closeOpt: {},
     features: {}, obstacleOpt: {}, vmOpt: { extract: { minLen: 0.3 } },
-    regularize: true, regOpt: {},
+    regularize: true, regOpt: {}, sharpen: true, sharpenOpt: {}, occFree: 15, plan: true, planOpt: {},
     filters: { minSegLen: 0, minCircleD: 0, minBlob: 0, nearPoses: 0, fill: 'free' },
     cost: { robotRadius: 0.15, inflation: 0.35 }
   };
@@ -3084,7 +3370,7 @@
 
     await prog(base + 0.1 * (1 - base), 'Grid map enrichie');
     t0 = T();
-    const { grid: gridRaw, layers } = buildLayeredGrid(data, { res: o.res });
+    const { grid: gridRaw, layers } = buildLayeredGrid(data, { res: o.res, occFree: o.occFree });
     steps.push({ step: 'Grid map enrichie (impacts, observations, horodatage)', detail: `${gridRaw.W} × ${gridRaw.H} cellules, ${data.length} scans`, ms: T() - t0 });
     const qRaw = mapQuality(gridRaw, data, layers);
 
@@ -3127,7 +3413,20 @@
     }
     vmap = tmp.vmap;
     if (vmap !== vmapRaw) vmap.corners = LC.computeCorners(vmap.features, LC.VM_DEFAULTS);
+    if (o.sharpen) {
+      t0 = T(); const r = sharpenWalls(grid, vmap.features, o.sharpenOpt);
+      steps.push({ step: 'Murs nets', detail: `${r.walls} murs (≥ 50 cm) redessinés en trait continu : ${r.cleared} cellules de bord bruité effacées, ${r.drawn} cellules de mur ajoutées`, ms: T() - t0 });
+    }
     const qClean = mapQuality(grid, data, layers);
+
+    let plan = null;
+    if (o.plan) {
+      t0 = T();
+      plan = roomPlan(grid, poses, Object.assign({ theta0: regReport && regReport.theta0 !== undefined ? regReport.theta0 : dominantDirection(vmap.features), segs: vmap.features }, o.planOpt));
+      plan.cost = costmap(plan.grid, o.cost);
+      const ps = plan.stats;
+      steps.push({ step: 'Plan de la salle (contours, sans obstacles)', detail: `contour de ${ps.corners} coins, ${ps.perimeter.toFixed(1)} m de murs, ${ps.roomArea.toFixed(1)} m² de sol ; ${ps.erased} obstacles effacés, ${ps.leakArea.toFixed(1)} m² de fuites (portes, fentes) retirés, ${ps.islands} grand(s) meuble(s) plein(s) et ${ps.innerWalls} cloison(s) gardés`, ms: T() - t0 });
+    }
 
     await prog(base + 0.8 * (1 - base), 'Obstacles de la grille');
     t0 = T();
@@ -3141,7 +3440,7 @@
     steps.push({ step: 'Carte de coût', detail: `robot ${Math.round(o.cost.robotRadius * 100)} cm + marge ${Math.round(o.cost.inflation * 100)} cm ; ${cost.stats.navigable.toFixed(1)} m² accessibles au centre du robot`, ms: T() - t0 });
     await prog(1, 'terminé');
     return { poses, refineLog, pre, gridRaw, grid, layers, mobile, obstacles, labels, omap, vmapRaw, vmap, regReport, cost,
-             quality: { raw: qRaw, clean: qClean }, steps, opt: { obstacleOpt: o.obstacleOpt, cost: o.cost },
+             quality: { raw: qRaw, clean: qClean }, steps, plan, opt: { obstacleOpt: o.obstacleOpt, cost: o.cost },
              manual: { cells: 0, segCut: 0, segRemoved: 0, circles: 0 } };
   }
 
@@ -3171,7 +3470,7 @@
     createObstacleMap, updateObstacleMap, pruneObstaclesOnWalls, obstaclesToCSV,
     createLayers, updateGridLayered, buildLayeredGrid, cloneGrid, cloneLayers,
     decayGrid, clearObsolete, removeMobile, labelComponents, removeSpeckles, smoothGrid, closeGaps, gridObstacles,
-    dominantDirection, snapDirections, alignCollinear, mergeKeepProps, joinCorners, trimCollisions, regularizeVectorMap,
+    dominantDirection, snapDirections, alignCollinear, mergeKeepProps, joinCorners, trimCollisions, regularizeVectorMap, sharpenWalls, maskMorph, maskFlood, fillHoles, traceLoops, regularizePolygon, roomPlan,
     costmap, costmapToPGM, planPath, mapQuality, refinePoses,
     clipSegmentDisc, eraseDisc, filterSmall, filterNearPoses, refreshDerived, processMap, reportToMarkdown
   };
@@ -3822,6 +4121,33 @@
         const R = { grid: g, vmap: { features: [], corners: [], nextId: 1 }, omap: { items: [{ x: 1.1, y: 1, r: 0.02 }] } };
         const st = LM.filterNearPoses(R, [{ x: 1, y: 1, th: 0 }], 0.2);
         return expect(st.cells === 1 && st.circles === 1 && g.data[20 * g.W + 60] === 255, JSON.stringify(st));
+      });
+      test('murs nets : mur épais et pointillé remplacé par un trait continu ; côté intérieur libre, extérieur inconnu', () => {
+        const g = LC.createGrid({ xMin: 0, yMin: 0, xMax: 3, yMax: 2, res: 0.05, init: LC.UNKNOWN });
+        for (let j = 0; j < 20; j++) for (let i = 0; i < 60; i++) g.data[j * g.W + i] = 10;           // intérieur libre (y < 1 m)
+        for (let i = 0; i < 60; i += 1) { if (i % 4 === 3) continue; g.data[20 * g.W + i] = 230; if (i % 3 === 0) g.data[19 * g.W + i] = 200; }   // mur y = 1 m épais, troué
+        const r = LM.sharpenWalls(g, [S(0.1, 1.025, 2.9, 1.025)]);
+        let line = true; for (let i = 2; i < 58; i++) line = line && g.data[20 * g.W + i] === 255;
+        const inner = g.data[19 * g.W + 3] <= LC.FREE_T;
+        return expect(line && inner && r.walls === 1 && r.drawn > 0, JSON.stringify(r));
+      });
+      test('plan de la salle : contour rectangulaire exact, chaises effacées, fuite par la porte coupée, table (3 côtés vus) gardée', () => {
+        const g = LC.createGrid({ xMin: -1, yMin: -1, xMax: 7, yMax: 6, res: 0.05, init: LC.UNKNOWN });
+        const set = (x, y, v) => { const [i, j] = LC.worldToCell(g, x, y); if (LC.inGrid(g, i, j)) g.data[j * g.W + i] = v; };
+        for (let x = 0; x < 6; x += 0.025) for (let y = 0; y < 4; y += 0.025) set(x, y, 10);                 // sol de la salle 6 × 4 m
+        for (let x = -0.05; x <= 6.05; x += 0.025) { set(x, -0.025, 255); set(x, 4.025, 255); }              // murs
+        for (let y = -0.05; y <= 4.05; y += 0.025) { set(-0.025, y, 255); set(6.025, y, 255); }
+        for (let x = 2.6; x < 3.3; x += 0.025) set(x, 4.025, 10);                                            // porte de 70 cm…
+        for (let x = 2.0; x < 4.0; x += 0.025) for (let y = 4.08; y < 5.5; y += 0.025) set(x, y, 10);         // … et le couloir vu à travers
+        for (const [cx, cy] of [[1, 1], [1.3, 2.5], [4.8, 3.6], [5.5, 0.5]]) for (const [dx, dy] of [[0, 0], [0.4, 0], [0, 0.4], [0.4, 0.4]]) set(cx + dx, cy + dy, 255);   // chaises (4 pieds)
+        for (let x = 2.5; x <= 4.0; x += 0.025) { set(x, 1.5, 255); set(x, 2.5, 255); } for (let y = 1.5; y <= 2.5; y += 0.025) set(2.5, y, 255);   // table : 3 côtés vus
+        const P = LM.roomPlan(g, [{ x: 0.5, y: 0.5 }, { x: 5, y: 2 }], { theta0: 0 });
+        const xs = P.outer.map(p => p[0]), ys = P.outer.map(p => p[1]);
+        const rectOk = P.outer.length === 4 && Math.abs(Math.min(...xs) - 0) < 0.03 && Math.abs(Math.max(...xs) - 6) < 0.03 && Math.abs(Math.min(...ys)) < 0.03 && Math.abs(Math.max(...ys) - 4) < 0.03;
+        const isl = P.islands[0], ix = isl ? isl.map(p => p[0]) : [], iy = isl ? isl.map(p => p[1]) : [];
+        const tableOk = P.islands.length === 1 && Math.abs(Math.min(...ix) - 2.5) < 0.06 && Math.abs(Math.max(...ix) - 4.0) < 0.06 && Math.abs(Math.min(...iy) - 1.5) < 0.06 && Math.abs(Math.max(...iy) - 2.5) < 0.06;
+        const [ci, cj] = LC.worldToCell(P.grid, 1.02, 1.02);
+        return expect(rectOk && tableOk && P.grid.data[cj * P.grid.W + ci] === 0 && P.stats.erased >= 4, JSON.stringify({ outer: P.outer.map(p => p.map(v => +v.toFixed(2))), islands: P.islands.length, st: P.stats }));
       });
       test('qualité : scans simulés à poses exactes -> plus de 90 % des points sur un obstacle', () => {
         const sc = LL.classroomScene(3, { legs: 0 }), rng = LL.mulberry32(8), poses = [{ x: 2, y: 2, th: 0 }, { x: 6, y: 5, th: 90 }, { x: 11, y: 6, th: 200 }];
@@ -5131,15 +5457,21 @@ async function wifiCommand(c){
   } catch (e){ toast('Capture WiFi : ' + e.message); }
 }
 async function wifiLiveLoop(gen){
-  let fails = 0;
+  // L'aperçu ne s'arrête plus de lui-même : quand le robot roule, les moteurs font chuter la batterie et le WiFi
+  // ou le lidar décroche quelques secondes. On réessaie (attente croissante) jusqu'à ce que la case soit décochée.
+  let fails = 0, warned = false;
   while (SER.wifi && SER.live && gen === SER.liveGen){
     try {
       const b = await robotNextScan(performance.now() + 3000);
       if (gen === SER.liveGen && !SER.onBlock) onSerialScan(b);
-      fails = 0;
+      if (fails >= 2){ toast('Aperçu direct rétabli'); }
+      if (fails) setStatus('connecté', 'on');
+      fails = 0; warned = false;
     } catch (e){
-      if (++fails >= 3){ toast('Aperçu direct interrompu : ' + e.message); SER.live = false; $('live').checked = false; draw(); }
-      await sleep(400);
+      fails++;
+      setStatus(`aperçu : ${e.message.split(' :')[0]} · nouvel essai`, 'busy');
+      if (fails >= 2 && !warned){ toast('Aperçu direct : ' + e.message + ' — nouvel essai automatique'); warned = true; }
+      await sleep(Math.min(2000, 300 * fails));
     }
   }
 }
@@ -5228,7 +5560,7 @@ async function connect(){
   try {
     await port.open({ baudRate: +$('baud').value, bufferSize: 1 << 16 });
   } catch (e){ toast('Ouverture du port impossible : ' + e.message + ' (moniteur série Arduino encore ouvert ?)'); return; }
-  SER.port = port; SER.writer = port.writable.getWriter(); SER.buf = ''; SER.block = null;
+  SER.port = port; SER.writer = port.writable.getWriter(); SER.buf = ''; SER.block = null; SER.diag = null;
   SER.loop = readLoop();
   setConnectedUI(true); setStatus('démarrage…', 'busy');
   await sleep(1500);                                            // l'ESP32 redémarre à l'ouverture du port
@@ -5269,6 +5601,7 @@ function onSerialText(txt){
     const line = SER.buf.slice(0, nl).trim(); SER.buf = SER.buf.slice(nl + 1);
     if (line.startsWith('#SCAN')){ SER.block = { a: [], d: [], i: [] }; continue; }
     if (line.startsWith('#END')){ if (SER.block && SER.block.a.length) onSerialScan(SER.block); SER.block = null; continue; }
+    if (!SER.block && line) serialDiag(line);
     if (!SER.block || line.startsWith('#')) continue;
     const p = line.split(',');
     const a = parseFloat(p[0]), d = parseFloat(p[1]), i = parseFloat(p[2]);
@@ -5276,7 +5609,36 @@ function onSerialText(txt){
   }
   if (SER.buf.length > 1e6) SER.buf = '';
 }
+// Diagnostic USB : messages de démarrage de l'ESP32 reconnus dans le flux série
+function serialDiag(line){
+  const D = SER.diag || (SER.diag = { boots: 0, brownout: false, wifiFw: false, t0: performance.now() });
+  if (/brownout/i.test(line) && !D.brownout){
+    D.brownout = true;
+    toast('Le robot redémarre : tension trop faible (« Brownout »). Par le seul câble USB, le WiFi et le lidar consomment trop : allume la batterie du robot, ou téléverse ESP32_LD06_Capture.ino (sans WiFi) pour travailler en câble.');
+    setStatus('alimentation insuffisante (brownout)', 'busy');
+  }
+  if (/^rst:|^ets |^ESP-ROM/.test(line)){
+    D.boots++;
+    if (D.boots >= 2 && !D.brownout){ toast(`Le robot a redémarré ${D.boots} fois : alimentation (batterie éteinte ?) ou plantage au démarrage.`); setStatus(`redémarrages : ${D.boots}`, 'busy'); }
+  }
+  if (/AP IP|RobotESP32/.test(line)) D.wifiFw = true;
+}
+// Aperçu direct en USB : si aucun scan n'arrive, on le dit (au lieu d'un écran figé)
+setInterval(() => {
+  if (!SER.port || !SER.live || SER.onBlock) return;
+  const age = (performance.now() - (SER.lastScanAt || SER.liveSince || performance.now())) / 1000;
+  if (age > 4 && !SER.noScanWarned){
+    SER.noScanWarned = true;
+    const D = SER.diag || {};
+    toast(D.brownout ? 'Aucun scan : le robot redémarre en boucle (alimentation). Allume la batterie.' :
+      'Aucun scan reçu depuis 4 s en USB. Vérifie : lidar qui tourne (alimentation, batterie allumée), moniteur série d’Arduino fermé, ' +
+      'bon firmware téléversé (ESP32_LD06_Capture.ino ou ESP32_LD06_WiFi.ino), vitesse ' + $('baud').value + ' = PC_BAUD du firmware.');
+    setStatus('aucun scan reçu', 'busy');
+  }
+  if (age <= 4 && SER.noScanWarned){ SER.noScanWarned = false; setStatus('connecté', 'on'); }
+}, 1000);
 function onSerialScan(b){
+  SER.lastScanAt = performance.now(); SER.scanCount = (SER.scanCount || 0) + 1;
   if (SER.onBlock) return SER.onBlock(b);
   if (typeof LIVE !== 'undefined' && LIVE.running && LIVE.feed === 'robot') liveFeedScan(b);
   if (SER.live){ SER.liveScan = b; computeLocal(b); draw(); }
@@ -5325,7 +5687,7 @@ $('connect').onclick = connect;
 $('capture').onclick = capture;
 $('capName').addEventListener('keydown', e => { if (e.key === 'Enter') capture(); });
 $('live').onchange = async e => {
-  SER.live = e.target.checked; SER.liveScan = null;
+  SER.live = e.target.checked; SER.liveScan = null; SER.liveSince = performance.now(); SER.lastScanAt = 0; SER.noScanWarned = false;
   await send(SER.live ? 'c' : 'x'); draw();
 };
 
@@ -5394,7 +5756,7 @@ const numVal = id => parseFloat($(id).value);
 const GRID = { g: null, img: null, dirty: true, last: null, history: [] };
 function gridParams(){
   return { res: numVal('gRes'), margin: numVal('gMargin'), model: $('gModel').value,
-           free: numVal('gFree'), occ: numVal('gOcc'), init: +$('gInit').value, fillBetween: $('gFill').checked };
+           free: numVal('gFree'), occ: numVal('gOcc'), occFree: numVal('gOccFree'), init: +$('gInit').value, fillBetween: $('gFill').checked };
 }
 function scanForGrid(s){
   const [X, Y] = toWorldPts(s), pts = new Array(X.length);
@@ -5504,7 +5866,7 @@ $('gClear').onclick = () => { if (GRID.g) GRID.history.push(GRID.g); GRID.g = nu
 $('gShow').onchange = draw; $('gAlpha').oninput = draw;
 $('gThresh').onchange = () => { GRID.dirty = true; draw(); };
 $('gPts').onchange = draw;
-$('gModel').onchange = () => { const b = $('gModel').value === 'binary'; $('gFree').disabled = b; $('gOcc').disabled = b; };
+$('gModel').onchange = () => { const b = $('gModel').value === 'binary'; $('gFree').disabled = b; $('gOcc').disabled = b; $('gOccFree').disabled = b; };
 $('gExpJson').onclick = () => { if (!GRID.g) return toast('Aucune carte'); download('grid_map.json', JSON.stringify(LC.gridToJSON(GRID.g)), 'application/json'); };
 $('gExpPgm').onclick = () => {
   if (!GRID.g) return toast('Aucune carte');
@@ -6086,11 +6448,14 @@ function procOpt(){
     features: { method: $('pMethod').value, smallMax: numVal('pSmall') },
     obstacleOpt: { smallMax: numVal('pSmall') },
     vmOpt: { extract: Object.assign(segExtractOpt(), { minLen: 0.3 }) },
+    sharpen: $('pSharp').checked, occFree: numVal('gOccFree') || 15,
+    plan: $('pPlan').checked, planOpt: planOpt(),
     regularize: $('pReg').checked, regOpt: { snapTol: numVal('pSnap'), orthogonal: numVal('pSnap') > 0 },
     filters: filterOpt(),
     cost: { robotRadius: numVal('pRobotR'), inflation: numVal('pInfl') }
   };
 }
+function planOpt(){ return { objMax: numVal('pObjMax') || 1, leak: numVal('pLeak') || 0, notch: numVal('pNotch') || 0 }; }
 async function procRun(){
   if (PROC.busy) return;
   const vis = S.scans.filter(s => s.visible);
@@ -6116,6 +6481,7 @@ async function procRun(){
     PROC.res.ms = performance.now() - t0;
     PROC.imgs = {}; PROC.plan = { start: null, goal: null, result: null }; PROC.undo = [];
     $('pStatus').textContent = `terminé en ${(PROC.res.ms / 1000).toFixed(1)} s`;
+    if (PROC.res.plan) $('pLayer').value = 'plan'; else if ($('pLayer').value === 'plan') $('pLayer').value = 'clean';
     procInfo(); procPlanInfo(); if (typeof procEInfo === 'function') procEInfo();
   } catch (e){ $('pStatus').textContent = ''; toast(e.message === 'arrêt' ? 'Traitement arrêté' : 'Erreur : ' + e.message); console.error(e); }
   finally {
@@ -6163,7 +6529,8 @@ function procLayerImage(kind){
     const k = j * Wg + i, o = ((Hg - 1 - j) * Wg + i) * 4;
     let r, gg, b, a = 255;
     const gray = v => { const x = 255 - v; return [x, x, x]; };
-    if (kind === 'clean') [r, gg, b] = gray(g.data[k]);
+    if (kind === 'plan') [r, gg, b] = R.plan ? (R.plan.grid.data[k] === 0 ? [246, 247, 249] : R.plan.grid.data[k] === 255 ? [30, 34, 40] : [120, 126, 134]) : [120, 126, 134];
+    else if (kind === 'clean') [r, gg, b] = gray(g.data[k]);
     else if (kind === 'raw') [r, gg, b] = gray(R.gridRaw.data[k]);
     else if (kind === 'diff'){
       const before = R.gridRaw.data[k] >= LC.OCC_T, after = g.data[k] >= LC.OCC_T;
@@ -6204,18 +6571,27 @@ function drawProcOver(){
   const R = PROC.res;
   ctx.save(); ctx.lineCap = 'round';
   const line = (f) => { const [x1, y1] = w2s(f.x1, f.y1), [x2, y2] = w2s(f.x2, f.y2); ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke(); };
-  if (R && $('pShowVecRaw').checked){
+  const planLayer = R && R.plan && $('pLayer').value === 'plan';
+  if (planLayer){
+    const poly = (pts, col) => { if (!pts.length) return; ctx.strokeStyle = col; ctx.lineWidth = 3.5; ctx.lineJoin = 'miter'; ctx.beginPath();
+      pts.forEach((p, k) => { const [x, y] = w2s(p[0], p[1]); k ? ctx.lineTo(x, y) : ctx.moveTo(x, y); }); ctx.closePath(); ctx.stroke();
+      ctx.fillStyle = '#ffe14d'; for (const p of pts){ const [x, y] = w2s(p[0], p[1]); ctx.fillRect(x - 3, y - 3, 6, 6); } };
+    poly(R.plan.outer, '#4da3ff'); R.plan.islands.forEach(I => poly(I, '#ffb347'));
+    ctx.strokeStyle = '#ffb347'; ctx.lineWidth = 3.5; ctx.lineCap = 'round';
+    for (const [a, b] of R.plan.innerWalls || []){ const p = w2s(a[0], a[1]), q = w2s(b[0], b[1]); ctx.beginPath(); ctx.moveTo(p[0], p[1]); ctx.lineTo(q[0], q[1]); ctx.stroke(); }
+  }
+  if (R && $('pShowVecRaw').checked && !planLayer){
     ctx.strokeStyle = 'rgba(255,214,77,.9)'; ctx.lineWidth = 1.5; ctx.setLineDash([5, 4]);
     R.vmapRaw.features.forEach(line); ctx.setLineDash([]);
   }
-  if (R && $('pShowVec').checked){
+  if (R && $('pShowVec').checked && !planLayer){
     ctx.strokeStyle = '#4da3ff'; ctx.lineWidth = 3; R.vmap.features.forEach(line);
     for (const c of R.vmap.corners){
       const [x, y] = w2s(c.x, c.y); ctx.strokeStyle = '#ffe14d'; ctx.fillStyle = 'rgba(255,225,77,.3)'; ctx.lineWidth = 1.5;
       ctx.beginPath(); ctx.rect(x - 4, y - 4, 8, 8); ctx.fill(); ctx.stroke();
     }
   }
-  if (R && $('pShowCirc').checked){
+  if (R && $('pShowCirc').checked && !planLayer){
     const mc = numVal('pMinConf');
     for (const it of R.omap.items){
       if (it.conf < mc && !it.mobile) continue;
@@ -6316,6 +6692,12 @@ $('pExpPng').onclick = () => {
   const x = c.getContext('2d'); x.imageSmoothingEnabled = false; x.drawImage(src, 0, 0, c.width, c.height);
   // superposition de la carte vectorielle et des obstacles circulaires
   const g = PROC.res.grid, tw = (X, Y) => [(X - g.x0) / g.res * k, (g.y0 + g.H * g.res - Y) / g.res * k];
+  if ($('pLayer').value === 'plan' && PROC.res.plan){
+    const poly = (pts, col) => { x.strokeStyle = col; x.lineWidth = Math.max(2.5, k); x.beginPath(); pts.forEach((p, n) => { const [a, b2] = tw(p[0], p[1]); n ? x.lineTo(a, b2) : x.moveTo(a, b2); }); x.closePath(); x.stroke(); };
+    poly(PROC.res.plan.outer, '#1e6fff'); PROC.res.plan.islands.forEach(I => poly(I, '#ff8a00'));
+    for (const [a, b] of PROC.res.plan.innerWalls || []){ const [p1, p2] = tw(a[0], a[1]), [q1, q2] = tw(b[0], b[1]); x.strokeStyle = '#ff8a00'; x.beginPath(); x.moveTo(p1, p2); x.lineTo(q1, q2); x.stroke(); }
+    download('plan_salle.png', c.toDataURL('image/png')); return;
+  }
   if ($('pShowVec').checked){ x.strokeStyle = '#4da3ff'; x.lineWidth = Math.max(2, k * 0.8); x.lineCap = 'round';
     for (const f of PROC.res.vmap.features){ const [a, b] = tw(f.x1, f.y1), [c2, d] = tw(f.x2, f.y2); x.beginPath(); x.moveTo(a, b); x.lineTo(c2, d); x.stroke(); } }
   if ($('pShowCirc').checked){ for (const it of PROC.res.omap.items){ if (it.conf < numVal('pMinConf') && !it.mobile) continue;
@@ -6444,6 +6826,9 @@ function livePrepare(silent){
     if (src === 'scans'){
       const vis = S.scans.filter(s => s.visible); if (!vis.length) throw new Error('aucun scan visible');
       const R = LL.buildReferences(vis.map(lvRaw), -1); grid = R.grid; segs = R.vmap.features; label = `${vis.length} scans visibles`;
+    } else if (src === 'plan'){
+      if (!PROC.res || !PROC.res.plan) throw new Error('construis d’abord le plan (onglet Traitement)');
+      grid = PROC.res.plan.grid; segs = PROC.res.plan.segments; label = 'plan de la salle (sans obstacles)';
     } else if (src === 'proc'){
       if (!PROC.res) throw new Error('lance d’abord le traitement (onglet Traitement)');
       grid = PROC.res.grid; segs = PROC.res.vmap.features; label = 'grid map traitée + carte vectorielle régularisée';
@@ -6695,11 +7080,24 @@ function drawLiveView(){
   ctx.save(); ctx.strokeStyle = '#d6dee8'; ctx.fillStyle = '#d6dee8'; ctx.lineWidth = 2; ctx.font = '12px system-ui';
   ctx.beginPath(); ctx.moveTo(16, H - 22); ctx.lineTo(16 + m * X.k, H - 22); ctx.moveTo(16, H - 27); ctx.lineTo(16, H - 17); ctx.moveTo(16 + m * X.k, H - 27); ctx.lineTo(16 + m * X.k, H - 17); ctx.stroke();
   ctx.fillText(m + ' m', 20 + m * X.k, H - 18); ctx.restore();
+  // pas encore localisé : le dernier scan reçu est montré tel quel autour du centre de l'écran (on voit que ça scanne)
+  if ((!T || !T.pose) && cur && $('lvShowScan').checked){
+    ctx.save(); ctx.fillStyle = '#e3e7ec';
+    for (const q of cur.local) ctx.fillRect(W / 2 + q.x * X.k - 1.4, H / 2 - q.y * X.k - 1.4, 2.8, 2.8);
+    ctx.fillStyle = '#9aa3ad'; ctx.font = '12px system-ui'; ctx.textAlign = 'center';
+    ctx.fillText('scan brut (robot pas encore localisé)', W / 2, H / 2 + 18); ctx.textAlign = 'left'; ctx.restore();
+  }
   // bandeau d'état
   if (r || LIVE.running){
     const st = T ? T.status : '…', col = LV_COL[st] || '#9aa3ad';
     const line1 = r ? `${st}` : 'en attente du premier scan…';
-    const line2 = r ? `${(r.inliers * 100).toFixed(0)} % du scan sur la carte · ${r.mode} · ${r.ms.toFixed(0)} ms` : '';
+    let line2 = r ? `${(r.inliers * 100).toFixed(0)} % du scan sur la carte · ${r.mode} · ${r.ms.toFixed(0)} ms` : '';
+    if (LIVE.feed === 'robot' && LIVE.running){
+      const age = SER.lastScanAt ? (performance.now() - SER.lastScanAt) / 1000 : Infinity;
+      line2 += (line2 ? ' · ' : '') + (isFinite(age) ? `dernier scan il y a ${age.toFixed(1)} s` : 'aucun scan reçu');
+      if (age > 2){ ctx.save(); ctx.fillStyle = '#ff6b6b'; ctx.font = '700 13px system-ui';
+        ctx.fillText(isConnected() ? (SER.live ? 'le robot n’envoie plus de scans : batterie, WiFi ou lidar ?' : 'aperçu direct arrêté (case « Aperçu direct » décochée)') : 'robot déconnecté', 26, 84); ctx.restore(); }
+    }
     ctx.save(); ctx.fillStyle = 'rgba(15,18,22,.88)'; ctx.strokeStyle = col; ctx.lineWidth = 2;
     const w = 330, hh = r ? 52 : 34; ctx.beginPath(); ctx.roundRect ? ctx.roundRect(14, 14, w, hh, 8) : ctx.rect(14, 14, w, hh); ctx.fill(); ctx.stroke();
     ctx.fillStyle = col; ctx.font = '700 15px system-ui'; ctx.fillText('● ' + line1, 26, 36);
@@ -6806,6 +7204,43 @@ $('lvExport').onclick = () => {
 document.querySelectorAll('#lvPad [data-mv]').forEach(b => b.onclick = () => { if (!SER.wifi) return toast('Pilotage : robot connecté en WiFi'); drive(b.dataset.mv); });
 $('lvPadStop').onclick = robotStop;
 liveViewButtons();
+
+setInterval(() => { if (TAB === 'live' && LIVE.running && LIVE.feed === 'robot') draw(); }, 500);   // âge du dernier scan
+
+// --- plan de la salle
+function planRecompute(){
+  const R = PROC.res; if (!R) return toast('Lance d’abord le traitement');
+  const t0 = performance.now(), th = R.regReport && R.regReport.theta0 !== undefined ? R.regReport.theta0 : LM.dominantDirection(R.vmap.features);
+  R.plan = LM.roomPlan(R.grid, R.poses, Object.assign({ theta0: th, segs: R.vmap.features }, planOpt()));
+  R.plan.cost = LM.costmap(R.plan.grid, { robotRadius: numVal('pRobotR'), inflation: numVal('pInfl') });
+  delete PROC.imgs.plan; $('pLayer').value = 'plan';
+  const ps = R.plan.stats;
+  toast(`Plan : ${ps.corners} coins, ${ps.roomArea.toFixed(1)} m², ${ps.erased} obstacles effacés, ${ps.islands} meuble(s), ${ps.innerWalls} cloison(s) (${(performance.now() - t0).toFixed(0)} ms)`);
+  draw();
+}
+$('pPlanRedo').onclick = planRecompute;
+['pObjMax', 'pLeak', 'pNotch'].forEach(id => $(id).onchange = () => { if (PROC.res && $('pPlan').checked) planRecompute(); });
+$('pPlanSend').onclick = () => {
+  const R = PROC.res; if (!R || !R.plan) return toast('Pas de plan : coche « Construire le plan de la salle » et lance le traitement');
+  gridSet(LM.cloneGrid(R.plan.grid), 'Plan de la salle (onglet Traitement)');
+  vecPush(); VEC.map = { features: R.plan.segments.map(s => ({ ...s })), corners: LC.computeCorners(R.plan.segments, LC.VM_DEFAULTS), scans: 0, nextId: R.plan.segments.length + 1 };
+  VEC.last = null; VEC.sel = -1; vecRefresh();
+  toast('Plan envoyé vers les onglets Grid map et Vectorielle');
+};
+$('pExpPlan').onclick = () => {
+  const R = PROC.res; if (!R || !R.plan) return toast('Pas de plan');
+  const { pgm, yaml } = LC.gridToPGM(R.plan.grid, 'plan_salle');
+  download('plan_salle.pgm', pgm, 'image/x-portable-graymap'); setTimeout(() => download('plan_salle.yaml', yaml, 'text/yaml'), 300);
+};
+$('pExpPlanTxt').onclick = () => {
+  const R = PROC.res; if (!R || !R.plan) return toast('Pas de plan');
+  let s = '# Plan de la salle : contour (C), meubles (M), cloisons (W) ; sommets x,y en metres, dans l ordre\n';
+  s += 'C,' + R.plan.outer.map(p => p[0].toFixed(3) + ' ' + p[1].toFixed(3)).join(',') + '\n';
+  R.plan.islands.forEach(I => s += 'M,' + I.map(p => p[0].toFixed(3) + ' ' + p[1].toFixed(3)).join(',') + '\n');
+  (R.plan.innerWalls || []).forEach(([a, b]) => s += 'W,' + [a, b].map(p => p[0].toFixed(3) + ' ' + p[1].toFixed(3)).join(',') + '\n');
+  s += '# Segments x1,y1,x2,y2\n' + R.plan.segments.map(f => [f.x1, f.y1, f.x2, f.y2].map(v => v.toFixed(4)).join(',')).join('\n') + '\n';
+  download('plan_salle.txt', s, 'text/plain');
+};
 
 // MAPS-UI:END
 syncOptUI(); renderList(); resize();

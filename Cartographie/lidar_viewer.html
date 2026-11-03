@@ -5560,7 +5560,7 @@ async function connect(){
   try {
     await port.open({ baudRate: +$('baud').value, bufferSize: 1 << 16 });
   } catch (e){ toast('Ouverture du port impossible : ' + e.message + ' (moniteur série Arduino encore ouvert ?)'); return; }
-  SER.port = port; SER.writer = port.writable.getWriter(); SER.buf = ''; SER.block = null;
+  SER.port = port; SER.writer = port.writable.getWriter(); SER.buf = ''; SER.block = null; SER.diag = null;
   SER.loop = readLoop();
   setConnectedUI(true); setStatus('démarrage…', 'busy');
   await sleep(1500);                                            // l'ESP32 redémarre à l'ouverture du port
@@ -5601,6 +5601,7 @@ function onSerialText(txt){
     const line = SER.buf.slice(0, nl).trim(); SER.buf = SER.buf.slice(nl + 1);
     if (line.startsWith('#SCAN')){ SER.block = { a: [], d: [], i: [] }; continue; }
     if (line.startsWith('#END')){ if (SER.block && SER.block.a.length) onSerialScan(SER.block); SER.block = null; continue; }
+    if (!SER.block && line) serialDiag(line);
     if (!SER.block || line.startsWith('#')) continue;
     const p = line.split(',');
     const a = parseFloat(p[0]), d = parseFloat(p[1]), i = parseFloat(p[2]);
@@ -5608,6 +5609,34 @@ function onSerialText(txt){
   }
   if (SER.buf.length > 1e6) SER.buf = '';
 }
+// Diagnostic USB : messages de démarrage de l'ESP32 reconnus dans le flux série
+function serialDiag(line){
+  const D = SER.diag || (SER.diag = { boots: 0, brownout: false, wifiFw: false, t0: performance.now() });
+  if (/brownout/i.test(line) && !D.brownout){
+    D.brownout = true;
+    toast('Le robot redémarre : tension trop faible (« Brownout »). Par le seul câble USB, le WiFi et le lidar consomment trop : allume la batterie du robot, ou téléverse ESP32_LD06_Capture.ino (sans WiFi) pour travailler en câble.');
+    setStatus('alimentation insuffisante (brownout)', 'busy');
+  }
+  if (/^rst:|^ets |^ESP-ROM/.test(line)){
+    D.boots++;
+    if (D.boots >= 2 && !D.brownout){ toast(`Le robot a redémarré ${D.boots} fois : alimentation (batterie éteinte ?) ou plantage au démarrage.`); setStatus(`redémarrages : ${D.boots}`, 'busy'); }
+  }
+  if (/AP IP|RobotESP32/.test(line)) D.wifiFw = true;
+}
+// Aperçu direct en USB : si aucun scan n'arrive, on le dit (au lieu d'un écran figé)
+setInterval(() => {
+  if (!SER.port || !SER.live || SER.onBlock) return;
+  const age = (performance.now() - (SER.lastScanAt || SER.liveSince || performance.now())) / 1000;
+  if (age > 4 && !SER.noScanWarned){
+    SER.noScanWarned = true;
+    const D = SER.diag || {};
+    toast(D.brownout ? 'Aucun scan : le robot redémarre en boucle (alimentation). Allume la batterie.' :
+      'Aucun scan reçu depuis 4 s en USB. Vérifie : lidar qui tourne (alimentation, batterie allumée), moniteur série d’Arduino fermé, ' +
+      'bon firmware téléversé (ESP32_LD06_Capture.ino ou ESP32_LD06_WiFi.ino), vitesse ' + $('baud').value + ' = PC_BAUD du firmware.');
+    setStatus('aucun scan reçu', 'busy');
+  }
+  if (age <= 4 && SER.noScanWarned){ SER.noScanWarned = false; setStatus('connecté', 'on'); }
+}, 1000);
 function onSerialScan(b){
   SER.lastScanAt = performance.now(); SER.scanCount = (SER.scanCount || 0) + 1;
   if (SER.onBlock) return SER.onBlock(b);
@@ -5658,7 +5687,7 @@ $('connect').onclick = connect;
 $('capture').onclick = capture;
 $('capName').addEventListener('keydown', e => { if (e.key === 'Enter') capture(); });
 $('live').onchange = async e => {
-  SER.live = e.target.checked; SER.liveScan = null;
+  SER.live = e.target.checked; SER.liveScan = null; SER.liveSince = performance.now(); SER.lastScanAt = 0; SER.noScanWarned = false;
   await send(SER.live ? 'c' : 'x'); draw();
 };
 
