@@ -1,20 +1,36 @@
 // ============================================================================
-//  ESP32 LD06 – WiFi (firmware du cours ESP32RobotControl, version avec interface web,
-//  verrou moteurs et trajectoires) + USB (capture CSV / Teleplot pour lidar_viewer.html)
+//  ESP32 LD06 – WiFi (firmware de pilotage du robot : interface web, verrou moteurs,
+//  trajectoires, réglage des moteurs) + USB (capture CSV / Teleplot pour lidar_viewer.html)
+//
+//  MOTEURS : 4 moteurs pilotés DIRECTEMENT par l'ESP32 (plus de bibliothèque MecanumCar_v2),
+//  2 broches PWM par moteur (1 kHz, 8 bits) :
+//      moteur 1 : GPIO15 / GPIO2      moteur 2 : GPIO4  / GPIO16
+//      moteur 3 : GPIO17 / GPIO5      moteur 4 : GPIO18 / GPIO19
+//  Position des roues et sens : réglables dans l'onglet « Moteurs » de l'interface
+//  (par défaut AvG = moteur 1, ArG = moteur 4, AvD = moteur 2, ArD = moteur 3),
+//  enregistrés dans la mémoire de l'ESP32 (Preferences).
+//  Mouvements (roues AvG, ArG, AvD, ArD ; + = vers l'avant) :
+//      avancer ( v, v, v, v)   reculer (-v,-v,-v,-v)
+//      crabe gauche (-v, v, v,-v)   crabe droite ( v,-v,-v, v)
+//      rotation gauche (-v,-v, v, v)   rotation droite ( v, v,-v,-v)
+//
+//  LIDAR : RX lidar -> GPIO33 (Serial2, 230400 bauds), PWM -> GPIO32
 //
 //  WiFi : point d'accès « RobotESP32 » / « 12345678 », http://192.168.4.1
-//    /            interface web (pilotage, trajectoires, tracé)
+//    /            interface web (pilotage, trajectoires, tracé, moteurs)
 //    /scan        scan binaire (lidar_viewer.html, mode WiFi)        /pose ?x=mm&y=mm&z=centidegrés
-//    /forward /backward /left /right /rotateleft /rotateright ?time=ms   (403 LOCKED si verrouillé)
-//    /stop  /arm  /disarm  /status  /traj?seq=F:1000,TR:450&repeat=1  /traj/stop  /ping
-//  Moteurs : arrêtés dès le démarrage (Init + Stop), VERROUILLÉS tant qu'on n'a pas appelé /arm,
-//            reverrouillés après 2 min sans mouvement, ordre d'arrêt rappelé toutes les 300 ms au repos.
+//    /forward /backward /left /right ?time=ms     /rotateleft /rotateright ?time=ms (durée réelle = time/2)
+//    /stop /arm /disarm /status /traj?seq=F:1000,TR:450&repeat=1 /traj/stop /ping
+//    /motortest?m=1..4&v=-255..255&t=ms   /config   /config/set?pos=0,3,1,2&inv=0,1,1,0&speed=128
+//  Sécurité : broches moteur à LOW avant même setup(), moteurs VERROUILLÉS tant qu'on n'a pas
+//  appelé /arm, reverrouillés après 2 min sans mouvement, arrêt rappelé toutes les 300 ms au repos.
 //
 //  USB (ajout pour le TP, comme ESP32_LD06_Capture.ino) :
 //    s = 1 scan | 1..9 = N scans | c = flux CSV | t = Teleplot | x = stop | ? = infos
 //    Format : #SCAN,<id>,<nbPoints>,<vitesse> / angle_deg,distance_mm,intensite / #END
 //
-//  Bibliothèques : LD06 (ld06.h), MecanumCar_v2, AsyncTCP, ESPAsyncWebServer — Carte : ESP32 Dev Module
+//  Bibliothèques : LD06 (ld06.h), AsyncTCP, ESPAsyncWebServer — Carte : ESP32 Dev Module
+//  (pas un module WROVER : GPIO16/17 y sont réservés à la PSRAM)
 // ============================================================================
 
 #include <WiFi.h>
@@ -23,7 +39,7 @@
 #include <AsyncTCP.h>
 #include <ESPAsyncWebServer.h>
 #include "ld06.h"
-#include "MecanumCar_v2.h"
+#include <Preferences.h>
 
 // ============================================================
 // INTERFACE WEB (page HTML servie sur http://192.168.4.1/)
@@ -81,6 +97,8 @@ kbd{background:#232a33;border:1px solid var(--line);border-radius:4px;padding:0 
 #armBtn.armed{background:#0f2e20;border-color:var(--ok);color:var(--ok)}
 body.locked .pad button[data-c]:not([data-c=STOP]){opacity:.35}
 #lockMsg{color:var(--warn);font-size:13px;text-align:center;min-height:18px;margin:6px 0 0}
+.motrow{display:flex;flex-wrap:wrap;gap:8px;align-items:center;padding:10px 0;border-bottom:1px solid var(--line)}
+.motrow .name{min-width:110px}
 </style>
 </head>
 <body class="locked">
@@ -98,6 +116,7 @@ body.locked .pad button[data-c]:not([data-c=STOP]){opacity:.35}
   <button data-tab="pilot" class="on">Pilotage</button>
   <button data-tab="traj">Trajectoire</button>
   <button data-tab="draw">Tracé</button>
+  <button data-tab="mot">Moteurs</button>
 </nav>
 
 <main>
@@ -218,6 +237,26 @@ body.locked .pad button[data-c]:not([data-c=STOP]){opacity:.35}
     <p class="mut">Lancez un test, mesurez la distance (mm) ou l'angle (°) parcouru en 1 s et saisissez la valeur.</p>
   </div>
 </section>
+
+<!-- ================= MOTEURS ================= -->
+<section id="mot" class="hide">
+  <div class="card">
+    <h2>Vitesse des mouvements</h2>
+    <div class="row">
+      <input type="range" id="spd" min="40" max="255" step="5" value="128">
+      <span id="spdV" class="mut">128</span>
+    </div>
+    <p class="mut">Après un changement de vitesse, refaites la calibration de l'onglet « Tracé ».</p>
+  </div>
+  <div class="card">
+    <h2>Réglage des moteurs</h2>
+    <p class="mut">Soulevez le robot et autorisez les moteurs. Pour chaque moteur, appuyez sur « Avant ▶ » :
+    la roue doit tourner dans le sens qui ferait <b>avancer</b> le robot. Sinon cochez « Inverser ».
+    Indiquez ensuite où se trouve la roue. Les réglages sont enregistrés dans le robot.</p>
+    <div id="motList"></div>
+    <p class="mut" id="motMsg"></p>
+  </div>
+</section>
 </main>
 
 <button id="estop" class="danger">■ STOP</button>
@@ -248,7 +287,7 @@ const store = {
 /* ---------- Onglets ---------- */
 $$('nav button').forEach(b => b.onclick = () => {
   $$('nav button').forEach(x => x.classList.toggle('on', x === b));
-  ['pilot','traj','draw'].forEach(id => $('#'+id).classList.toggle('hide', id !== b.dataset.tab));
+  ['pilot','traj','draw','mot'].forEach(id => $('#'+id).classList.toggle('hide', id !== b.dataset.tab));
   if (b.dataset.tab === 'draw') drawCanvas();
 });
 
@@ -581,7 +620,54 @@ function poll(){
   }).finally(() => setTimeout(poll, 500));
 }
 
-renderSteps(); refreshSaved(); drawCanvas(); poll();
+/* ================= MOTEURS ================= */
+const MOT_PINS = ['D15 / D2', 'D4 / D16', 'D17 / D5', 'D18 / D19'];
+const POS_LBL  = ['Avant gauche', 'Arrière gauche', 'Avant droit', 'Arrière droit'];
+let cfg = {pos:[0,3,1,2], inv:[0,1,1,0], speed:128};
+
+function motMsg(t){ $('#motMsg').textContent = t; }
+function saveCfg(){
+  return api('/config/set?pos=' + cfg.pos.join(',') + '&inv=' + cfg.inv.join(',') + '&speed=' + cfg.speed)
+    .then(() => motMsg('Réglages enregistrés.'))
+    .catch(() => motMsg('Erreur d\'enregistrement.'));
+}
+function renderMot(){
+  const box = $('#motList');
+  box.innerHTML = '';
+  for (let m = 0; m < 4; m++) {
+    const d = document.createElement('div');
+    d.className = 'motrow';
+    const p = cfg.pos.indexOf(m);
+    d.innerHTML =
+      '<div class="name"><b>Moteur ' + (m+1) + '</b><br><span class="mut">' + MOT_PINS[m] + '</span></div>' +
+      '<select>' + POS_LBL.map((l, i) => '<option value="' + i + '"' + (p === i ? ' selected' : '') + '>' + l + '</option>').join('') + '</select>' +
+      '<label style="flex-direction:row;align-items:center;gap:4px;color:var(--txt)"><input type="checkbox"' + (cfg.inv[m] ? ' checked' : '') + '> Inverser</label>' +
+      '<button data-v="-1">◀ Arrière</button><button data-v="1">Avant ▶</button>';
+    d.querySelector('select').onchange = e => {
+      const np = +e.target.value, op = cfg.pos.indexOf(m), other = cfg.pos[np];
+      cfg.pos[np] = m; cfg.pos[op] = other;      // échange avec le moteur qui occupait cette place
+      saveCfg(); renderMot();
+    };
+    d.querySelector('input').onchange = e => { cfg.inv[m] = e.target.checked ? 1 : 0; saveCfg(); };
+    d.querySelectorAll('button').forEach(b => b.onclick = () => {
+      if (!armed) { lockWarn(); return; }
+      api('/motortest?m=' + (m+1) + '&v=' + (b.dataset.v * cfg.speed) + '&t=1000')
+        .then(() => motMsg('Moteur ' + (m+1) + ' : ' + (b.dataset.v > 0 ? 'avant' : 'arrière') + ' pendant 1 s'))
+        .catch(e => { if (e === 'LOCKED') { setArmedUI(false); lockWarn(); } });
+    });
+    box.appendChild(d);
+  }
+}
+function updSpd(){ $('#spdV').textContent = $('#spd').value; }
+$('#spd').oninput = updSpd;
+$('#spd').onchange = () => { cfg.speed = +$('#spd').value; saveCfg(); };
+function loadCfg(){
+  fetch('/config', {cache:'no-store'}).then(r => r.json()).then(c => {
+    cfg = c; $('#spd').value = c.speed; updSpd(); renderMot();
+  }).catch(() => { renderMot(); setTimeout(loadCfg, 2000); });
+}
+
+renderSteps(); refreshSaved(); drawCanvas(); loadCfg(); poll();
 </script>
 </body>
 </html>
@@ -639,7 +725,131 @@ uint32_t moveDuration = 0;
 SemaphoreHandle_t motorMutex;
 const int MAX_MOVE_MS = 2000;
 
-mecanumCar mecanumCar(19, 21);
+// ------------------------------------------------------------
+// 4 MOTEURS PILOTES DIRECTEMENT PAR L'ESP32 (2 broches par moteur)
+// ------------------------------------------------------------
+struct MotorPins { uint8_t a; uint8_t b; };
+const MotorPins MOTOR_PINS[4] = {
+  {15,  2},   // moteur 1 : D15 / D2
+  { 4, 16},   // moteur 2 : D4  / D16
+  {17,  5},   // moteur 3 : D17 / D5
+  {18, 19},   // moteur 4 : D18 / D19
+};
+
+// Positions des roues sur le robot
+enum { POS_AVG = 0, POS_ARG = 1, POS_AVD = 2, POS_ARD = 3 };
+
+// Réglages (modifiables dans l'onglet "Moteurs" de l'interface,
+// enregistrés dans la mémoire de l'ESP32)
+uint8_t posMotor[4] = {0, 3, 1, 2};          // [AvG, ArG, AvD, ArD] -> moteur (0 = moteur 1)
+bool    motorInv[4] = {false, true, true, false}; // inverser le sens d'un moteur
+uint8_t motorSpeed  = 128;                   // puissance des mouvements (0..255) : 128 = 50 %
+
+// Inverse le sens de TOUS les moteurs (le robot reculait quand on demandait d'avancer)
+const bool INVERSER_TOUT = true;
+
+const int PWM_FREQ = 1000;    // 1 kHz : plus de force avec les petits drivers moteur
+const int PWM_RES  = 8;       // 0..255
+bool pwmReady = false;
+Preferences prefs;
+
+void pwmWrite(uint8_t m, bool second, uint8_t val) {
+  const uint8_t pin = second ? MOTOR_PINS[m].b : MOTOR_PINS[m].a;
+  if (!pwmReady) { digitalWrite(pin, LOW); return; }
+#if ESP_ARDUINO_VERSION_MAJOR >= 3
+  ledcWrite(pin, val);
+#else
+  ledcWrite(m * 2 + (second ? 1 : 0), val);
+#endif
+}
+
+// Un moteur : v de -255 à +255, 0 = arrêt
+void motorRaw(uint8_t m, int v) {
+  if (m > 3) return;
+  v = constrain(v, -255, 255);
+  if (motorInv[m]) v = -v;
+  if (INVERSER_TOUT) v = -v;
+  if (v > 0)      { pwmWrite(m, false, 0);  pwmWrite(m, true, v); }
+  else if (v < 0) { pwmWrite(m, false, -v); pwmWrite(m, true, 0); }
+  else            { pwmWrite(m, false, 0);  pwmWrite(m, true, 0); }
+}
+
+// Les 4 roues par position
+void setWheels(int avG, int arG, int avD, int arD) {
+  motorRaw(posMotor[POS_AVG], avG);
+  motorRaw(posMotor[POS_ARG], arG);
+  motorRaw(posMotor[POS_AVD], avD);
+  motorRaw(posMotor[POS_ARD], arD);
+}
+
+// Toutes les broches moteur à 0 (appelé en tout premier au démarrage)
+void motorPinsLow() {
+  for (int m = 0; m < 4; m++) {
+    pinMode(MOTOR_PINS[m].a, OUTPUT); digitalWrite(MOTOR_PINS[m].a, LOW);
+    pinMode(MOTOR_PINS[m].b, OUTPUT); digitalWrite(MOTOR_PINS[m].b, LOW);
+  }
+}
+
+// Met les 8 broches moteur à LOW dès le démarrage de l'ESP32,
+// AVANT même setup() (exécuté pendant l'initialisation des variables globales).
+struct EarlyMotorOff { EarlyMotorOff() { motorPinsLow(); } };
+EarlyMotorOff earlyMotorOff;
+
+void motorPwmBegin() {
+  for (int m = 0; m < 4; m++) {
+#if ESP_ARDUINO_VERSION_MAJOR >= 3
+    ledcAttach(MOTOR_PINS[m].a, PWM_FREQ, PWM_RES);
+    ledcAttach(MOTOR_PINS[m].b, PWM_FREQ, PWM_RES);
+#else
+    ledcSetup(m * 2,     PWM_FREQ, PWM_RES); ledcAttachPin(MOTOR_PINS[m].a, m * 2);
+    ledcSetup(m * 2 + 1, PWM_FREQ, PWM_RES); ledcAttachPin(MOTOR_PINS[m].b, m * 2 + 1);
+#endif
+  }
+  pwmReady = true;
+}
+
+bool posIsValid() {
+  bool seen[4] = {false, false, false, false};
+  for (int i = 0; i < 4; i++) {
+    if (posMotor[i] > 3 || seen[posMotor[i]]) return false;
+    seen[posMotor[i]] = true;
+  }
+  return true;
+}
+
+void loadMotorConfig() {
+  prefs.begin("robot", true);
+  if (prefs.getBytesLength("pos") == 4) prefs.getBytes("pos", posMotor, 4);
+  if (prefs.getBytesLength("inv") == 4) {
+    uint8_t t[4]; prefs.getBytes("inv", t, 4);
+    for (int i = 0; i < 4; i++) motorInv[i] = t[i] != 0;
+  }
+  motorSpeed = prefs.getUChar("puissance", motorSpeed);
+  prefs.end();
+  if (!posIsValid()) { posMotor[0] = 0; posMotor[1] = 3; posMotor[2] = 1; posMotor[3] = 2; }
+}
+
+void saveMotorConfig() {
+  uint8_t t[4];
+  for (int i = 0; i < 4; i++) t[i] = motorInv[i] ? 1 : 0;
+  prefs.begin("robot", false);
+  prefs.putBytes("pos", posMotor, 4);
+  prefs.putBytes("inv", t, 4);
+  prefs.putUChar("puissance", motorSpeed);
+  prefs.end();
+}
+
+// Mouvements du robot (mêmes noms que l'ancienne bibliothèque)
+struct RobotCar {
+  void Stop()       { setWheels(0, 0, 0, 0); }
+  void Advance()    { const int v = motorSpeed; setWheels( v,  v,  v,  v); }
+  void Back()       { const int v = motorSpeed; setWheels(-v, -v, -v, -v); }
+  void Turn_Left()  { const int v = motorSpeed; setWheels(-v, -v,  v,  v); }
+  void Turn_Right() { const int v = motorSpeed; setWheels( v,  v, -v, -v); }
+  void L_Move()     { const int v = motorSpeed; setWheels(-v,  v,  v, -v); }
+  void R_Move()     { const int v = motorSpeed; setWheels( v, -v, -v,  v); }
+};
+RobotCar mecanumCar;
 
 // ------------------------------------------------------------
 // VERROU DE SECURITE MOTEURS
@@ -652,9 +862,7 @@ volatile bool motorsArmed = false;
 const uint32_t AUTO_LOCK_MS = 120000;   // 2 min d'inactivité -> verrouillage (0 = jamais)
 uint32_t lastActivity = 0;
 
-// Tant que le robot est au repos, on renvoie STOP régulièrement :
-// si la carte moteur est alimentée après l'ESP32 (ou redémarre), elle
-// reçoit quand même l'ordre d'arrêt au lieu de tourner toute seule.
+// Tant que le robot est au repos, on remet régulièrement les moteurs à 0.
 const uint32_t IDLE_STOP_REFRESH_MS = 300;
 uint32_t lastIdleStop = 0;
 
@@ -892,12 +1100,9 @@ void handleSerial() {
 // ============================================================
 void setup() {
   // --- MOTEURS A L'ARRET EN TOUT PREMIER ---
-  // Stop immédiat (au cas où la carte moteur est déjà prête), puis Init()
-  // qui attend 1 s le démarrage de la carte moteur et renvoie Stop.
   motorsArmed = false;
-  mecanumCar.Stop();
-  mecanumCar.Init();
-  mecanumCar.Stop();
+  motorPinsLow();
+  loadMotorConfig();
 
   Serial.begin(PC_BAUD);
   delay(200);
@@ -906,11 +1111,15 @@ void setup() {
   if (!motorMutex) { while (true) { mecanumCar.Stop(); delay(1000); } }
   stopRobot();
 
-  // LIDAR UART (tampon plus grand que dans le firmware du cours : l'envoi USB est bloquant)
+  // LIDAR UART (tampon plus grand que dans le firmware de pilotage : l'envoi USB est bloquant)
   Serial2.setRxBufferSize(4096);
   Serial2.begin(LIDAR_BAUD, SERIAL_8N1, RX_LIDAR, TX_LIDAR);
   Serial2.setTimeout(2);
   lidar.init(); // Sets the Lidar PWM input on GPIO32 HIGH (no periodic PWM).
+
+  // PWM moteurs (après Serial2 pour être sûr de garder GPIO17 pour le moteur 3)
+  motorPwmBegin();
+  stopRobot();
 
 #if USE_WIFI
   // WIFI AP
@@ -957,6 +1166,70 @@ void setup() {
   server.on("/disarm", HTTP_GET, [](AsyncWebServerRequest* r){
     setArmed(false);
     sendText(r, 200, "DISARMED");
+  });
+
+  // ---------- REGLAGE / TEST DES MOTEURS ----------
+  // /motortest?m=1..4&v=-255..255&t=ms  : fait tourner UN moteur
+  server.on("/motortest", HTTP_GET, [](AsyncWebServerRequest* r){
+    const int m = getArg(r, "m", 0) - 1;
+    const int v = constrain(getArg(r, "v", 0), -255, 255);
+    const int t = constrain(getArg(r, "t", 1000), 1, MAX_MOVE_MS);
+    if (m < 0 || m > 3) { sendText(r, 400, "BAD_MOTOR"); return; }
+    xSemaphoreTake(motorMutex, portMAX_DELAY);
+    if (!motorsArmed) {
+      xSemaphoreGive(motorMutex);
+      sendText(r, 403, "LOCKED");
+      return;
+    }
+    trajRunning = false;
+    mecanumCar.Stop();
+    motorRaw(m, v);
+    moveStarted = millis();
+    moveDuration = t;
+    lastActivity = moveStarted;
+    moving = true;
+    xSemaphoreGive(motorMutex);
+    sendText(r, 200, "OK");
+  });
+
+  // /config : lit les réglages moteurs
+  server.on("/config", HTTP_GET, [](AsyncWebServerRequest* r){
+    char buf[128];
+    xSemaphoreTake(motorMutex, portMAX_DELAY);
+    snprintf(buf, sizeof(buf),
+      "{\"pos\":[%u,%u,%u,%u],\"inv\":[%d,%d,%d,%d],\"speed\":%u}",
+      posMotor[0], posMotor[1], posMotor[2], posMotor[3],
+      motorInv[0], motorInv[1], motorInv[2], motorInv[3], motorSpeed);
+    xSemaphoreGive(motorMutex);
+    auto x = r->beginResponse(200, "application/json", buf);
+    addCORS(x); r->send(x);
+  });
+
+  // /config/set?pos=0,3,1,2&inv=0,1,1,0&speed=150 : modifie et enregistre
+  server.on("/config/set", HTTP_GET, [](AsyncWebServerRequest* r){
+    int p[4] = {-1, -1, -1, -1}, iv[4] = {0, 0, 0, 0};
+    bool hasPos = false, hasInv = false;
+    if (r->hasParam("pos")) {
+      hasPos = sscanf(r->getParam("pos")->value().c_str(), "%d,%d,%d,%d", &p[0], &p[1], &p[2], &p[3]) == 4;
+    }
+    if (r->hasParam("inv")) {
+      hasInv = sscanf(r->getParam("inv")->value().c_str(), "%d,%d,%d,%d", &iv[0], &iv[1], &iv[2], &iv[3]) == 4;
+    }
+    xSemaphoreTake(motorMutex, portMAX_DELAY);
+    trajRunning = false;           // on arrête tout pendant un changement de réglage
+    moving = false;
+    mecanumCar.Stop();
+    uint8_t oldPos[4];
+    memcpy(oldPos, posMotor, 4);
+    if (hasPos) {
+      for (int i = 0; i < 4; i++) posMotor[i] = (uint8_t)constrain(p[i], 0, 3);
+      if (!posIsValid()) memcpy(posMotor, oldPos, 4);
+    }
+    if (hasInv) for (int i = 0; i < 4; i++) motorInv[i] = iv[i] != 0;
+    if (r->hasParam("speed")) motorSpeed = (uint8_t)constrain(getArg(r, "speed", motorSpeed), 0, 255);
+    xSemaphoreGive(motorMutex);
+    saveMotorConfig();
+    sendText(r, 200, "SAVED");
   });
 
   // ---------- TRAJECTOIRE ----------

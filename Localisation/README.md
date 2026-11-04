@@ -4,7 +4,7 @@
 
 | Fichier | Rôle |
 |---|---|
-| `ESP32_LD06_WiFi.ino` | Firmware WiFi + USB : firmware du cours (réseau RobotESP32, mêmes routes) dans sa version avec interface web (`http://192.168.4.1/`), **verrou moteurs** (`/arm`, `/disarm`, `/status`), trajectoires (`/traj`) et moteurs arrêtés dès le démarrage, plus les commandes USB de capture |
+| `ESP32_LD06_WiFi.ino` | Firmware WiFi + USB : firmware du cours (réseau RobotESP32, mêmes routes) dans sa version avec interface web (`http://192.168.4.1/`), **verrou moteurs** (`/arm`, `/disarm`, `/status`), trajectoires (`/traj`), réglage des moteurs (`/motortest`, `/config`), 4 moteurs pilotés directement (GPIO 15/2, 4/16, 17/5, 18/19), arrêtés dès le démarrage, plus les commandes USB de capture |
 | `ESP32_LD06_Capture.ino` | Firmware ESP32 : envoie un scan 360° en CSV **sur demande** par USB |
 | `lidar_core.js` | Bibliothèque de calcul : grid map (Bresenham, mise à jour, export), segments (extraction, angle, proximité, fusion, intersection, découpe) et carte vectorielle |
 | `lidar_loc.js` | Jour 2 : localisation (grid map, carte vectorielle, entre scans), simulateur et banc d'évaluation |
@@ -52,7 +52,29 @@ Deux firmwares possibles, avec les mêmes routes WiFi :
 - `ESP32_LD06_WiFi.ino` (ce projet) : la partie WiFi du firmware du cours, plus les commandes USB de capture.
 - `ESP32RobotControl.ino` (ressources du module, `Tools/RobotControl/ESP32RobotControl/`).
 
-Bibliothèques : LD06, MecanumCar_v2 (archives .ZIP du module), AsyncTCP et ESPAsyncWebServer (projet ESP32Async).
+Bibliothèques : LD06 (archive .ZIP du module), AsyncTCP et ESPAsyncWebServer (projet ESP32Async). `MecanumCar_v2` n'est
+plus nécessaire : les moteurs sont pilotés directement par l'ESP32.
+
+**Câblage des moteurs** (2 broches PWM par moteur, 1 kHz) :
+
+| Moteur | Broches | Roue par défaut |
+|---|---|---|
+| 1 | GPIO15 / GPIO2 | avant gauche |
+| 2 | GPIO4 / GPIO16 | avant droite |
+| 3 | GPIO17 / GPIO5 | arrière droite |
+| 4 | GPIO18 / GPIO19 | arrière gauche |
+
+Lidar : RX → GPIO33, PWM → GPIO32.
+
+**Réglage des roues.** Il se fait une fois, robot soulevé, dans l'interface du robot (`http://192.168.4.1/`, onglet *Moteurs*) :
+1. Pour chaque moteur, appuyer sur « Avant ▶ » : la roue doit tourner dans le sens qui fait avancer le robot. Sinon, cocher « Inverser ».
+2. Choisir la position de la roue.
+
+Les réglages sont enregistrés dans l'ESP32. Pour tester sans WiFi ni lidar, utiliser `test_moteurs/test_moteurs.ino` (moniteur série à 115200 bauds, touches `1`…`4`).
+
+**Rotations.** Le firmware fait tourner le robot pendant `time/2` ms sur `/rotateleft` et `/rotateright`. `lidar_viewer.html` envoie donc le double de la durée voulue, comme l'interface du robot.
+
+**Roue qui tourne un instant à la mise sous tension.** Pendant le démarrage de l'ESP32, avant que le programme ne tourne, GPIO15 et GPIO5 sont tirés à l'état haut par la puce elle-même : les moteurs 1 et 3 peuvent donner un à-coup de quelques dixièmes de seconde. Le programme met ensuite toutes les broches à 0 avant même `setup()`. Pour supprimer l'à-coup, il faut une résistance de rappel de 10 kΩ vers la masse sur GPIO15 et sur GPIO5, ou bien mettre l'alimentation des moteurs sous tension après l'ESP32.
 
 1. Téléverser le firmware (carte *ESP32 Dev Module*), puis ouvrir le moniteur série à 115200 bauds pour lire l'adresse.
 2. Connecter le PC au WiFi **RobotESP32** (mot de passe `12345678`).

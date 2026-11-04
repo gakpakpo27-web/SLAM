@@ -5953,7 +5953,9 @@ async function robotCmd(path, quiet){
 function drive(mv){
   if (!SER.wifi) return;
   const t = Math.max(1, Math.min(2000, Math.round(parseFloat($('driveMs').value) || 300)));
-  robotCmd(`/${mv}?time=${t}`);
+  // le firmware divise par 2 la durée des rotations (/rotateleft, /rotateright) : on envoie le double pour que
+  // le robot tourne vraiment t ms (comme son interface web), et la prédiction du suivi reste juste
+  robotCmd(`/${mv}?time=${mv.startsWith('rotate') ? 2 * t : t}`);
   if (typeof liveOnDrive === 'function') liveOnDrive(mv, t);
   if (typeof amOnDrive === 'function') amOnDrive(mv, t);
   setStatus(`${mv} ${t} ms`, 'busy'); clearTimeout(SER.driveT);

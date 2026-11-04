@@ -19,11 +19,9 @@
 // ============================================================================
 
 #include "ld06.h"
-// Mettre 0 si la carte moteur n'est pas montée (ou la bibliothèque MecanumCar_v2 pas installée)
+// Ce firmware ne fait pas rouler le robot : il garde seulement les 4 moteurs ARRÊTÉS
+// (mêmes broches que ESP32_LD06_WiFi.ino, moteurs pilotés directement par l'ESP32). Mettre 0 si aucun moteur n'est câblé.
 #define STOP_MOTORS 1
-#if STOP_MOTORS
-#include "MecanumCar_v2.h"   // seulement pour garder les moteurs ARRÊTÉS (ce firmware ne fait pas rouler le robot)
-#endif
 
 #define RX_LIDAR      33
 #define TX_LIDAR      -1          // TX non utilisé
@@ -33,7 +31,14 @@
 
 LD06 ld06(Serial2, LD06_PWM_PIN);
 #if STOP_MOTORS
-mecanumCar mecanumCar(19, 21);   // mêmes broches que le firmware du cours
+// 2 broches par moteur : les deux à LOW = moteur arrêté (roue libre)
+const uint8_t MOTOR_PINS[8] = {15, 2,  4, 16,  17, 5,  18, 19};
+void motorPinsLow() {
+  for (uint8_t k = 0; k < 8; k++) { pinMode(MOTOR_PINS[k], OUTPUT); digitalWrite(MOTOR_PINS[k], LOW); }
+}
+// Exécuté pendant l'initialisation des variables globales, AVANT setup() : les roues s'arrêtent au plus tôt
+struct EarlyMotorOff { EarlyMotorOff() { motorPinsLow(); } };
+EarlyMotorOff earlyMotorOff;
 #endif
 
 enum Mode { MODE_IDLE, MODE_STREAM_CSV, MODE_TELEPLOT };
@@ -84,14 +89,17 @@ void handleCommands() {
 // ----------------------------------------------------------------------------
 void setup() {
 #if STOP_MOTORS
-  // Sans ordre, la carte moteur peut faire tourner les roues dès la mise sous tension : arrêt immédiat, répété ~1 s
-  mecanumCar.Stop();
-  for (int k = 0; k < 10; k++) { mecanumCar.Stop(); delay(20); }
+  motorPinsLow();                                // roues arrêtées en tout premier
 #endif
   Serial.begin(PC_BAUD);
 
   Serial2.setRxBufferSize(4096);
   Serial2.begin(LIDAR_BAUD, SERIAL_8N1, RX_LIDAR, TX_LIDAR);
+#if STOP_MOTORS
+  // TX_LIDAR = -1 : selon la version du core, Serial2 reprend sa broche TX par défaut, GPIO17 = moteur 3 (niveau haut
+  // au repos -> la roue tournerait). On rend la broche aux moteurs juste après.
+  motorPinsLow();
+#endif
   Serial2.setTimeout(10);
   ld06.init();
 
@@ -108,7 +116,7 @@ void loop() {
   handleCommands();
 #if STOP_MOTORS
   static uint32_t lastStop = 0;                  // rappel de l'arrêt toutes les 300 ms (sécurité)
-  if (millis() - lastStop >= 300) { lastStop = millis(); mecanumCar.Stop(); }
+  if (millis() - lastStop >= 300) { lastStop = millis(); motorPinsLow(); }
 #endif
 
   if (ld06.readScan()) {                 // true quand un tour complet est prêt
