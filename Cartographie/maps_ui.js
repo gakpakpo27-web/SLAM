@@ -379,10 +379,10 @@ function vecOpt(){
   };
 }
 const vecSnapshot = () => JSON.stringify(VEC.map);
-function vecPush(){ VEC.history.push({ map: vecSnapshot(), last: VEC.last, qi: VEC.qi }); if (VEC.history.length > 50) VEC.history.shift(); }
+function vecPush(){ VEC.history.push({ map: vecSnapshot(), last: VEC.last, qi: VEC.qi, openings: VEC.openings || null }); if (VEC.history.length > 50) VEC.history.shift(); }
 function vecUndo(){
   const h = VEC.history.pop(); if (!h) return toast('Rien à annuler');
-  VEC.map = JSON.parse(h.map); VEC.last = h.last; VEC.qi = h.qi; VEC.sel = -1; vecRefresh();
+  VEC.map = JSON.parse(h.map); VEC.last = h.last; VEC.qi = h.qi; VEC.sel = -1; VEC.openings = h.openings || null; vecRefresh();
 }
 function vecIntegrate(s){
   const [X, Y] = toWorldPts(s), pts = [];
@@ -437,6 +437,11 @@ function drawVectorMap(){
     ctx.strokeStyle = '#ff5c5c'; ctx.lineWidth = 2.5; ctx.setLineDash([6, 5]);
     ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke(); ctx.setLineDash([]);
   }
+  if (VEC.openings) for (const o of VEC.openings){
+    const [x1, y1] = w2s(o.x1, o.y1), [x2, y2] = w2s(o.x2, o.y2);
+    ctx.strokeStyle = '#4fc3ffaa'; ctx.lineWidth = 7; ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke();
+    ctx.fillStyle = '#4fc3ff'; ctx.font = '11px system-ui'; ctx.fillText(`${o.width.toFixed(2)} m`, (x1 + x2) / 2 + 6, (y1 + y2) / 2 - 6);
+  }
   const maxC = numVal('vMax');
   const minC = numVal('vMinConf');
   M.features.forEach((f, k) => {
@@ -474,7 +479,7 @@ function vecPointerDown(e, mx, my){
   if (best < 0) return false;
   VEC.sel = best; vecRefresh(); return true;
 }
-$('vNew').onclick = () => { vecPush(); VEC.map = LC.createVectorMap(); VEC.last = null; VEC.queue = []; VEC.qi = 0; VEC.sel = -1; vecRefresh(); toast('Carte vectorielle vide'); };
+$('vNew').onclick = () => { vecPush(); VEC.openings = null; VEC.map = LC.createVectorMap(); VEC.last = null; VEC.queue = []; VEC.qi = 0; VEC.sel = -1; vecRefresh(); toast('Carte vectorielle vide'); };
 $('vOne').onclick = () => {
   const s = needSel(); if (!s) return;
   vecPush(); const st = vecIntegrate(s); vecRefresh();
@@ -499,6 +504,21 @@ $('vAll').onclick = () => {
   toast(`${vis.length} scans intégrés en ${(performance.now() - t0).toFixed(0)} ms : ${VEC.map.features.length} segments, ${VEC.map.corners.length} coins`);
 };
 $('vUndo').onclick = vecUndo;
+$('vClose').onclick = () => {
+  if (!VEC.map.features.length) return toast('Carte vide');
+  const R = LM.closeOutline(VEC.map.features, { minObs: numVal('vcObs'), minLen: numVal('vcLen'), gapMax: numVal('vcGap'), extMax: numVal('vcExt') });
+  if (!R.segments.length) return toast('Aucun mur fiable : baisse « vu au moins » ou la longueur');
+  vecPush();
+  const M = LC.createVectorMap();
+  R.segments.forEach(f => M.features.push(Object.assign({}, f, { id: M.nextId++ })));
+  M.scans = VEC.map.scans; M.corners = LC.computeCorners(M.features, vecOpt());
+  VEC.map = M; VEC.sel = -1; VEC.last = null; VEC.openings = R.openings; vecRefresh();
+  const r = R.report, el = $('vCloseInfo'); el.style.display = '';
+  el.innerHTML = (R.closed ? `<b style="color:#4cd97b">Contour fermé</b> · ${r.area.toFixed(1)} m² à l’intérieur` : '<b style="color:#ffb347">Contour encore ouvert</b> : augmente « combler les trous » ou « prolonger », ou ajoute un scan là où le mur manque') +
+    `<br>${r.before} segments → ${r.after} · ${r.joined} coin(s) raccordé(s)` + (r.outside ? ` · ${r.outside} segment(s) hors de la salle supprimé(s)` : '') +
+    (R.openings.length ? '<br>Trous comblés : ' + R.openings.map(o => `${o.width.toFixed(2)} m en (${o.x.toFixed(1)} ; ${o.y.toFixed(1)})`).join(', ') : '') + '<br>Annuler : bouton Annuler.';
+  toast(R.closed ? `Contour fermé : ${r.after} segments, ${R.openings.length} ouverture(s)` : 'Contour encore ouvert');
+};
 $('vExp').onclick = () => { if (!VEC.map.features.length) return toast('Carte vide'); download('carte_vectorielle_proprietes.txt', LC.vectorMapToText(VEC.map), 'text/plain'); };
 $('vFile').onchange = async e => {
   const f = e.target.files[0]; e.target.value = ''; if (!f) return;
@@ -1081,6 +1101,14 @@ function lvRaw(s){                         // scan brut avec la convention d'ang
   return { name: s.name, a, d: s.d, i: s.i, pose: s.pose ? { ...s.pose } : null, id: s.id };
 }
 // --- carte de référence
+// clé de la carte : change dès qu'un scan visible est ajouté, masqué ou déplacé, ou que la convention d'angle change
+function liveMapKey(){
+  const src = $('lvSrc').value;
+  if (src !== 'scans') return src + ':' + (src === 'proc' || src === 'plan' ? (PROC.res ? PROC.res.t || PROC.res.grid.W + 'x' + PROC.res.grid.H : '') : '');
+  return 'scans:' + (S.opt.mirror ? 'm' : '') + (S.opt.aOff || 0) + ':' + S.scans.filter(s => s.visible)
+    .map(s => s.id + '@' + (s.pose ? s.pose.x.toFixed(3) + ',' + s.pose.y.toFixed(3) + ',' + s.pose.th.toFixed(2) : '-')).join(';');
+}
+function liveMapStale(){ return LIVE.map && $('lvSrc').value !== 'sim' && LIVE.mapKey !== liveMapKey(); }
 function livePrepare(silent){
   const src = $('lvSrc').value, t0 = performance.now();
   let grid = null, segs = null, label = '';
@@ -1100,7 +1128,7 @@ function livePrepare(silent){
     } else {
       LIVE.sim = LL.demoScenario(3); grid = LIVE.sim.refs.grid; segs = LIVE.sim.refs.vmap.features; label = 'salle simulée (9 scans)';
     }
-    LIVE.map = LL.prepareMap(grid, segs); LIVE.map.label = label; LIVE.mapImg = null; LIVE.looCache.clear();
+    LIVE.map = LL.prepareMap(grid, segs); LIVE.map.label = label; LIVE.mapImg = null; LIVE.looCache.clear(); LIVE.mapKey = liveMapKey();
     liveCorrReset(true);
     liveReset(false);
     const st = LC.gridStats(grid);
@@ -1138,11 +1166,24 @@ function liveFeedScan(b, truth){
       }
       LIVE.tracker.M = M;
     } else if (LIVE.tracker) LIVE.tracker.M = LIVE.map;
-    const local = LL.localPoints(raw), pts = LL.uniformSubsample(local, { max: 350 });
+    let local = LL.localPoints(raw);
+    if (LIVE.flipLive && LIVE.feed === 'robot') local = local.map(q => ({ ...q, y: -q.y }));
+    const pts = LL.uniformSubsample(local, { max: 350 });
     const motion = $('lvOdom').checked ? LIVE.motion : null; LIVE.motion = null;
     const r = LL.trackerUpdate(LIVE.tracker, pts, motion, local);
     LIVE.stats.n++; if (r.mode === 'global') LIVE.stats.global++; if (r.mode === 'relocalisation') LIVE.stats.reloc++;
     const T = LIVE.tracker;
+    // contrôle global : le scan est aussi cherché sur TOUTE la carte, exactement comme l'outil « Retrouver la position ».
+    // Si l'outil trouve une position « sûre » ailleurs, elle l'emporte : le suivi s'était accroché à une mauvaise place
+    // (robot poussé à la main sans commande, départ « base » faux, faux départ au milieu des pieds de chaises...).
+    const every = numVal('lvCheckEvery') * 1000;
+    if ($('lvCheck').checked && r.mode !== 'global' && !(LIVE.tracker.M !== LIVE.map) && Date.now() - (LIVE.lastCheck || 0) >= every){
+      LIVE.lastCheck = Date.now();
+      const c = LL.trackerCheckGlobal(T, pts, { cur: r.inliers });
+      LIVE.check = { g: c.g, replaced: c.replaced, t: Date.now(), tracked: c.replaced ? null : (T.pose && { ...T.pose }) };
+      if (!(LIVE.mir && LIVE.mir.ok) && !LIVE.mirrorHint && (!LIVE.mir || LIVE.mir.n < 10)) liveMirrorTest(local, c.g);
+      if (c.replaced){ LIVE.stats.fixed = (LIVE.stats.fixed || 0) + 1; r.status = 'relocalisé'; r.mode = 'corrigé par le contrôle global'; r.inliers = c.g.inliers; }
+    }
     LIVE.cur = { local, res: r, truth: truth || null, t: Date.now() };
     if ($('lvLearn').checked && LIVE.corr && T.pose && (r.status === 'localisé' || r.status === 'relocalisé') && !(T.hyps && T.hyps.length > 1)){
       LM.correctorAdd(LIVE.corr, T.pose, local);
@@ -1190,18 +1231,34 @@ function liveState(){
   if (r.mode === 'relocalisation à confirmer') h += `<br><span style="color:#ffb347">Une autre position est possible : le robot ne saute pas, il garde les deux et laisse son déplacement trancher.</span>`;
   if (r.status === 'ambigu' && T.hyps) h += `<br><span style="color:#ffb347">${T.hyps.length} positions possibles : déplacer le robot pour lever le doute, ou l’indiquer à la main.</span>`;
   if (tr && p){ const e = LL.poseError(p, tr); h += `<br>écart à la vraie pose : <b style="color:${e.pos <= 0.05 && e.ang <= 2 ? '#4cd97b' : '#ff6b6b'}">${(e.pos * 100).toFixed(1)} cm, ${e.ang.toFixed(2)}°</b>`; }
+  const ck = LIVE.check;
+  if (ck && Date.now() - ck.t < 15000){
+    const g = ck.g, gc = { 'sûr': '#4cd97b', 'ambigu': '#ffb347', 'incertain': '#ff6b6b' }[g.confidence] || '#ccc';
+    h += `<br><span class="help">Contrôle global (comme l’outil) : (${g.pose.x.toFixed(2)} ; ${g.pose.y.toFixed(2)}) m, ${g.pose.th.toFixed(0)}° · <b style="color:${gc}">${g.confidence}</b> · ${(g.inliers * 100).toFixed(0)} %`;
+    if (ck.replaced) h += ` · <b style="color:#4cd97b">a corrigé le suivi</b>`;
+    else if (p){ const e = LL.poseError(p, g.pose); h += ` · écart au suivi ${(e.pos * 100).toFixed(0)} cm, ${e.ang.toFixed(0)}°`; }
+    h += '</span>';
+  }
+  if (LIVE.mirrorHint) h += `<br><b style="color:#ff6b6b">Le scan direct semble en MIROIR par rapport à la carte</b> : retourné, il colle à ${(LIVE.mirrorHint.r1.inliers * 100).toFixed(0)} % ` +
+    `au lieu de ${(LIVE.mirrorHint.r0.inliers * 100).toFixed(0)} % (moyenne sur ${LIVE.mirrorHint.n} scan${LIVE.mirrorHint.n > 1 ? 's' : ''}). Les scans de la carte et ceux du robot n’ont pas le même sens de rotation ` +
+    `(scans importés de Teleplot, autre firmware...). <button id="lvMirFix">Corriger</button>`;
+  else if (LIVE.mir && LIVE.mir.ok) h += `<br><span class="help">Convention d’angle vérifiée : scans directs et carte dans le même sens (${(LIVE.mir.s0 / LIVE.mir.n * 100).toFixed(0)} % contre ${(LIVE.mir.s1 / LIVE.mir.n * 100).toFixed(0)} % retourné, ${LIVE.mir.n} scans) ✓</span>`;
   const okN = LIVE.trail.filter(t => t.err).length ? LIVE.trail.filter(t => t.err && t.err.pos <= 0.05 && t.err.ang <= 2).length : null;
-  h += `<br><span class="help">${LIVE.stats.n} scans · ${LIVE.stats.global} recherches globales · ${LIVE.stats.reloc} relocalisations` +
+  h += `<br><span class="help">${LIVE.stats.n} scans · ${LIVE.stats.global} recherches globales · ${LIVE.stats.reloc} relocalisations` + (LIVE.stats.fixed ? ` · ${LIVE.stats.fixed} corrections globales` : '') +
        (okN !== null ? ` · justes ${okN}/${LIVE.trail.filter(t => t.err).length}` : '') + '</span>';
   el.innerHTML = h;
+  const mf = $('lvMirFix'); if (mf) mf.onclick = () => { LIVE.flipLive = !LIVE.flipLive; LIVE.mirrorHint = null; LIVE.mir = null;
+    toast(LIVE.flipLive ? 'Scans directs retournés pour coller à la carte' : 'Scans directs non retournés');
+    if (LIVE.cur){ LIVE.cur.local = LIVE.cur.local.map(q => ({ ...q, y: -q.y })); $('lvLocate').click(); } };
 }
 // --- sources de scans
 function liveStart(){
   const feed = LIVE.feed = $('lvFeed').value;
   // le robot simulé roule dans la salle simulée : c'est sa carte
   if (feed === 'sim' && ($('lvSrc').value !== 'sim' || !LIVE.sim || !LIVE.map)){ $('lvSrc').value = 'sim'; $('lvSrc').onchange(); if (!livePrepare()) return; toast('Carte : salle simulée'); }
+  if (liveMapStale()){ livePrepare(true); toast('Carte reconstruite : des scans ont été ajoutés, masqués ou déplacés depuis sa préparation'); }
   if (!LIVE.map && !livePrepare()) return;
-  liveStop(true); liveReset(true); LIVE.running = true; liveViewButtons();
+  liveStop(true); liveReset(true); LIVE.running = true; LIVE.lastCheck = 0; LIVE.check = null; LIVE.mir = null; liveViewButtons();
   if (feed === 'robot'){
     if (!isConnected()){ LIVE.running = false; return toast('Connecte d’abord le robot (onglet Scans, USB ou WiFi)'); }
     if (!SER.live){ $('live').checked = true; $('live').onchange({ target: $('live') }); }
@@ -1483,6 +1540,37 @@ $('lvBase').onclick = () => {
   if (!LIVE.running && LIVE.cur) liveRelocalizeCurrent();
   liveSetView(LIVE.view === 'free' ? 'head' : LIVE.view);
   toast('Départ sur la base (0 ; 0, cap 0°) : le prochain scan s’y recale, puis le robot se suit');
+};
+// Le scan direct est-il dans la même convention que la carte ? Un décalage d'angle ne gêne pas la recherche globale
+// (elle essaie toutes les orientations), mais un MIROIR (sens de rotation inversé, ex. scans importés de Teleplot,
+// autre firmware) rend le scan impossible à superposer. On essaie donc aussi le scan retourné.
+// Sur un seul scan, le test est peu tranché (un scan retourné peut même sortir « sûr », mais au mauvais endroit) :
+// on cumule sur plusieurs scans. Sur les 14 scans réels : 59 % de points sur la carte en moyenne dans le bon sens,
+// 42 % retourné. Décision quand l'écart moyen dépasse 5 points sur au moins 3 scans.
+function liveMirrorTest(local, r0){
+  const mir = local.map(q => ({ ...q, y: -q.y })), r1 = LL.locateScan(LIVE.map, mir);
+  const m = LIVE.mir || (LIVE.mir = { n: 0, s0: 0, s1: 0 });
+  m.n++; m.s0 += r0.inliers; m.s1 += r1.inliers;
+  const d = (m.s1 - m.s0) / m.n;
+  LIVE.mirrorHint = (m.n >= 3 && d > 0.05) || r1.inliers >= r0.inliers + 0.15 ? { r0: { inliers: m.s0 / m.n }, r1: { inliers: m.s1 / m.n, confidence: r1.confidence }, n: m.n, t: Date.now() } : null;
+  m.ok = m.n >= 3 && d < -0.05;                     // convention confirmée : on arrête de tester
+  return !!LIVE.mirrorHint;
+}
+$('lvLocate').onclick = () => {
+  if (liveMapStale()){ livePrepare(); toast('Carte reconstruite : les scans avaient changé'); }
+  if (!LIVE.map) return toast('Prépare d’abord la carte');
+  const L = LIVE.cur ? LIVE.cur.local : (SER.liveScan ? LL.localPoints(lvRaw(SER.liveScan)) : null);
+  if (!L) return toast('Aucun scan reçu : démarre le direct ou coche « Aperçu direct »');
+  if (!LIVE.tracker) liveReset(false);
+  const r = LL.locateScan(LIVE.map, L), T = LIVE.tracker;
+  if (!(LIVE.mir && LIVE.mir.ok)) liveMirrorTest(L, r);
+  Object.assign(T, { pose: { ...r.pose }, hyps: null, lost: 0, status: r.confidence === 'sûr' ? 'relocalisé' : r.confidence, ref: r.inliers }); T.win.length = 0;
+  LIVE.check = { g: r, replaced: true, t: Date.now() };
+  const res = { status: T.status, mode: 'outil « retrouver la position »', inliers: r.inliers, ms: r.msTotal, nScans: 1 };
+  LIVE.cur = { ...(LIVE.cur || {}), local: L, res, t: Date.now() };
+  LIVE.trail.push({ x: r.pose.x, y: r.pose.y, th: r.pose.th, inliers: r.inliers, mode: res.mode, status: res.status, ms: r.msTotal, t: Date.now(), err: null });
+  liveSetView(LIVE.view === 'free' ? 'head' : LIVE.view); liveState(); draw();
+  toast(`Scan localisé comme dans l’outil : (${r.pose.x.toFixed(2)} ; ${r.pose.y.toFixed(2)}) m, ${r.pose.th.toFixed(0)}° — ${r.confidence}, ±${(r.sigma.xy * 100).toFixed(1)} cm`);
 };
 $('lvHint').onclick = () => { if (!LIVE.map) return toast('Prépare d’abord la carte'); LIVE.hint = !LIVE.hint; liveViewButtons(); };
 $('lvViewHead').onclick = () => liveSetView('head');
@@ -1813,21 +1901,24 @@ fdFillScans();
 const AM = { running: false, src: 'robot', mp: null, busy: false, pending: null, motion: null, cur: null, added: 0, prefix: 'auto', sim: null, simIdx: 0, simPrev: null, timer: null, t0: 0, n: 0 };
 function amUndoMirror(a){ const o = S.opt, sg = o.mirror ? -1 : 1; return a.map(v => (((sg * (v - (o.aOff || 0))) % 360) + 360) % 360); }
 function amStart(){
-  if (AM.running) return;
+  if (AM.running) return false;
   AM.src = $('amSrc').value;
-  if (AM.src === 'robot' && !isConnected()) return toast('Connecte d’abord le robot (USB ou WiFi), ou choisis « Robot simulé »');
-  AM.mp = LL.createMapper({ kfDist: numVal('amDist'), kfRot: numVal('amRot'), tours: Math.max(1, Math.round(numVal('amTours'))) });
+  if (AM.src === 'robot' && !isConnected()){ toast('Connecte d’abord le robot (USB ou WiFi), ou choisis « Robot simulé »'); return false; }
+  AM.mp = LL.createMapper({ kfDist: numVal('amDist'), kfRot: numVal('amRot'), tours: Math.max(1, Math.round(numVal('amTours'))), start: AM.explore ? AM.start : undefined });
   let k = 1; while (S.scans.some(s => s.name.startsWith(`auto${k}_`))) k++;
-  AM.prefix = `auto${k}_`; AM.added = 0; AM.n = 0; AM.t0 = performance.now(); AM.running = true; AM.motion = null; AM.cur = null;
+  AM.prefix = `auto${k}_`; AM.added = 0; AM.n = 0; AM.t0 = performance.now(); AM.running = true; AM.motion = null; AM.cur = null; AM.lastArrive = 0; AM.gap = false; AM.gaps = 0;
   if (S.scans.length) toast('Les nouvelles positions ont leur propre repère (la première est à l’origine) : masque les anciens scans pour ne voir que la nouvelle carte');
   $('amStart').disabled = true; $('amSrc').disabled = true;
   if (AM.src === 'robot'){ if (!SER.live){ $('live').checked = true; $('live').onchange({ target: $('live') }); } }
+  else if (AM.explore) amExSimTick();
   else { AM.sim = AM.sim || LL.demoScenario(5); AM.simIdx = 0; AM.simPrev = null; amSimTick(); }
   amInfo();
+  return true;
 }
 function amStop(){
   if (!AM.running) return;
   AM.running = false; clearTimeout(AM.timer);
+  if (AM.explore){ AM.explore = false; if (AM.src === 'robot' && SER.wifi) robotCmd('/stop', true); $('amExplore').disabled = false; }
   if (AM.mp && AM.mp.pending){ const kf = LL.mapperCommit(AM.mp); if (kf) amAddKeyframe(kf); }
   $('amStart').disabled = false; $('amSrc').disabled = false; AM.cur = null;
   amInfo(true); draw();
@@ -1840,13 +1931,21 @@ function amAddKeyframe(kf){
 }
 function amFeed(b, truth){
   if (!AM.running) return;
+  // coupure : plus de scan depuis 1,5 s (WiFi, câble) -> le robot a pu bouger : le cartographe doit se retrouver
+  // avant de reposer un scan sur la carte (en exploration, l'attente pendant les mouvements n'est pas une coupure)
+  const tNow = performance.now();
+  if (AM.lastArrive && tNow - AM.lastArrive > 1500 && !(AM.explore && AM.exWait > AM.lastArrive)) AM.gap = true;
+  AM.lastArrive = tNow;
+  // exploration : les scans pris pendant que le robot roule sont ignorés (« stop and go »)
+  if (AM.explore && performance.now() < AM.exWait) return;
   if (AM.busy){ AM.pending = [b, truth]; return; }
   AM.busy = true;
   try {
     const raw = lvRaw(b), motion = AM.motion; AM.motion = null; AM.n++;
-    const r = LL.mapperUpdate(AM.mp, raw, motion);
+    const r = LL.mapperUpdate(AM.mp, raw, motion, { gap: AM.gap }); if (AM.gap){ AM.gap = false; AM.gaps = (AM.gaps || 0) + 1; }
     if (r.keyframe) amAddKeyframe(r.keyframe);
     AM.cur = { local: LL.localPoints(raw), r, truth };
+    if (AM.explore && ++AM.exGot >= AM.exNeed){ AM.exGot = 0; amExDecide(AM.cur.local); }
     if (AM.n % 2 === 0 || r.keyframe) amInfo();
     draw();
   } catch (e){ console.error(e); toast('Cartographie : ' + e.message); }
@@ -1856,8 +1955,8 @@ function amFeed(b, truth){
   }
 }
 function amOnDrive(mv, ms){
-  if (!AM.running) return;
-  const v = numVal('lvV') * ms / 1000, w = numVal('lvW') * ms / 1000;
+  if (!AM.running || AM.explore) return;
+  const v = numVal('amV') * ms / 1000, w = numVal('amW') * ms / 1000;
   const d = { forward: [v, 0, 0], backward: [-v, 0, 0], left: [0, v, 0], right: [0, -v, 0], rotateleft: [0, 0, w], rotateright: [0, 0, -w] }[mv];
   if (!d) return; const m = { x: d[0], y: d[1], th: d[2] };
   AM.motion = AM.motion ? LL.compose(AM.motion, m) : m;
@@ -1882,11 +1981,16 @@ function amInfo(done){
   let h = `${done ? '<b>Terminé</b>' : `<span style="color:${col};font-weight:700">● ${r ? r.status : 'en attente du premier scan'}</span>`} · <b>${AM.added}</b> positions enregistrées · ${AM.n} scans reçus en ${dur.toFixed(0)} s`;
   if (r && !done) h += `<br>robot : x ${r.pose.x.toFixed(2)} m · y ${r.pose.y.toFixed(2)} m · cap ${r.pose.th.toFixed(0)}° · ${(r.inliers * 100).toFixed(0)} % des points sur la carte · ${r.ms.toFixed(0)} ms`;
   if (r && r.status === 'perdu' && !done) h += '<br><span style="color:#ff6b6b">Le scan ne colle plus à la carte : reviens doucement vers une zone déjà cartographiée (aucune position n’est enregistrée tant qu’il est perdu).</span>';
+  if (r && /reprise/.test(r.status) && !done) h += '<br><span style="color:#ffb347">Coupure de la liaison : le robot a pu bouger. Aucun scan n’est posé tant qu’il ne s’est pas retrouvé sur la carte (2 scans de suite qui collent bien).</span>';
+  if (r && !done && AM.mp && AM.mp.doubt && r.status === 'cartographie') h += '<br><span class="help">Scan douteux (moins de 50 % des points sur la carte) : il n’est pas posé.</span>';
+  if (AM.gaps) h += `<br><span class="help">${AM.gaps} coupure(s) de la liaison rattrapée(s)</span>`;
+  if (AM.mp && AM.mp.rotFix) h += `<br><span class="help">${AM.mp.rotFix} rotation(s) du robot plus grande(s) que prévu, rattrapée(s)</span>`;
   if (AM.cur && AM.cur.truth && !done){ const e = LL.poseError(r.pose, AM.cur.truth); h += `<br>écart à la vraie pose (simulation) : ${(e.pos * 100).toFixed(1)} cm, ${e.ang.toFixed(2)}°`; }
   if (done && AM.added) h += '<br>Ensuite : <b>Construire la grid map</b>, puis l’onglet Traitement (plan, murs nets) et Robot en direct.';
   el.innerHTML = h;
 }
 function drawAutoMap(){
+  if (AM.explore) drawExplore();
   if (!AM.running || !AM.cur) return;
   const r = AM.cur.r, p = r.pose, c = Math.cos(p.th * D2R), s = Math.sin(p.th * D2R);
   ctx.save(); ctx.fillStyle = r.status === 'perdu' ? '#ff6b6b' : '#ffffff';
@@ -1897,6 +2001,174 @@ function drawAutoMap(){
   ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(x + c * R * 2, y - s * R * 2); ctx.stroke();
   ctx.restore();
 }
-$('amStart').onclick = amStart;
+
+// ============================================================================
+// Exploration autonome (lidar_explore.js) : le robot choisit seul où aller, évite les obstacles,
+// s'arrête pour scanner (les scans sont recalés et superposés par le cartographe), revient au départ et l'annonce.
+// ============================================================================
+const LX = window.LidarExplore;
+async function amExploreStart(){
+  if (AM.running) return toast('Une cartographie est déjà en cours');
+  const src = $('amSrc').value;
+  const start = { x: numVal('amSx') || 0, y: numVal('amSy') || 0, th: numVal('amSt') || 0 };
+  if (src === 'robot'){
+    if (!SER.wifi) return toast('Exploration : connecte le robot en WiFi (les ordres de déplacement passent par le WiFi)');
+    if (!confirm('Le robot va rouler SEUL dans la salle.\n\n• Zone dégagée autour de lui, personne dans ses roues\n• Le 0° du lidar doit être l’avant du robot (vérifié automatiquement aux premiers mouvements)\n• Reste à côté : bouton STOP ou touche Espace\n\nLes moteurs vont être autorisés. Continuer ?')) return;
+    if (!(await robotCmd('/arm'))) return toast('Le robot refuse d’autoriser les moteurs');
+    if (typeof setArmUI === 'function') setArmUI(true);
+  } else {
+    AM.sim = AM.sim || LL.demoScenario(5);
+    const sc = AM.sim.scene;
+    if (!sc.free(start.x, start.y, 0.25)){ start.x = 1.5; start.y = 1.5; toast('Robot simulé : départ placé en (1,5 ; 1,5), la salle simulée commence en (0 ; 0)'); }
+    AM.exTruth = { ...start }; AM.exHits = 0; AM.exRng = LL.mulberry32(Date.now() & 0xffff);
+    AM.exLow = $('amLow').checked ? LX.lowBoxes(sc, 8, AM.exRng, start) : [];
+    AM.exWalls = sc.walls.concat(AM.exLow);
+  }
+  AM.explore = true; AM.start = start;
+  AM.ex = LX.createExplorer({ start, vLin: numVal('amV'), vRot: numVal('amW'), vSide: numVal('amVs'), robotRadius: numVal('amRad'), maxRadius: numVal('amMaxR'), returnHome: $('amHome').checked });
+  AM.exWait = 0; AM.exGot = 0; AM.exNeed = Math.max(1, Math.round(numVal('amTours'))); AM.exDone = null; AM.exT0 = performance.now();
+  AM.exMoveEnd = 0; US.pts = []; US.ok = null; US.stops0 = null;
+  if (src === 'robot' && $('amUS').checked) usPoll();
+  $('amExplore').disabled = true;
+  if (!amStart()){ AM.explore = false; $('amExplore').disabled = false; return; }
+  amExInfo();
+}
+function amExDecide(local){
+  const X = AM.ex; if (!X || !AM.explore) return;
+  let c;
+  const usPts = $('amUS').checked ? usPoints() : [];
+  US.pts = usPts;
+  try { c = LX.explorerStep(X, AM.mp, usPts.length ? local.concat(usPts) : local); } catch (e){ console.error(e); return amExFinish('erreur : ' + e.message, true); }
+  if (c.done) return amExFinish(c.reason, /^arrêt/.test(c.reason));
+  if (c.wait){ AM.exNeed = 1; amExInfo(); return; }
+  AM.exNeed = AM.mp.o.tours;
+  if (!c.noPrior) AM.motion = AM.motion ? LL.compose(AM.motion, c.motion) : c.motion;
+  AM.exWait = Infinity;                                       // tant que l'ordre n'est pas parti, on n'écoute pas
+  if (AM.src === 'robot'){
+    const t = c.mv.startsWith('rotate') ? 2 * c.ms : c.ms;     // le firmware divise la durée des rotations par 2
+    robotCmd(`/${c.mv}?time=${t}`, true).then(ok => {
+      if (!AM.explore) return;
+      if (!ok) return amExFinish('arrêt : le robot a refusé l’ordre (moteurs verrouillés ou robot injoignable)', true);
+      AM.exMoveEnd = performance.now() + c.ms;
+      AM.exWait = AM.exMoveEnd + 450;                          // durée du mouvement + arrêt complet + un tour de lidar
+    });
+  } else {
+    const usSim = $('amUS').checked ? { walls: AM.exWalls, usX: numVal('amUSx') } : null;
+    const m = LX.simMove({ walls: AM.exWalls }, AM.exTruth, c.motion, AM.exRng, X.o, 1, usSim); AM.exTruth = m.pose; if (m.hit) AM.exHits++;
+    if (usSim && usSim.stops) US.simStops = (US.simStops || 0) + usSim.stops;
+    AM.exWait = 0;
+  }
+  amExInfo();
+}
+// --- capteur ultrason avant (firmware : route /us) ---------------------------
+const US = { ok: null, raw: null, tAt: 0, pts: [], stops: 0, stops0: null, timer: null };
+async function usPoll(){
+  clearTimeout(US.timer);
+  if (!AM.explore || AM.src !== 'robot' || !$('amUS').checked || !SER.wifi) return;
+  try {
+    const r = await fetch(SER.base + '/us', { cache: 'no-store' });
+    if (r.status === 404){ US.ok = false; amExInfo(); return; }          // firmware sans ultrason
+    const j = await r.json(); US.raw = j; US.tAt = performance.now(); US.ok = !!j.on;
+    if (US.stops0 === null) US.stops0 = j.stops; US.stops = j.stops - US.stops0;
+  } catch (e){ /* robot momentanément injoignable : on réessaie */ }
+  US.timer = setTimeout(usPoll, 250);
+}
+// mesures ultrason -> points dans le repère du robot (seulement celles prises robot arrêté, après le dernier mouvement)
+function usPoints(){
+  const usX = numVal('amUSx'), sg = $('amUSinv').checked ? -1 : 1;
+  if (AM.src === 'sim') return AM.exTruth ? LX.simUltrasound(AM.exWalls, AM.exTruth, { usX }, AM.exRng) : [];
+  const j = US.raw; if (!j || !US.ok) return [];
+  const out = [];
+  for (const [a0, mm, age] of j.r){
+    if (!mm || age > 3000) continue;
+    const taken = US.tAt - age; if (taken < AM.exMoveEnd + 150) continue;    // mesure prise pendant le mouvement : ignorée
+    const a = sg * a0 * D2R, d = mm / 1000;
+    out.push({ x: usX + d * Math.cos(a), y: d * Math.sin(a), us: true, a: sg * a0, d });
+  }
+  return out;
+}
+function amExSimTick(){
+  if (!AM.running || !AM.explore) return;
+  const D = AM.sim;
+  amFeed(LL.simulateScan(D.scene.walls, AM.exTruth, { tours: 1 }, D.rng), { ...AM.exTruth });
+  AM.timer = setTimeout(amExSimTick, 40);
+}
+function amExFinish(reason, failed){
+  const X = AM.ex, dur = (performance.now() - AM.exT0) / 1000;
+  AM.exDone = { reason, failed, dur, n: AM.added, dist: X ? X.stats.dist : 0, cmds: X ? X.nCmd : 0 };
+  amStop();
+  amExInfo();
+  toast((failed ? '⚠ ' : '✔ ') + reason, 8000);
+  if (!failed){
+    try { const ac = new (window.AudioContext || window.webkitAudioContext)(); [0, 0.18, 0.36].forEach((t, i) => { const o = ac.createOscillator(), g = ac.createGain(); o.frequency.value = [660, 880, 1320][i]; g.gain.value = 0.15; o.connect(g); g.connect(ac.destination); o.start(ac.currentTime + t); o.stop(ac.currentTime + t + 0.15); }); } catch (e){}
+  }
+  if ($('amSpeak').checked && window.speechSynthesis){
+    try { const u = new SpeechSynthesisUtterance(failed ? 'Exploration arrêtée. ' + reason.replace(/^arrêt : /, '') : `Cartographie terminée. ${AM.exDone.n} positions enregistrées.`); u.lang = 'fr-FR'; speechSynthesis.speak(u); } catch (e){}
+  }
+  if (!failed && AM.added){ setTab('grid'); gridFromAll(); fitGrid(); }
+}
+function amExInfo(){
+  const el = $('amExInfo'); if (!el) return;
+  const D = AM.exDone;
+  if (D){
+    el.innerHTML = `<div style="font-size:16px;font-weight:700;color:${D.failed ? '#ff6b6b' : '#4cd97b'}">${D.failed ? '⚠ Exploration arrêtée' : '✔ Cartographie terminée'}</div>${D.reason}<br>` +
+      `${D.n} positions superposées · ${D.dist.toFixed(1)} m parcourus · ${D.cmds} ordres · ${(D.dur / 60).toFixed(1)} min` +
+      (AM.src === 'sim' && AM.exHits !== undefined ? ` · chocs (simulation) : ${AM.exHits}` : '') +
+      (D.failed ? '' : '<br>La grid map a été construite (onglet Grid map). Ensuite : onglet Traitement (plan, murs nets), puis Robot en direct.');
+    return;
+  }
+  const X = AM.ex; if (!X || !AM.explore){ el.textContent = ''; return; }
+  const lab = { exploration: 'exploration', retour: 'retour au départ', 'terminé': 'terminé' }[X.phase] || X.phase;
+  let h = `<b>${X.calib.checked ? lab : 'contrôle du cap et des vitesses'}</b> · ${X.nCmd} ordres · ${X.stats.dist.toFixed(1)} m · ${X.frontiers.filter(f => f.ok).length} frontière(s) à voir`;
+  if (X.goal) h += ` · but (${X.goal.x.toFixed(1)} ; ${X.goal.y.toFixed(1)})`;
+  if (X.last) h += `<br>dernier ordre : ${X.last.mv} ${X.last.ms} ms`;
+  if (X.calib.msg) h += `<br><span class="help">${X.calib.msg}</span>`;
+  if (X.stats.blocked || X.stats.avoided) h += `<br><span class="help">obstacles imprévus : ${X.stats.avoided || 0} contourné(s) à l’avance, ${X.stats.blocked} arrêt(s) devant</span>`;
+  if (X.stats.side) h += `<br><span class="help">${X.stats.side} pas de côté en crabe</span>`;
+  if (AM.mp && AM.mp.rotFix) h += `<br><span class="help">${AM.mp.rotFix} rotation(s) plus grande(s) que prévu, rattrapée(s) au recalage</span>`;
+  if (AM.src === 'sim' && AM.exHits) h += `<br><span style="color:#ff6b6b">chocs (simulation) : ${AM.exHits}</span>`;
+  if ($('amUS').checked){
+    if (AM.src === 'robot' && US.ok === false) h += '<br><span class="help">ultrason : indisponible (firmware sans route /us, ou capteur coupé)</span>';
+    else if (US.pts.length){ const n = US.pts.reduce((b, q) => q.d < b.d ? q : b); h += `<br><span class="help">ultrason : ${US.pts.length} mesures · plus proche ${n.d.toFixed(2)} m à ${n.a > 0 ? '+' : ''}${n.a}°</span>`; }
+    const st = AM.src === 'robot' ? US.stops : (US.simStops || 0);
+    if (st) h += `<br><span style="color:#ffb347">pare-chocs ultrason : ${st} arrêt(s) d’urgence en marche avant</span>`;
+  }
+  el.innerHTML = h;
+}
+function drawExplore(){
+  const X = AM.ex; if (!X || !AM.explore) return;
+  ctx.save();
+  for (const f of X.frontiers){ const [x, y] = w2s(f.x, f.y); ctx.fillStyle = f.ok ? '#ffb347' : '#666'; ctx.beginPath(); ctx.arc(x, y, f.ok ? 4 : 2.5, 0, 2 * Math.PI); ctx.fill(); }
+  if (X.path && AM.mp){
+    ctx.strokeStyle = '#4fc3ff'; ctx.lineWidth = 2; ctx.setLineDash([6, 4]); ctx.beginPath();
+    const p0 = w2s(AM.mp.pose.x, AM.mp.pose.y); ctx.moveTo(p0[0], p0[1]);
+    for (const q of X.path){ const [x, y] = w2s(q.x, q.y); ctx.lineTo(x, y); }
+    ctx.stroke(); ctx.setLineDash([]);
+  }
+  if (X.goal){ const [x, y] = w2s(X.goal.x, X.goal.y); ctx.strokeStyle = '#4fc3ff'; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(x, y, 8, 0, 2 * Math.PI); ctx.stroke(); }
+  for (const v of X.virt){ const [x, y] = w2s(v.x, v.y); ctx.fillStyle = '#ff6b6b'; ctx.fillRect(x - 3, y - 3, 6, 6); }
+  const [sx, sy] = w2s(X.start.x, X.start.y); ctx.strokeStyle = '#4cd97b'; ctx.lineWidth = 2; ctx.strokeRect(sx - 7, sy - 7, 14, 14);
+  ctx.fillStyle = '#4cd97b'; ctx.font = '11px system-ui'; ctx.fillText('départ', sx + 9, sy - 9);
+  if (US.pts.length && AM.mp){
+    const p = AM.mp.pose, c = Math.cos(p.th * D2R), s = Math.sin(p.th * D2R), usX = numVal('amUSx');
+    const [ox, oy] = w2s(p.x + c * usX, p.y + s * usX);
+    ctx.strokeStyle = '#ffb34766'; ctx.lineWidth = 1;
+    for (const q of US.pts){
+      const [x, y] = w2s(p.x + c * q.x - s * q.y, p.y + s * q.x + c * q.y);
+      ctx.beginPath(); ctx.moveTo(ox, oy); ctx.lineTo(x, y); ctx.stroke();
+      ctx.fillStyle = '#ffb347'; ctx.beginPath(); ctx.arc(x, y, 3.5, 0, 2 * Math.PI); ctx.fill();
+    }
+  }
+  if (AM.src === 'sim' && AM.exLow && AM.exLow.length){
+    ctx.strokeStyle = '#c07bff'; ctx.lineWidth = 2;
+    for (const w of AM.exLow){ const [a1, b1] = w2s(w.x1, w.y1), [a2, b2] = w2s(w.x2, w.y2); ctx.beginPath(); ctx.moveTo(a1, b1); ctx.lineTo(a2, b2); ctx.stroke(); }
+  }
+  if (AM.src === 'sim' && AM.exTruth){ const [x, y] = w2s(AM.exTruth.x, AM.exTruth.y); ctx.strokeStyle = '#ffffff88'; ctx.beginPath(); ctx.arc(x, y, 5, 0, 2 * Math.PI); ctx.stroke(); }
+  ctx.restore();
+}
+$('amExplore').onclick = amExploreStart;
+$('amExStop').onclick = () => { if (SER.wifi) robotCmd('/stop', true); if (AM.explore) amExFinish('arrêt : demandé par l’utilisateur', true); };
+document.addEventListener('keydown', e => { if (e.code === 'Space' && AM.explore && !/INPUT|SELECT|TEXTAREA/.test(e.target.tagName)){ e.preventDefault(); $('amExStop').click(); } });
+$('amStart').onclick = () => amStart();
 $('amStop').onclick = amStop;
 $('amGrid').onclick = () => { if (!S.scans.some(s => s.visible)) return toast('Aucun scan visible'); setTab('grid'); gridFromAll(); fitGrid(); };

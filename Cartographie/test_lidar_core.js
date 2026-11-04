@@ -456,16 +456,38 @@
         const truth = { x: 7.3, y: 3.2, th: 123 }, g = LL.globalLocalize(live.M, lvScan(truth)), e = LL.poseError(g.pose, truth);
         return expect(e.pos <= 0.05 && e.ang <= 2 && g.confidence === 'sûr', `${(e.pos * 100).toFixed(1)} cm ${e.ang.toFixed(2)}° ${g.confidence}`);
       });
-      test('robot en direct · suivi sur 40 pas, puis robot déplacé à la main : relocalisé au scan suivant', () => {
+      test('robot en direct · suivi sur 40 pas, puis robot déplacé à la main : relocalisé en quelques scans, sans faux « localisé »', () => {
         const T = LL.createTracker(live.M), P = live.D.path; let okN = 0;
         for (let k = 0; k < 40; k++) { LL.trackerUpdate(T, lvScan(P[k]), k ? LL.relPose(P[k - 1], P[k]) : null); const e = LL.poseError(T.pose, P[k]); if (e.pos <= 0.05 && e.ang <= 2) okN++; }
-        const far = P[Math.floor(P.length * 0.7)];
-        const r = LL.trackerUpdate(T, lvScan(far), null), e = LL.poseError(T.pose, far);
-        return expect(okN === 40 && e.pos <= 0.05 && e.ang <= 2 && r.mode === 'relocalisation', `${okN}/40, après kidnapping ${(e.pos * 100).toFixed(1)} cm (${r.mode}, ${r.status})`);
+        // déplacé à la main : pas de saut à l'aveugle ; la bonne position doit gagner dans les scans suivants,
+        // sans jamais se dire « localisé » à une position fausse
+        const k0 = Math.floor(P.length * 0.7); let wrongSure = 0, r = null;
+        for (let k = k0; k < k0 + 5; k++) {
+          r = LL.trackerUpdate(T, lvScan(P[k]), k > k0 ? LL.relPose(P[k - 1], P[k]) : null);
+          const e = LL.poseError(T.pose, P[k]); if (r.status === 'localisé' && (e.pos > 0.05 || e.ang > 2)) wrongSure++;
+        }
+        const e = LL.poseError(T.pose, P[k0 + 4]);
+        return expect(okN === 40 && e.pos <= 0.05 && e.ang <= 2 && wrongSure === 0, `${okN}/40, après kidnapping ${(e.pos * 100).toFixed(1)} cm (${r.mode}, ${r.status}), faux « localisé » : ${wrongSure}`);
       });
       test('robot en direct · la part de points qui collent à la carte chute quand la pose est fausse', () => {
         const truth = live.D.path[10], pts = lvScan(truth), good = LL.inlierRatio(live.M.field, pts, truth), bad = LL.inlierRatio(live.M.field, pts, { ...truth, x: truth.x + 0.5, th: truth.th + 20 });
         return expect(good > 0.9 && bad < 0.5, `${good.toFixed(2)} / ${bad.toFixed(2)}`);
+      });
+      test('retrouver la position : scan seul + grid map relue depuis PGM + YAML, sans pose de départ', () => {
+        const { pgm, yaml } = LC.gridToPGM(live.M.grid, 'c'), g2 = LC.gridFromPGM(pgm, yaml);
+        let same = g2.W === live.M.grid.W && g2.H === live.M.grid.H && near(g2.x0, live.M.grid.x0, 1e-3) && near(g2.y0, live.M.grid.y0, 1e-3);
+        for (let k = 0; k < g2.data.length && same; k++) same = g2.data[k] === live.M.grid.data[k];
+        const truth = { x: 3.1, y: 6.2, th: -77 }, r = LL.locateScan(LL.prepareMap(g2), LL.localPoints(LL.simulateScan(live.D.scene.walls, truth, { tours: 1 }, live.D.rng)));
+        const e = LL.poseError(r.pose, truth);
+        return expect(same && e.pos <= 0.05 && e.ang <= 2 && r.sigma.xy < 0.03, `${same} ${(e.pos * 100).toFixed(1)} cm ${e.ang.toFixed(2)}° σ ${(r.sigma.xy * 100).toFixed(1)} cm`);
+      });
+      test('cartographie automatique : 60 scans d’un trajet, positions enregistrées à moins de 5 cm', () => {
+        const D = live.D, Mp = LL.createMapper(); let prev = null, worst = 0;
+        const seq = []; D.path.slice(0, 40).forEach((p, k) => { seq.push(p); if (k % 3 === 0) seq.push(p, p); });
+        for (const truth of seq) { LL.mapperUpdate(Mp, Object.assign(LL.simulateScan(D.scene.walls, truth, { tours: 1 }, D.rng), { meta: truth }), prev ? LL.relPose(prev, truth) : null); prev = truth; }
+        if (Mp.pending) LL.mapperCommit(Mp);
+        for (const kf of Mp.kfs) worst = Math.max(worst, LL.poseError(kf.pose, LL.relPose(seq[0], kf.meta)).pos);
+        return expect(Mp.kfs.length >= 8 && worst <= 0.05, `${Mp.kfs.length} positions, pire ${(worst * 100).toFixed(1)} cm`);
       });
       test('banc : mêmes poses initiales pour toutes les méthodes, un essai par cas et par niveau', () => {
         // (exécution synchrone d'une mini configuration via la fonction résumé)
@@ -482,6 +504,23 @@
       const S = LC.seg;
       // scan synthétique : un point par degré sur un cercle de rayon r autour du lidar
       const ring = (r, extra = []) => { const a = [], d = []; for (let k = 0; k < 360; k++) { a.push(k); d.push(r * 1000); } for (const [aa, dd] of extra) { a.push(aa); d.push(dd); } return { a, d }; };
+      test('contour de la salle : trous comblés, coins raccordés, dehors et fouillis supprimés', () => {
+        const w = (x1, y1, x2, y2, n) => Object.assign(S(x1, y1, x2, y2), { nObs: n, conf: n });
+        const segs = [
+          w(0, 0, 3, 0.02, 9), w(4.2, 0.02, 6.5, 0.03, 8),        // mur du bas en 2 morceaux (trou de 1,2 m), s'arrête 0,5 m avant le coin
+          w(7, 0.5, 7.01, 5, 9),                                  // mur de droite, n'atteint pas les coins
+          w(6.8, 5.02, 0.4, 5, 10),                               // mur du haut
+          w(0, 0.3, 0.02, 4.6, 7),                                // mur de gauche
+          w(3, 7.5, 4, 7.5, 3),                                   // vu par une porte : dehors
+          w(2, 2, 2.3, 2.2, 1), w(4, 3, 4.1, 3.4, 1)              // chaises : vues une fois
+        ];
+        const R = LM.closeOutline(segs);
+        if (!R.closed) throw new Error('contour non fermé');
+        if (R.segments.length !== 4) throw new Error(R.segments.length + ' segments au lieu de 4');
+        if (Math.abs(R.report.area - 35) > 1.5) throw new Error('surface ' + R.report.area);
+        if (!R.openings.some(o => Math.abs(o.width - 1.2) < 0.05)) throw new Error('ouverture de 1,2 m non notée');
+        return true;
+      });
       test('prétraitement : portée, point isolé et point mixte retirés, le reste gardé', () => {
         const sc = { a: [], d: [] };
         for (let k = 0; k < 360; k++) { sc.a.push(k); sc.d.push(k >= 100 && k < 110 ? 1000 : 3000); }  // objet à 1 m devant un mur à 3 m
@@ -668,6 +707,20 @@
         const tableOk = P.islands.length === 1 && Math.abs(Math.min(...ix) - 2.5) < 0.06 && Math.abs(Math.max(...ix) - 4.0) < 0.06 && Math.abs(Math.min(...iy) - 1.5) < 0.06 && Math.abs(Math.max(...iy) - 2.5) < 0.06;
         const [ci, cj] = LC.worldToCell(P.grid, 1.02, 1.02);
         return expect(rectOk && tableOk && P.grid.data[cj * P.grid.W + ci] === 0 && P.stats.erased >= 4, JSON.stringify({ outer: P.outer.map(p => p.map(v => +v.toFixed(2))), islands: P.islands.length, st: P.stats }));
+      });
+      test('correction de carte : meuble retiré détecté « à retirer », carton ajouté « à ajouter », mur frôlé gardé', () => {
+        const sc = LL.classroomScene(3, { legs: 0 }), rng = LL.mulberry32(21);
+        const poses = [{ x: 2, y: 2, th: 0 }, { x: 6, y: 5, th: 90 }, { x: 11, y: 6, th: 200 }, { x: 3, y: 6, th: -40 }, { x: 7, y: 1.5, th: 10 }];
+        const ref = LL.buildReferences(poses.map(p => Object.assign(LL.simulateScan(sc.walls, p, { tours: 3 }, rng), { pose: p })), -1).grid;
+        // la salle change : armoire (x ≤ 0,6 ; 3 ≤ y ≤ 5) retirée, carton de 50 cm posé en (4 ; 4)
+        const W2 = sc.walls.filter(w => !(Math.max(w.x1, w.x2) <= 0.61 && Math.min(w.y1, w.y2) >= 2.99 && Math.max(w.y1, w.y2) <= 5.01));
+        W2.push(S(4, 4, 4.5, 4), S(4.5, 4, 4.5, 4.5), S(4.5, 4.5, 4, 4.5), S(4, 4.5, 4, 4));
+        const C = LM.createMapCorrector(ref);
+        for (const p of [{ x: 2, y: 3.5, th: 180 }, { x: 2.5, y: 4.5, th: 170 }, { x: 3, y: 3, th: 150 }, { x: 2, y: 2.5, th: 30 }, { x: 5.5, y: 5.5, th: -120 }, { x: 3.2, y: 5.5, th: -60 }])
+          LM.correctorAdd(C, p, LL.localPoints(LL.simulateScan(W2, p, { tours: 2 }, rng)));
+        const D = LM.correctorDiff(C), at = (m, x, y, r = 2) => { const [i, j] = LC.worldToCell(ref, x, y); for (let dj = -r; dj <= r; dj++) for (let di = -r; di <= r; di++) if (m[(j + dj) * ref.W + i + di]) return true; return false; };
+        const boxAdded = at(D.add, 4.25, 4.0), cupRemoved = at(D.rem, 0.6, 4.0), wallKept = !at(D.rem, 0.0, 6.5) && !at(D.rem, 3, 0.0);
+        return expect(boxAdded && cupRemoved && wallKept, JSON.stringify({ boxAdded, cupRemoved, wallKept, nAdd: D.nAdd, nRem: D.nRem }));
       });
       test('qualité : scans simulés à poses exactes -> plus de 90 % des points sur un obstacle', () => {
         const sc = LL.classroomScene(3, { legs: 0 }), rng = LL.mulberry32(8), poses = [{ x: 2, y: 2, th: 0 }, { x: 6, y: 5, th: 90 }, { x: 11, y: 6, th: 200 }];

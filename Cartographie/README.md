@@ -4,17 +4,28 @@
 
 | Fichier | Rôle |
 |---|---|
-| `ESP32_LD06_WiFi.ino` | Firmware WiFi + USB : partie WiFi reprise du firmware du cours `ESP32RobotControl.ino` (réseau RobotESP32, mêmes routes), plus les commandes USB de capture |
+| `ESP32_LD06_WiFi.ino` | Firmware WiFi + USB : firmware du cours (réseau RobotESP32, mêmes routes) dans sa version avec interface web (`http://192.168.4.1/`), **verrou moteurs** (`/arm`, `/disarm`, `/status`), trajectoires (`/traj`), réglage des moteurs (`/motortest`, `/config`), 4 moteurs pilotés directement (GPIO 15/2, 4/16, 17/5, 18/19), arrêtés dès le démarrage, plus les commandes USB de capture |
 | `ESP32_LD06_Capture.ino` | Firmware ESP32 : envoie un scan 360° en CSV **sur demande** par USB |
 | `lidar_core.js` | Bibliothèque de calcul : grid map (Bresenham, mise à jour, export), segments (extraction, angle, proximité, fusion, intersection, découpe) et carte vectorielle |
 | `lidar_loc.js` | Jour 2 : localisation (grid map, carte vectorielle, entre scans), simulateur et banc d'évaluation |
 | `bench_localisation.js` | Banc d'évaluation en ligne de commande (`node bench_localisation.js --real session.json`) |
+| `bench_cartographie.js` | Banc de la cartographie automatique au sol (`node bench_cartographie.js`) |
+| `DEMARCHE_cartographie_auto.md` | Démarche et résultats de la cartographie automatique |
+| `resultats_cartographie.md` | Résultats de `bench_cartographie.js` |
+| `lidar_explore.js` | Exploration autonome : frontières, trajet sûr, pare-chocs lidar, contrôle du montage du lidar, retour au départ |
+| `bench_exploration.js` | Banc de l'exploration autonome en simulation (`node bench_exploration.js`) |
+| `DEMARCHE_exploration_autonome.md` | Démarche et résultats de l'exploration autonome |
+| `resultats_exploration.md` | Résultats de `bench_exploration.js` |
+| `bench_rotation_coupure.js` | Banc : superposition quand le robot tourne plus que prévu et après une coupure de liaison |
+| `resultats_rotation_coupure.md` | Résultats de `bench_rotation_coupure.js` |
+| `carte_vectorielle_contour.txt` | Carte vectorielle réelle après « Fermer le contour » (onglet Vectorielle) |
+| `contour_ferme_avant_apres.png` | Carte vectorielle réelle avant / après « Fermer le contour » |
 | `bench_suivi.js` | Banc du robot en direct : localisation globale sur les scans réels, suivi simulé (`node bench_suivi.js --real session.json`) |
 | `resultats_suivi.md` | Résultats de `bench_suivi.js` |
 | `lidar_maptools.js` | Traitement des cartes et des obstacles : prétraitement, clusters, cercles / RANSAC / Douglas-Peucker, grid map enrichie et nettoyée, obstacles, régularisation de la carte vectorielle, carte de coût, trajet A*, recalage global des poses |
 | `DEMARCHE_traitement_cartes.md` | Démarche et résultats du traitement des cartes et des obstacles |
 | `resultats_traitement.md` | Rapport de la chaîne de traitement sur les 14 scans réels (avec recalage) |
-| `test_lidar_core.js` | 114 tests automatiques (`node test_lidar_core.js`), dont les cas limites de la découpe |
+| `test_lidar_core.js` | 117 tests automatiques (`node test_lidar_core.js`), dont les cas limites de la découpe |
 | `DEMARCHE_parties_3_4.md` | Démarche des parties 3 et 4 : choix techniques, hypothèses, difficultés, limites |
 | `DEMARCHE_partie_5.md` | Démarche de la partie 5 (carte vectorielle) |
 | `capture_lidar.py` | (Optionnel) capture en ligne de commande, 1 fichier CSV par position |
@@ -41,11 +52,39 @@ angle_deg,distance_mm,intensite      (une ligne par point, distances nulles excl
 Autres commandes : `1`…`9` (N tours), `c` (flux continu), `t` (Teleplot temps réel), `x` (stop).
 
 ### Connexion WiFi (méthode du cours, RobotControl)
+**Moteurs verrouillés au démarrage** (sécurité du firmware) : tant qu'ils ne sont pas autorisés, les commandes de
+mouvement sont refusées (`403 LOCKED`). Dans `lidar_viewer.html`, cliquer **« Autoriser »** au-dessus des flèches de
+pilotage (ou dans l'onglet Robot en direct) ; ils se reverrouillent seuls après 2 min sans mouvement.
+
 Deux firmwares possibles, avec les mêmes routes WiFi :
 - `ESP32_LD06_WiFi.ino` (ce projet) : la partie WiFi du firmware du cours, plus les commandes USB de capture.
 - `ESP32RobotControl.ino` (ressources du module, `Tools/RobotControl/ESP32RobotControl/`).
 
-Bibliothèques : LD06, MecanumCar_v2 (archives .ZIP du module), AsyncTCP et ESPAsyncWebServer (projet ESP32Async).
+Bibliothèques : LD06 (archive .ZIP du module), AsyncTCP et ESPAsyncWebServer (projet ESP32Async). `MecanumCar_v2` n'est
+plus nécessaire : les moteurs sont pilotés directement par l'ESP32.
+
+**Câblage des moteurs** (2 broches PWM par moteur, 1 kHz) :
+
+| Moteur | Broches | Roue par défaut |
+|---|---|---|
+| 1 | GPIO15 / GPIO2 | avant gauche |
+| 2 | GPIO4 / GPIO16 | avant droite |
+| 3 | GPIO17 / GPIO5 | arrière droite |
+| 4 | GPIO18 / GPIO19 | arrière gauche |
+
+Lidar : RX → GPIO33, PWM → GPIO32.
+
+Ultrason avant sur servo (HC-SR04) : TRIG → GPIO13, ECHO → GPIO14 (pont diviseur si le capteur est en 5 V), servo → GPIO25. **Ce sont des valeurs par défaut à vérifier** (`US_TRIG`, `US_ECHO`, `US_SERVO` en tête du firmware ; `USE_ULTRASON 0` pour s'en passer). Le firmware balaie 180° en continu, arrête seul une marche avant si un obstacle est à moins de 15 cm, et donne les mesures sur `/us` (touche `u` sur l'USB).
+
+**Réglage des roues.** Il se fait une fois, robot soulevé, dans l'interface du robot (`http://192.168.4.1/`, onglet *Moteurs*) :
+1. Pour chaque moteur, appuyer sur « Avant ▶ » : la roue doit tourner dans le sens qui fait avancer le robot. Sinon, cocher « Inverser ».
+2. Choisir la position de la roue.
+
+Les réglages sont enregistrés dans l'ESP32. Pour tester sans WiFi ni lidar, utiliser `test_moteurs/test_moteurs.ino` (moniteur série à 115200 bauds, touches `1`…`4`).
+
+**Rotations.** Le firmware fait tourner le robot pendant `time/2` ms sur `/rotateleft` et `/rotateright`. `lidar_viewer.html` envoie donc le double de la durée voulue, comme l'interface du robot.
+
+**Roue qui tourne un instant à la mise sous tension.** Pendant le démarrage de l'ESP32, avant que le programme ne tourne, GPIO15 et GPIO5 sont tirés à l'état haut par la puce elle-même : les moteurs 1 et 3 peuvent donner un à-coup de quelques dixièmes de seconde. Le programme met ensuite toutes les broches à 0 avant même `setup()`. Pour supprimer l'à-coup, il faut une résistance de rappel de 10 kΩ vers la masse sur GPIO15 et sur GPIO5, ou bien mettre l'alimentation des moteurs sous tension après l'ESP32.
 
 1. Téléverser le firmware (carte *ESP32 Dev Module*), puis ouvrir le moniteur série à 115200 bauds pour lire l'adresse.
 2. Connecter le PC au WiFi **RobotESP32** (mot de passe `12345678`).
@@ -228,6 +267,12 @@ référence », on choisit le scan pris à proximité.
 | Carte vectorielle | recherche exhaustive (10 cm / 2° puis 2,5 cm / 0,5°), descente de gradient (ICP point-segment), calcul direct (appariement de coins, sans pose initiale) |
 | Entre scans | ICP point-à-point, ICP point-à-ligne, corrélation multi-résolution |
 
+**Retrouver la position du robot** (onglet *Localisation*) : une grid map (carte des autres scans, onglet Grid map,
+Traitement, plan, ou fichier `.json` / `.pgm` + `.yaml`) et un scan (de la liste, ou le dernier reçu du robot) →
+position trouvée sans pose de départ, confiance, autres positions possibles, dispersion ; erreur par rapport à la pose
+de référence ou à une position mesurée au sol ; *Valider sur les scans visibles* donne réussite, erreurs médiane et
+90e centile, temps (export CSV).
+
 **Banc d'évaluation** (onglet *Localisation* ou `node bench_localisation.js --real session.json`) :
 - mêmes scans et mêmes poses initiales (même graine) pour toutes les méthodes ;
 - perturbations de la pose initiale : 0 ; 0,1 m / 5° ; 0,25 m / 10° ; 0,5 m / 20° ; 1 m / 45° ;
@@ -235,6 +280,12 @@ référence », on choisit le scan pris à proximité.
 - simulation à poses exactes, et scans réels (carte construite sans le scan testé) avec estimation de l'incertitude
   des poses de référence ;
 - résultats en tableaux et courbes, export CSV et Markdown.
+
+## Cartographie automatique (onglet *Scans*)
+Robot connecté (USB ou WiFi) ou robot simulé : *Cartographier*, puis piloter ou pousser doucement le robot. Chaque scan
+est recalé sur la carte déjà construite ; une position est enregistrée tous les 40 cm ou 25° (3 tours accumulés tant
+que le robot est arrêté) et devient un scan de la session. *Terminer*, puis *Construire la grid map*. À utiliser pour
+refaire la carte au sol avec tous les obstacles (voir `DEMARCHE_cartographie_auto.md`).
 
 ## Robot en direct (onglet *Robot en direct*)
 Le robot se repère sur la carte du Jour 1 et la vue le suit comme un GPS :
@@ -246,6 +297,14 @@ Le robot se repère sur la carte du Jour 1 et la vue le suit comme un GPS :
    *Indiquer la position à la main* (clic + glisser). Les commandes de pilotage WiFi servent de prédiction.
 4. **Vue** : cap en haut (la carte tourne), nord en haut, ou libre ; molette = zoom ; points verts = collent à la carte,
    rouges = obstacle nouveau ; trajectoire exportable en CSV.
+5. **Au sol** (pieds de chaises qui masquent les murs) : carte locale glissante des 3 derniers scans (recalage entre
+   scans vérifié), pas de saut de position sans confirmation par le mouvement ; **enregistrement de session**
+   (scans + commandes) rejouable à l'identique pour analyser un échec. Conseil : construire la carte avec le robot
+   au sol, à la hauteur où il roulera.
+6. **Corriger la carte** : pendant le suivi (positions sûres seulement), ce qui est vu de façon répétée et absent de la
+   carte est proposé **à ajouter** (vert), ce qui est sur la carte mais traversé sans impact **à retirer** (rouge) ;
+   *Voir la carte proposée*, *Adopter la carte corrigée*, envoi vers Grid map, export PGM + YAML. Pour essayer :
+   robot simulé avec l'option « la salle a changé ».
 
 ## Traitement des cartes et des obstacles (onglet *Traitement*)
 Chaîne complète sur les scans visibles, chaque étape activable, avec un compte rendu par étape et la qualité de la carte

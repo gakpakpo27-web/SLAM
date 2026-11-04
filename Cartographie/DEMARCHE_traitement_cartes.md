@@ -206,6 +206,34 @@ Ils s'appliquent en fin de chaîne, ou au résultat affiché avec *Appliquer les
 
 **Remarque pour la localisation :** le plan ne contient plus les obstacles, alors qu'en réel 35 à 65 % des points d'un scan tombent sur eux. Pour se repérer, mieux vaut donc la grid map traitée, qui garde les obstacles. Le plan sert à l'affichage, au rapport et à la navigation.
 
+### 2.11 Fermer le contour de la salle à partir de la carte vectorielle
+
+**Constat sur la carte réelle** (`carte_vectorielle_proprietes.txt`, 52 segments) :
+- les murs principaux sont bien là, mais pas tout à fait droits (jusqu'à 0,7°) ;
+- le contour n'est pas fermé :
+  - le mur du bas s'arrête à 2,4 m du coin, puis il manque 1,4 m de mur ;
+  - un trou de 0,7 m sur le mur de droite ;
+  - une porte de 0,86 m en haut ;
+  - les coins ne se rejoignent pas ;
+- 30 segments sur 52 n'ont été vus qu'**une seule fois** : chaises, sacs, pieds de table ;
+- un segment est **dehors** (y = 10,8 m), vu à travers la porte.
+
+**Outil.** Onglet Vectorielle, bouton **« Fermer le contour »** (`closeOutline`, `lidar_maptools.js`) :
+1. **Murs fiables.** On garde les segments longs d'au moins 1 m **et** vus au moins 2 fois, ou ceux vus au moins 5 fois. On y ajoute les segments vus une fois mais posés exactement dans le prolongement d'un mur fiable, car ils le confirment, ainsi que ceux qui referment une forme (4e côté d'un meuble).
+2. **Redressement** sur les axes de la salle, puis alignement des morceaux d'un même mur.
+3. **Trous comblés jusqu'à 1,6 m.** Un mur caché par un meuble ou une porte est refermé. Les trous de plus de 60 cm sont notés comme **ouvertures**, dessinées en bleu et écrites à la fin du fichier.
+4. **Coins en L.** Chaque extrémité est raccordée au mur le plus proche, en prolongeant jusqu'à 2 m, puis jusqu'à 4 m pour les extrémités restées libres. Un raccord n'est accepté que s'il ne fait ni un T au milieu d'un mur, ni pencher un mur de plus de 2°.
+5. **Intérieur.** C'est la plus grande zone fermée d'une grille où les murs sont tracés. Ce qui ne la borde pas (dehors, par la porte) est supprimé. Si le contour n'est pas fermé, l'outil le dit et ne supprime rien.
+
+**Résultat sur la carte réelle** (`carte_vectorielle_contour.txt`, `contour_ferme_avant_apres.png`) :
+- 52 segments deviennent 10 : les 6 murs de la salle en L et les 4 côtés du meuble central ;
+- 10 coins raccordés ;
+- le segment vu par la porte est supprimé ;
+- contour fermé, 108 m² ;
+- 3 ouvertures notées : la porte de 0,86 m en haut, 1,39 m en bas (mur caché, probablement par des tables), 0,70 m à droite.
+
+Test unitaire : salle de 7 × 5 m avec un trou de 1,2 m, des coins non raccordés, un segment dehors et deux chaises. Résultat : 4 murs, 35 m², ouverture de 1,2 m notée.
+
 ## 3. Résultats
 
 ### 3.1 Chaîne complète sur les 14 scans réels (sans recalage, 0,5 s)
