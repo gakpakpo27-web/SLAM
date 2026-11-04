@@ -156,10 +156,10 @@ function fitGrid(){
 
 // ---------------------------------------------------------------- SEGMENTS
 const SEG = { list: [], A: -1, B: -1, tool: 'select', drawing: null, ghost: null, mark: null, history: [], nextId: 1 };
-function segPush(){ SEG.history.push(JSON.stringify({ list: SEG.list, A: SEG.A, B: SEG.B })); if (SEG.history.length > 100) SEG.history.shift(); }
+function segPush(){ SEG.history.push(JSON.stringify({ list: SEG.list, A: SEG.A, B: SEG.B, openings: SEG.openings || null })); if (SEG.history.length > 100) SEG.history.shift(); }
 function segUndo(){
   const h = SEG.history.pop(); if (!h) return toast('Rien à annuler');
-  const o = JSON.parse(h); SEG.list = o.list; SEG.A = o.A; SEG.B = o.B; SEG.ghost = null; SEG.mark = null; segRefresh();
+  const o = JSON.parse(h); SEG.list = o.list; SEG.A = o.A; SEG.B = o.B; SEG.openings = o.openings; SEG.ghost = null; SEG.mark = null; segRefresh();
 }
 function segAdd(s, src, color){ return Object.assign(s, { id: SEG.nextId++, src: src || 'manuel', color: color || '#e3e7ec' }); }
 const segTol = () => ({ angTol: numVal('sAng'), distTol: numVal('sLat'), gapTol: numVal('sGap') });
@@ -246,6 +246,11 @@ function drawSegments(){
   if (!SEG.list.length && !SEG.drawing) return;
   const dimOthers = SEG.A >= 0 || SEG.B >= 0;
   ctx.save(); ctx.lineCap = 'round';
+  if (SEG.openings) for (const o of SEG.openings){
+    const [x1, y1] = w2s(o.x1, o.y1), [x2, y2] = w2s(o.x2, o.y2);
+    ctx.strokeStyle = '#4fc3ffaa'; ctx.lineWidth = 7; ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke();
+    ctx.fillStyle = '#4fc3ff'; ctx.font = '11px system-ui'; ctx.fillText(`${o.width.toFixed(2)} m`, (x1 + x2) / 2 + 6, (y1 + y2) / 2 - 6);
+  }
   SEG.list.forEach((s, k) => {
     const sel = k === SEG.A ? 'A' : k === SEG.B ? 'B' : null;
     const [x1, y1] = w2s(s.x1, s.y1), [x2, y2] = w2s(s.x2, s.y2);
@@ -336,6 +341,38 @@ $('sClean').onclick = () => {
   segPush(); SEG.list = keep; SEG.A = SEG.B = -1; SEG.ghost = null; segRefresh();
   toast(`${n0 - keep.length} segment(s) de moins de ${L} m supprimé(s) (Ctrl+Z pour annuler)`);
 };
+// Contour de la salle (onglet Segments) : fiabilité = nombre de scans qui voient le segment
+function segSupport(segs, scans){
+  const W = scans.map(s => { const [X, Y] = toWorldPts(s); return { X, Y }; });
+  return segs.map(g => {
+    let n = 0; const L = LC.segLen(g);
+    const x0 = Math.min(g.x1, g.x2) - 0.05, x1 = Math.max(g.x1, g.x2) + 0.05, y0 = Math.min(g.y1, g.y2) - 0.05, y1 = Math.max(g.y1, g.y2) + 0.05;
+    for (const w of W){
+      let c = 0;
+      for (let k = 0; k < w.X.length; k++){
+        const x = w.X[k], y = w.Y[k]; if (x < x0 || x > x1 || y < y0 || y > y1) continue;
+        if (LC.pointSegDist(x, y, g) <= 0.05 && ++c >= Math.min(10, Math.max(3, L * 8))) { n++; break; }
+      }
+    }
+    return Object.assign({}, g, { nObs: n, conf: n });
+  });
+}
+$('sClose').onclick = () => {
+  if (!SEG.list.length) return toast('Aucun segment : extrais d’abord les segments des scans visibles');
+  const scans = S.scans.filter(s => s.visible);
+  const sup = segSupport(SEG.list, scans);
+  const R = LM.closeOutline(sup, { minObs: numVal('scObs'), minLen: numVal('scLen'), gapMax: numVal('scGap'), extMax: numVal('scExt'), strongObs: Math.max(5, Math.ceil(scans.length / 2)) });
+  if (!R.segments.length) return toast('Aucun mur fiable : baisse « vu par au moins » ou la longueur');
+  segPush();
+  const fin = segSupport(R.segments, scans);                 // nombre de scans qui voient chaque segment final
+  SEG.list = fin.map((g, k) => segAdd(LC.seg(g.x1, g.y1, g.x2, g.y2), R.segments[k].added ? 'contour (ajouté : jamais vu)' : `contour (vu par ${g.nObs} scan${g.nObs > 1 ? 's' : ''})`, R.segments[k].added ? '#4fc3ff' : '#ffffff'));
+  SEG.openings = R.openings; SEG.A = SEG.B = -1; SEG.ghost = null; segRefresh();
+  const r = R.report, el = $('sCloseInfo'); el.style.display = '';
+  el.innerHTML = (R.closed ? `<b style="color:#4cd97b">Contour fermé</b> · ${r.area.toFixed(1)} m² à l’intérieur` : '<b style="color:#ffb347">Contour encore ouvert</b> : augmente « combler les trous » ou « prolonger », ou ajoute un scan là où le mur manque') +
+    `<br>${r.before} segments → ${r.after} · ${r.joined} coin(s) raccordé(s)` + (r.outside ? ` · ${r.outside} hors de la salle supprimé(s)` : '') +
+    (R.openings.length ? '<br>Trous comblés : ' + R.openings.map(o => `${o.width.toFixed(2)} m en (${o.x.toFixed(1)} ; ${o.y.toFixed(1)})`).join(', ') : '') + '<br>Annuler : bouton Annuler (ou Ctrl+Z).';
+  toast(R.closed ? `Contour fermé : ${r.after} segments` : 'Contour encore ouvert');
+};
 $('sMerge').onclick = () => segOp('merge');
 $('sCutAB').onclick = () => segOp('cutAB');
 $('sCutBA').onclick = () => segOp('cutBA');
@@ -345,7 +382,7 @@ $('sDel').onclick = () => {
   if (SEG.A < 0) return; segPush(); SEG.list.splice(SEG.A, 1);
   if (SEG.B > SEG.A) SEG.B--; else if (SEG.B === SEG.A) SEG.B = -1; SEG.A = -1; segRefresh();
 };
-$('sClear').onclick = () => { if (!SEG.list.length) return; segPush(); SEG.list = []; SEG.A = SEG.B = -1; SEG.ghost = null; segRefresh(); };
+$('sClear').onclick = () => { if (!SEG.list.length) return; segPush(); SEG.openings = null; SEG.list = []; SEG.A = SEG.B = -1; SEG.ghost = null; segRefresh(); };
 $('sUndo').onclick = segUndo;
 $('sExp').onclick = () => { if (!SEG.list.length) return toast('Aucun segment'); download('carte_vectorielle.txt', LC.segmentsToText(SEG.list), 'text/plain'); };
 $('sFile').onchange = async e => {
@@ -379,10 +416,10 @@ function vecOpt(){
   };
 }
 const vecSnapshot = () => JSON.stringify(VEC.map);
-function vecPush(){ VEC.history.push({ map: vecSnapshot(), last: VEC.last, qi: VEC.qi }); if (VEC.history.length > 50) VEC.history.shift(); }
+function vecPush(){ VEC.history.push({ map: vecSnapshot(), last: VEC.last, qi: VEC.qi, openings: VEC.openings || null }); if (VEC.history.length > 50) VEC.history.shift(); }
 function vecUndo(){
   const h = VEC.history.pop(); if (!h) return toast('Rien à annuler');
-  VEC.map = JSON.parse(h.map); VEC.last = h.last; VEC.qi = h.qi; VEC.sel = -1; vecRefresh();
+  VEC.map = JSON.parse(h.map); VEC.last = h.last; VEC.qi = h.qi; VEC.sel = -1; VEC.openings = h.openings || null; vecRefresh();
 }
 function vecIntegrate(s){
   const [X, Y] = toWorldPts(s), pts = [];
@@ -437,6 +474,11 @@ function drawVectorMap(){
     ctx.strokeStyle = '#ff5c5c'; ctx.lineWidth = 2.5; ctx.setLineDash([6, 5]);
     ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke(); ctx.setLineDash([]);
   }
+  if (VEC.openings) for (const o of VEC.openings){
+    const [x1, y1] = w2s(o.x1, o.y1), [x2, y2] = w2s(o.x2, o.y2);
+    ctx.strokeStyle = '#4fc3ffaa'; ctx.lineWidth = 7; ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke();
+    ctx.fillStyle = '#4fc3ff'; ctx.font = '11px system-ui'; ctx.fillText(`${o.width.toFixed(2)} m`, (x1 + x2) / 2 + 6, (y1 + y2) / 2 - 6);
+  }
   const maxC = numVal('vMax');
   const minC = numVal('vMinConf');
   M.features.forEach((f, k) => {
@@ -474,7 +516,7 @@ function vecPointerDown(e, mx, my){
   if (best < 0) return false;
   VEC.sel = best; vecRefresh(); return true;
 }
-$('vNew').onclick = () => { vecPush(); VEC.map = LC.createVectorMap(); VEC.last = null; VEC.queue = []; VEC.qi = 0; VEC.sel = -1; vecRefresh(); toast('Carte vectorielle vide'); };
+$('vNew').onclick = () => { vecPush(); VEC.openings = null; VEC.map = LC.createVectorMap(); VEC.last = null; VEC.queue = []; VEC.qi = 0; VEC.sel = -1; vecRefresh(); toast('Carte vectorielle vide'); };
 $('vOne').onclick = () => {
   const s = needSel(); if (!s) return;
   vecPush(); const st = vecIntegrate(s); vecRefresh();
@@ -499,6 +541,21 @@ $('vAll').onclick = () => {
   toast(`${vis.length} scans intégrés en ${(performance.now() - t0).toFixed(0)} ms : ${VEC.map.features.length} segments, ${VEC.map.corners.length} coins`);
 };
 $('vUndo').onclick = vecUndo;
+$('vClose').onclick = () => {
+  if (!VEC.map.features.length) return toast('Carte vide');
+  const R = LM.closeOutline(VEC.map.features, { minObs: numVal('vcObs'), minLen: numVal('vcLen'), gapMax: numVal('vcGap'), extMax: numVal('vcExt') });
+  if (!R.segments.length) return toast('Aucun mur fiable : baisse « vu au moins » ou la longueur');
+  vecPush();
+  const M = LC.createVectorMap();
+  R.segments.forEach(f => M.features.push(Object.assign({}, f, { id: M.nextId++, conf: Math.max(1, f.conf ?? 1), nObs: Math.max(1, f.nObs ?? 1) })));
+  M.scans = VEC.map.scans; M.corners = LC.computeCorners(M.features, vecOpt());
+  VEC.map = M; VEC.sel = -1; VEC.last = null; VEC.openings = R.openings; vecRefresh();
+  const r = R.report, el = $('vCloseInfo'); el.style.display = '';
+  el.innerHTML = (R.closed ? `<b style="color:#4cd97b">Contour fermé</b> · ${r.area.toFixed(1)} m² à l’intérieur` : '<b style="color:#ffb347">Contour encore ouvert</b> : augmente « combler les trous » ou « prolonger », ou ajoute un scan là où le mur manque') +
+    `<br>${r.before} segments → ${r.after} · ${r.joined} coin(s) raccordé(s)` + (r.outside ? ` · ${r.outside} segment(s) hors de la salle supprimé(s)` : '') +
+    (R.openings.length ? '<br>Trous comblés : ' + R.openings.map(o => `${o.width.toFixed(2)} m en (${o.x.toFixed(1)} ; ${o.y.toFixed(1)})`).join(', ') : '') + '<br>Annuler : bouton Annuler.';
+  toast(R.closed ? `Contour fermé : ${r.after} segments, ${R.openings.length} ouverture(s)` : 'Contour encore ouvert');
+};
 $('vExp').onclick = () => { if (!VEC.map.features.length) return toast('Carte vide'); download('carte_vectorielle_proprietes.txt', LC.vectorMapToText(VEC.map), 'text/plain'); };
 $('vFile').onchange = async e => {
   const f = e.target.files[0]; e.target.value = ''; if (!f) return;
@@ -701,7 +758,7 @@ const PROC = { res: null, imgs: {}, scans: [], busy: false, stop: false, planMod
 function procOpt(){
   const age = Math.round(numVal('pAge'));
   return {
-    refine: $('pRefine').checked,
+    refine: $('pRefine').checked, loop: $('pLoop').checked,
     pre: { dMin: numVal('pDMin'), dMax: numVal('pDMax'), iMin: numVal('pIMin'), isolated: $('pIso').checked, mixed: $('pMixed').checked },
     res: numVal('pRes'),
     mobile: $('pMobile').checked, mobileOpt: { maxPersist: numVal('pPersist') / 100 },
@@ -724,7 +781,7 @@ async function procRun(){
   if (!vis.length) return toast('Aucun scan visible');
   const o = procOpt();
   PROC.busy = true; PROC.stop = false; $('pRun').disabled = true;
-  const overlay = o.refine && vis.length > 1;
+  const overlay = (o.refine || o.loop) && vis.length > 1;
   if (overlay){
     $('autoOverlay').style.display = 'flex';
     document.querySelector('#autoOverlay .ao-title').textContent = 'Traitement de la carte';
@@ -737,13 +794,16 @@ async function procRun(){
     await sleep(0);
   };
   try {
-    PROC.scans = vis.map(s => ({ id: s.id, name: s.name, a: s.a, d: s.d, i: s.i, scale: s.scale || 1, pose: { ...s.pose } }));
+    // dans l'ordre où les scans ont été pris (auto1_01, auto1_02… ou ordre de capture) : la fermeture de boucle s'en sert
+    const ord = vis.slice().sort((a, b) => a.name.localeCompare(b.name, 'fr', { numeric: true }) || a.id - b.id);
+    PROC.scans = ord.map(s => ({ id: s.id, name: s.name, a: s.a, d: s.d, i: s.i, scale: s.scale || 1, pose: { ...s.pose } }));
     const t0 = performance.now();
     PROC.res = await LM.processMap(PROC.scans, o, prog);
     PROC.res.ms = performance.now() - t0;
     PROC.imgs = {}; PROC.plan = { start: null, goal: null, result: null }; PROC.undo = [];
     $('pStatus').textContent = `terminé en ${(PROC.res.ms / 1000).toFixed(1)} s`;
     if (PROC.res.plan) $('pLayer').value = 'plan'; else if ($('pLayer').value === 'plan') $('pLayer').value = 'clean';
+    if ((o.loop || o.refine) && $('pAutoApply').checked) $('pApply').onclick(true);
     procInfo(); procPlanInfo(); if (typeof procEInfo === 'function') procEInfo();
   } catch (e){ $('pStatus').textContent = ''; toast(e.message === 'arrêt' ? 'Traitement arrêté' : 'Erreur : ' + e.message); console.error(e); }
   finally {
@@ -769,6 +829,7 @@ function procInfo(){
     row('Surface libre', q.raw.freeArea.toFixed(1) + ' m²', q.clean.freeArea.toFixed(1) + ' m²') +
     row('Netteté (cellules tranchées)', pc(q.raw.sharpness), pc(q.clean.sharpness)) +
     row('Cellules en conflit', q.raw.conflicts, q.clean.conflicts) + '</table>';
+  if (R.loopInfo && R.loopInfo.weak > 2) h += `<div class="res" style="color:#ffb347">${R.loopInfo.weak} scans n’ont pas de lien sûr avec le précédent (le robot avait trop bougé entre les deux) : vérifie ces endroits.</div>`;
   if (R.refineLog){
     const last = new Map(); R.refineLog.forEach(l => last.set(l.name, l));
     const moved = R.poses.map((p, k) => ({ n: PROC.scans[k].name, d: Math.hypot(p.x - PROC.scans[k].pose.x, p.y - PROC.scans[k].pose.y), a: Math.abs(((p.th - PROC.scans[k].pose.th + 540) % 360) - 180) }));
@@ -925,7 +986,7 @@ $('pPlanUnk').onchange = () => { procPlan(); procPlanInfo(); draw(); };
 const needProc = () => { if (!PROC.res){ toast('Lance d’abord le traitement'); return false; } return true; };
 $('pApply').onclick = () => {
   if (!needProc()) return;
-  if (!PROC.res.refineLog) return toast('Coche « Recaler toutes les poses » puis relance le traitement');
+  if (!PROC.res.refineLog) return toast('Coche « Fermer les boucles » ou « Affiner chaque position » puis relance le traitement');
   let n = 0;
   PROC.scans.forEach((ps, k) => {
     const s = S.scans.find(x => x.id === ps.id); if (!s) return;
@@ -934,7 +995,7 @@ $('pApply').onclick = () => {
     pushUndo(s); s.pose = { x: p.x, y: p.y, th: p.th }; n++;
   });
   if (typeof renderList === 'function') renderList();
-  toast(`${n} pose(s) mise(s) à jour`); draw();
+  toast(`${n} position(s) de scan corrigée(s) et gardée(s)`); draw();
 };
 $('pToGrid').onclick = () => { if (!needProc()) return; gridSet(LM.cloneGrid(PROC.res.grid), 'Grid map traitée (onglet Traitement)'); toast('Carte envoyée vers l’onglet Grid map'); };
 $('pToVec').onclick = () => {
@@ -2152,3 +2213,57 @@ document.addEventListener('keydown', e => { if (e.code === 'Space' && AM.explore
 $('amStart').onclick = () => amStart();
 $('amStop').onclick = amStop;
 $('amGrid').onclick = () => { if (!S.scans.some(s => s.visible)) return toast('Aucun scan visible'); setTab('grid'); gridFromAll(); fitGrid(); };
+
+
+// ============================================================================
+// Guide : étape par étape (en haut à gauche). Chaque étape se coche toute seule quand elle est faite ;
+// « Aller » ouvre le bon onglet et fait clignoter le bouton à utiliser (numéroté comme l'étape).
+// ============================================================================
+const GUIDE = { flags: {}, open: true };
+const GUIDE_STEPS = [
+  { t: 'Connecter le robot', h: 'USB (câble) ou WiFi « RobotESP32 », puis « Connecter le robot ».', tab: 'scans', el: 'connect',
+    done: () => isConnected() || S.scans.length > 0 },
+  { t: 'Prendre les scans', h: 'Au choix : « Capturer » à chaque endroit (le scan se pose tout seul), « ▶ Cartographier » en pilotant le robot, ou « ▶ Explorer seul ». Le premier scan est l’origine (0 ; 0 ; 0).', tab: 'scans', el: 'capture',
+    alt: [['Cartographier', 'amStart'], ['Explorer seul', 'amExplore']], done: () => S.scans.length >= 2 && !(typeof AM !== 'undefined' && AM.running) },
+  { t: 'Vérifier la superposition', h: 'Les murs des scans doivent se recouvrir. Un scan mal placé : « Tout superposer automatiquement » (ou le déplacer à la main).', tab: 'scans', el: 'autoAll',
+    done: () => S.scans.length >= 2 && S.scans.filter(s => s.visible).every(s => s.locked) },
+  { t: 'Lancer le traitement', h: 'Onglet Traitement : les positions sont recalées ensemble (plus de murs en double), puis les obstacles sont effacés : il reste le plan de la salle.', tab: 'proc', el: 'pRun',
+    done: () => !!PROC.res },
+  { t: 'Garder la carte finale', h: '« Envoyer le plan → Grid map et Vectorielle » : le plan devient la carte de référence.', tab: 'proc', el: 'pPlanSend',
+    done: () => !!GUIDE.flags.sent },
+  { t: 'Exporter la carte', h: 'Plan en PGM + YAML (format ROS) et en .txt (segments), pour le rapport.', tab: 'proc', el: 'pExpPlan', opt: true,
+    done: () => !!GUIDE.flags.exported },
+  { t: 'Valider la carte', h: 'Onglet Localisation : « Retrouver la position » d’un scan sur la carte ; l’erreur est estimée.', tab: 'loc', el: 'fdGo', opt: true,
+    done: () => !!(FIND && FIND.res) },
+  { t: 'Robot en direct', h: '« Préparer la carte », puis « ▶ Démarrer » : la carte tourne comme un GPS et le robot s’y repère.', tab: 'live', el: 'lvPrep',
+    alt: [['Démarrer', 'lvStart']], done: () => !!(LIVE.map && LIVE.stats && LIVE.stats.n > 0) }
+];
+function guideGo(tab, el){
+  setTab(tab);
+  const e = $(el); if (!e) return;
+  // élément dans une partie repliée ou cachée : on la montre
+  for (let p = e.parentElement; p; p = p.parentElement) if (p.tagName === 'DETAILS') p.open = true;
+  e.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  e.classList.remove('guide-flash'); void e.offsetWidth; e.classList.add('guide-flash');
+  setTimeout(() => e.classList.remove('guide-flash'), 2600);
+}
+function guideRefresh(){
+  const L = $('guideList'); if (!L) return;
+  let cur = -1, nDone = 0;
+  const st = GUIDE_STEPS.map((g, k) => { let d = false; try { d = !!g.done(); } catch (e) {} if (d) nDone++; return d; });
+  cur = st.findIndex((d, k) => !d && !GUIDE_STEPS[k].opt);
+  if (cur < 0) cur = st.findIndex(d => !d);
+  const html = GUIDE_STEPS.map((g, k) => `<li class="${st[k] ? 'done' : ''} ${k === cur ? 'cur' : ''} ${g.opt ? 'opt' : ''}">` +
+    `<span class="gn">${st[k] ? '✓' : k + 1}</span><span><b>${g.t}</b>${k === cur || !GUIDE.compact ? '<br>' + g.h : ''}` +
+    (g.alt && k === cur ? '<br>' + g.alt.map(([l, id]) => `<a href="#" data-go="${g.tab}|${id}">${l}</a>`).join(' · ') : '') + `</span>` +
+    `<button data-go="${g.tab}|${g.el}">Aller</button></li>`).join('');
+  if (L.__last !== html){ L.innerHTML = html; L.__last = html; }
+  $('guideProg').textContent = `${nDone}/${GUIDE_STEPS.length}` + (cur >= 0 ? ` · étape ${cur + 1}` : ' · terminé ✓');
+}
+$('guideList').addEventListener('click', e => { const g = e.target.closest('[data-go]'); if (!g) return; e.preventDefault(); const [t, id] = g.dataset.go.split('|'); guideGo(t, id); });
+$('guideHead').onclick = () => { GUIDE.open = !GUIDE.open; $('guide').classList.toggle('closed', !GUIDE.open); try { localStorage.setItem('ld06_guide_open', GUIDE.open ? '1' : '0'); } catch (e) {} };
+try { if (localStorage.getItem('ld06_guide_open') === '0'){ GUIDE.open = false; $('guide').classList.add('closed'); } } catch (e) {}
+GUIDE.compact = true;     // seule l'étape en cours montre son explication
+$('pPlanSend').addEventListener('click', () => { GUIDE.flags.sent = true; guideRefresh(); });
+['pExpPlan', 'pExpPlanTxt', 'gExpPgm', 'gExpJson', 'vExp'].forEach(id => { const b = $(id); if (b) b.addEventListener('click', () => { GUIDE.flags.exported = true; guideRefresh(); }); });
+setInterval(guideRefresh, 1000); guideRefresh();

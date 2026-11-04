@@ -1,6 +1,24 @@
 # TP LD06 : extraction des scans et cartographie par superposition
 
+## Mode d'emploi : étape par étape
+
+En haut à gauche de `lidar_viewer.html`, le **guide** liste les 8 étapes. Chaque étape se coche toute seule quand elle est faite, et l'étape en cours est surlignée. Le bouton **Aller** ouvre le bon onglet et fait clignoter le bouton à utiliser. Ce bouton porte le même numéro dans l'interface, et les onglets sont numérotés dans l'ordre d'utilisation.
+
+| Étape | Onglet | Bouton | Ce qui se passe |
+|---|---|---|---|
+| 1 | 1 · Scans | Connecter le robot | USB (câble) ou WiFi « RobotESP32 » |
+| 2 | 1 · Scans | Capturer, ▶ Cartographier ou ▶ Explorer seul | Prendre les scans. Le premier est l'origine (0 ; 0 ; 0) ; les suivants se posent seuls (doublons et scans douteux écartés) |
+| 3 | 1 · Scans | Tout superposer automatiquement | Seulement si un scan est mal placé |
+| 4 | 2 · Traitement | Lancer le traitement | Positions recalées ensemble (plus de murs en double), obstacles effacés : plan de la salle |
+| 5 | 2 · Traitement | Envoyer le plan → Grid map et Vectorielle | Le plan devient la carte de référence |
+| 6 | 2 · Traitement | Plan (PGM + YAML) / Plan (.txt) | Export, facultatif |
+| 7 | 3 · Localisation | Retrouver la position | Valider la carte : position d'un scan et erreur estimée, facultatif |
+| 8 | 4 · Robot en direct | Préparer la carte, puis ▶ Démarrer | Le robot se repère en direct ; la carte tourne comme un GPS |
+
+Les onglets « Outil : Grid map », « Outil : Segments » et « Outil : Vectorielle » sont les outils détaillés des parties du cours (construire scan par scan, extraire et fusionner des segments, fermer un contour). Ils ne sont pas nécessaires pour arriver à la carte finale.
+
 ## Contenu
+
 
 | Fichier | Rôle |
 |---|---|
@@ -18,6 +36,12 @@
 | `resultats_exploration.md` | Résultats de `bench_exploration.js` |
 | `bench_rotation_coupure.js` | Banc : superposition quand le robot tourne plus que prévu et après une coupure de liaison |
 | `resultats_rotation_coupure.md` | Résultats de `bench_rotation_coupure.js` |
+| `carte_vectorielle_contour.txt` | Carte vectorielle réelle après « Fermer le contour » (onglet Vectorielle) |
+| `contour_ferme_avant_apres.png` | Carte vectorielle réelle avant / après « Fermer le contour » |
+| `contour_segments_resultat.png` | Onglet Segments, 14 scans réels, après « Fermer le contour » |
+| `bench_boucle.js` | Banc de la fermeture de boucle (graphe de poses) |
+| `resultats_boucle.md` | Résultats de `bench_boucle.js` |
+| `boucle_avant.png`, `boucle_apres_traitement.png` | Cartographie automatique simulée avec dérive : avant / après « Lancer le traitement » |
 | `bench_suivi.js` | Banc du robot en direct : localisation globale sur les scans réels, suivi simulé (`node bench_suivi.js --real session.json`) |
 | `resultats_suivi.md` | Résultats de `bench_suivi.js` |
 | `lidar_maptools.js` | Traitement des cartes et des obstacles : prétraitement, clusters, cercles / RANSAC / Douglas-Peucker, grid map enrichie et nettoyée, obstacles, régularisation de la carte vectorielle, carte de coût, trajet A*, recalage global des poses |

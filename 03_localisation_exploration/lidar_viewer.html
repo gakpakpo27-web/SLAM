@@ -107,6 +107,28 @@
   .modal canvas.bench-chart{width:560px;height:200px;border:1px solid var(--line);border-radius:6px;flex:none}
   #benchBody h3{margin:16px 0 4px;font-size:15px} #benchBody h4{margin:12px 0 2px;font-size:13px;color:var(--accent)}
   .empty{color:var(--muted);font-size:12px;padding:10px;border:1px dashed var(--line);border-radius:8px;text-align:center}
+  /* guide pas à pas */
+  .guide{background:#12161b;border:1px solid var(--line);border-radius:9px;margin:6px 0 8px;padding:6px 8px}
+  .guide-head{display:flex;align-items:center;gap:8px;cursor:pointer;font-size:13px}
+  .guide-head #guideProg{color:var(--muted);font-size:12px;margin-left:auto}
+  .guide-tog{color:var(--muted)}
+  .guide.closed .guide-list{display:none} .guide.closed .guide-tog{transform:rotate(-90deg)}
+  .guide-list{margin:6px 0 2px;padding:0;list-style:none;counter-reset:g}
+  .guide-list li{display:grid;grid-template-columns:22px 1fr auto;gap:6px;align-items:start;padding:5px 4px;border-radius:7px;font-size:12px;line-height:1.35;color:var(--muted)}
+  .guide-list li .gn{width:20px;height:20px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:11px;border:1.5px solid #3a4452;color:var(--muted)}
+  .guide-list li.done .gn{background:#1f5134;border-color:#4cd97b;color:#4cd97b}
+  .guide-list li.cur{background:#1a2a3a;color:var(--text,#e6e9ee)}
+  .guide-list li.cur .gn{background:var(--accent);border-color:var(--accent);color:#04121f}
+  .guide-list li b{color:var(--text,#e6e9ee);font-weight:600}
+  .guide-list li.opt b::after{content:' (facultatif)';color:var(--muted);font-weight:400}
+  .guide-list li button{padding:2px 8px;font-size:11px}
+  .tabs .tnum{display:inline-flex;width:16px;height:16px;border-radius:50%;background:#2a313b;color:var(--muted);font-size:10px;align-items:center;justify-content:center;margin-right:4px}
+  .tabs button.on .tnum{background:var(--accent);color:#04121f}
+  .tabs button.tool{flex:1 1 30%;font-weight:500;font-size:11px;opacity:.75}
+  [data-step]{position:relative}
+  [data-step]::before{content:attr(data-step);display:inline-flex;width:17px;height:17px;border-radius:50%;background:var(--accent);color:#04121f;font-size:10px;font-weight:800;align-items:center;justify-content:center;margin-right:6px;vertical-align:1px}
+  .guide-flash{animation:gflash 0.6s ease-in-out 4;outline:2px solid var(--accent);outline-offset:2px;border-radius:6px}
+  @keyframes gflash{50%{outline-color:transparent}}
 </style>
 </head>
 <body>
@@ -114,14 +136,18 @@
   <h1>LD06 — cartographie</h1>
   <div class="sub">Scans et superposition · grid map · segments · carte vectorielle</div>
 
+  <div class="guide" id="guide">
+    <div class="guide-head" id="guideHead"><b>Guide : étape par étape</b><span id="guideProg"></span><span class="guide-tog" id="guideTog">▾</span></div>
+    <ol class="guide-list" id="guideList"></ol>
+  </div>
   <div class="tabs">
-    <button data-tab="scans" class="on">Scans</button>
-    <button data-tab="grid">Grid map</button>
-    <button data-tab="seg">Segments</button>
-    <button data-tab="vec">Vectorielle</button>
-    <button data-tab="loc">Localisation</button>
-    <button data-tab="proc">Traitement</button>
-    <button data-tab="live">Robot en direct</button>
+    <button data-tab="scans" class="on" title="Étapes 1 à 3 : connecter le robot, prendre les scans, les superposer"><span class="tnum">1</span>Scans</button>
+    <button data-tab="proc" title="Étapes 4 à 6 : traitement (boucles, obstacles effacés), carte finale, export"><span class="tnum">2</span>Traitement</button>
+    <button data-tab="loc" title="Étape 7 : valider la carte en retrouvant la position d'un scan"><span class="tnum">3</span>Localisation</button>
+    <button data-tab="live" title="Étape 8 : le robot se repère en direct sur la carte"><span class="tnum">4</span>Robot en direct</button>
+    <button data-tab="grid" class="tool" title="Outil détaillé (facultatif) : construire et retoucher la grid map scan par scan">Outil : Grid map</button>
+    <button data-tab="seg" class="tool" title="Outil détaillé (facultatif) : segments, fusion, contour">Outil : Segments</button>
+    <button data-tab="vec" class="tool" title="Outil détaillé (facultatif) : carte vectorielle incrémentale, contour">Outil : Vectorielle</button>
   </div>
   <div class="tab" id="tab-scans">
   <h2 style="margin-top:4px">1 · Acquisition depuis le robot</h2>
@@ -156,7 +182,7 @@
       </div>
     </div>
     <div class="row" style="margin-top:8px">
-      <button id="connect" class="primary">Connecter le robot</button>
+      <button data-step="1"  id="connect" class="primary">Connecter le robot</button>
       <span id="status" class="status">non connecté</span>
     </div>
     <div class="row" style="margin-top:8px">
@@ -164,7 +190,7 @@
       <select id="capTours" title="Nombre de tours fusionnés dans le scan (densifie le nuage)">
         <option value="1">1 tour</option><option value="2">2 tours</option><option value="3" selected>3 tours</option><option value="5">5 tours</option>
       </select>
-      <button id="capture" class="primary" disabled>Capturer</button>
+      <button data-step="2"  id="capture" class="primary" disabled>Capturer</button>
     </div>
     <label class="chk" style="margin-top:8px" title="Chaque scan capturé est cherché sur les scans déjà posés (verrouillés), à toutes les orientations. S'il y a un doute, il n'est pas posé (masqué, « à vérifier ») ; s'il est pris au même endroit qu'un autre, il est écarté (« doublon »). Le premier scan est l'origine (0 ; 0 ; 0)."><input type="checkbox" id="capAuto" checked> Poser chaque scan capturé sur les précédents (sauf doute ou doublon)</label>
     <div class="frm"><label for="capMinDist">Doublon si à moins de (m) d’un scan posé</label><input type="number" id="capMinDist" value="0.25" step="0.05" min="0"></div>
@@ -178,7 +204,7 @@
         <label for="amRot">… ou tous les (°)</label><input type="number" id="amRot" value="25" step="5" min="5">
         <label for="amTours">Tours accumulés par position</label><input type="number" id="amTours" value="3" step="1" min="1" max="10">
       </div>
-      <div class="row" style="margin-top:6px"><button class="primary" id="amStart">▶ Cartographier</button><button id="amStop">■ Terminer</button><button id="amGrid" title="Construit la grid map avec tous les scans visibles (onglet Grid map)">Construire la grid map</button></div>
+      <div class="row" style="margin-top:6px"><button data-step="2" class="primary"  id="amStart">▶ Cartographier</button><button id="amStop">■ Terminer</button><button id="amGrid" title="Construit la grid map avec tous les scans visibles (onglet Grid map)">Construire la grid map</button></div>
       <div class="info" id="amInfo">Prêt.</div>
       <div style="margin-top:10px;border-top:1px dashed var(--line);padding-top:8px">
         <b>Exploration autonome</b>
@@ -202,7 +228,7 @@
         <label class="chk"><input type="checkbox" id="amHome" checked> Revenir au départ à la fin</label>
         <label class="chk"><input type="checkbox" id="amSpeak" checked> L’annoncer à voix haute</label>
         <div class="help">Départ : la position (et le sens) où tu poses le robot. Laisse 0 ; 0 ; 0 pour une nouvelle carte (le départ devient l’origine, ta « base » à marquer au sol). Mets des valeurs pour placer la carte dans le repère d’une carte existante. Les vitesses de départ sont corrigées seules après les premiers mouvements.</div>
-        <div class="row" style="margin-top:6px"><button class="primary" id="amExplore">▶ Explorer seul</button><button id="amExStop" class="danger" style="background:#c0392b;color:#fff">■ STOP</button></div>
+        <div class="row" style="margin-top:6px"><button data-step="2" class="primary"  id="amExplore">▶ Explorer seul</button><button id="amExStop" class="danger" style="background:#c0392b;color:#fff">■ STOP</button></div>
         <div class="info" id="amExInfo"></div>
       </div>
     </div>
@@ -222,7 +248,7 @@
   <div class="help" style="margin-bottom:6px">Le scan verrouillé 🔒 sert de référence (sinon le scan sélectionné) : choisis-en un qui voit bien les murs. Les autres sont cherchés à toutes les orientations et positions, affinés par ICP, et placés en commençant par les moins ambigus. Score = points qui retombent sur la carte − faisceaux qui traversent un mur connu.</div>
   <div class="opt"><span>Seuil d'acceptation</span><input type="range" id="autoThr" min="10" max="70" step="5" value="20"><span id="autoThrV">20 %</span></div>
   <div class="row">
-    <button id="autoAll" class="primary">Tout superposer automatiquement</button>
+    <button data-step="3"  id="autoAll" class="primary">Tout superposer automatiquement</button>
   </div>
   <div class="help" id="autoStatus" style="margin-top:6px;color:var(--accent)"></div>
   <div class="help" id="autoReport" style="margin-top:4px"></div>
@@ -345,6 +371,17 @@
       <input type="number" id="sCleanLen" value="0.5" step="0.1" min="0" style="width:70px"><span class="help">m</span>
     </div>
 
+    <h2>Contour de la salle</h2>
+    <div class="help">Chaque segment est d’abord compté : par combien de scans il est vu (au moins 10 points à moins de 5 cm). Seuls les murs vus par plusieurs scans servent au contour : redressés, trous comblés (porte, mur caché), coins raccordés, meuble refermé ; le reste (chaises, sacs, ce qui est vu par la porte) est supprimé.</div>
+    <div class="frm">
+      <label for="scObs">Mur fiable : vu par au moins (scans)</label><input type="number" id="scObs" value="2" step="1" min="1">
+      <label for="scLen">… et long d’au moins (m)</label><input type="number" id="scLen" value="1.0" step="0.1" min="0.2">
+      <label for="scGap">Combler les trous jusqu’à (m)</label><input type="number" id="scGap" value="1.6" step="0.1" min="0">
+      <label for="scExt">Prolonger jusqu’aux coins sur (m)</label><input type="number" id="scExt" value="2.0" step="0.1" min="0">
+    </div>
+    <div class="row"><button id="sClose" class="primary">Fermer le contour</button></div>
+    <div class="info" id="sCloseInfo" style="display:none"></div>
+
     <h2>Opérations sur deux segments</h2>
     <div class="help" style="margin-bottom:6px">Clic sur un segment = <b style="color:var(--accent)">A</b>, Shift + clic = <b style="color:#ffb347">B</b>. Le premier point (x1, y1) est le disque plein. En mode <i>Tracer</i>, glisser sur la carte pour dessiner un segment (utile pour tester les cas limites).</div>
     <div class="seg-tools">
@@ -427,6 +464,17 @@
     <label class="chk"><input type="checkbox" id="vHidePts"> Masquer les points des scans</label>
     <div class="help" style="margin-top:4px">Clic sur un segment : ses propriétés.</div>
 
+    <h2>Contour de la salle</h2>
+    <div class="help">Garde les murs fiables (assez longs et revus), les redresse, comble les trous (mur caché par un meuble, porte), raccorde les coins, referme le meuble, et supprime ce qui est dehors (vu par une porte) ou peu fiable (chaises, sacs). Les trous comblés sont notés « ouvertures » (en bleu).</div>
+    <div class="frm">
+      <label for="vcObs">Mur fiable : vu au moins (fois)</label><input type="number" id="vcObs" value="2" step="1" min="1">
+      <label for="vcLen">… et long d’au moins (m)</label><input type="number" id="vcLen" value="1.0" step="0.1" min="0.2">
+      <label for="vcGap">Combler les trous jusqu’à (m)</label><input type="number" id="vcGap" value="1.6" step="0.1" min="0">
+      <label for="vcExt">Prolonger jusqu’aux coins sur (m)</label><input type="number" id="vcExt" value="2.0" step="0.1" min="0">
+    </div>
+    <div class="row"><button id="vClose" class="primary">Fermer le contour</button></div>
+    <div class="info" id="vCloseInfo" style="display:none"></div>
+
     <h2>Fichiers</h2>
     <div class="row">
       <label class="btn" title="Carte initiale (murs connus) ou carte enregistrée. Format x1,y1,x2,y2[,confiance,observations,premier,dernier]">Charger (.txt)<input type="file" id="vFile" accept=".txt,.csv" hidden></label>
@@ -495,7 +543,7 @@
     <div class="pose" id="fdTruthRow" style="display:none">
       <label>x réel (m)<input type="number" id="fdTx" step="0.01"></label><label>y réel (m)<input type="number" id="fdTy" step="0.01"></label><label>θ réel (°)<input type="number" id="fdTt" step="1"></label>
     </div>
-    <div class="row" style="margin-top:6px"><button class="primary" id="fdGo">Retrouver la position</button><button id="fdPlace" title="Le scan prend la position trouvée (annulable avec Ctrl+Z)">Placer le scan à cette position</button><button id="fdClear">Effacer</button></div>
+    <div class="row" style="margin-top:6px"><button data-step="7" class="primary"  id="fdGo">Retrouver la position</button><button id="fdPlace" title="Le scan prend la position trouvée (annulable avec Ctrl+Z)">Placer le scan à cette position</button><button id="fdClear">Effacer</button></div>
     <div class="info" id="fdResult">Choisis une carte et un scan.</div>
     <h2>Valider l’outil sur tous les scans</h2>
     <div class="help">Chaque scan visible est relocalisé sans pose de départ ; l’erreur est mesurée par rapport à sa pose de référence. Avec « Carte des autres scans », la carte est reconstruite sans le scan testé (test honnête). Avec une carte fichier, elle doit être dans le même repère que les poses.</div>
@@ -505,8 +553,12 @@
   <!-- ===================================================== TRAITEMENT -->
   <div class="tab" id="tab-proc" hidden>
     <div class="help">Chaîne complète appliquée aux scans visibles (avec leurs poses) : prétraitement, grid map enrichie et nettoyée, obstacles, carte vectorielle régularisée, carte de coût. Les cartes des onglets Grid map et Vectorielle ne sont pas modifiées (boutons « Envoyer » plus bas).</div>
+    <div class="row" style="margin-top:8px"><button data-step="4" class="primary" id="pRun">Lancer le traitement</button><span class="help" id="pStatus"></span></div>
+    <div class="help">Les réglages par défaut conviennent : lance directement. Ensuite, étape 5 : « Envoyer le plan → Grid map et Vectorielle » (section 4), puis étape 6 : exporter (section Fichiers).</div>
     <h2>1 · Poses</h2>
-    <label class="chk" title="Chaque scan est relocalisé sur la carte des autres (multi-résolution puis ICP point-segment), 2 passes. Environ 0,5 s par scan."><input type="checkbox" id="pRefine"> Recaler toutes les poses avant (alignement global)</label>
+    <label class="chk" title="Fermeture de boucle : chaque scan est recalé sur le précédent et sur les scans pris au même endroit à un autre moment, puis toutes les positions sont ajustées ensemble (graphe de poses). Corrige les murs en double après un long trajet (cartographie automatique). Environ 0,2 s par scan."><input type="checkbox" id="pLoop" checked> Fermer les boucles : recaler toutes les positions ensemble (murs en double)</label>
+    <label class="chk" title="Ensuite, chaque scan est relocalisé sur la carte des autres (multi-résolution puis ICP point-segment). Environ 0,5 s par scan."><input type="checkbox" id="pRefine"> Puis affiner chaque position sur la carte des autres</label>
+    <label class="chk" title="Les positions corrigées remplacent celles des scans (annulable avec Ctrl+Z, scan par scan)"><input type="checkbox" id="pAutoApply" checked> Garder les positions corrigées</label>
     <h2>2 · Prétraitement des scans</h2>
     <div class="frm">
       <label for="pDMin" title="Les points plus proches appartiennent au robot (châssis, câbles)">Rayon du robot : points ignorés en dessous (m)</label><input type="number" id="pDMin" value="0.10" step="0.01" min="0">
@@ -540,7 +592,7 @@
       <label for="pLeak" title="Le lidar voit par les portes ouvertes et les fentes : ces zones sont coupées si l'ouverture est plus étroite">Couper les ouvertures plus étroites que (m)</label><input type="number" id="pLeak" value="0.9" step="0.1" min="0">
       <label for="pNotch" title="Creux du contour plus étroits : bouchés (objets contre les murs)">Boucher les creux du contour plus étroits que (m)</label><input type="number" id="pNotch" value="0.6" step="0.1" min="0">
     </div>
-    <div class="row"><button id="pPlanRedo" title="Après des retouches à la gomme sur la grid map traitée">Recalculer le plan</button><button id="pPlanSend">Envoyer le plan → Grid map et Vectorielle</button></div>
+    <div class="row"><button id="pPlanRedo" title="Après des retouches à la gomme sur la grid map traitée">Recalculer le plan</button><button data-step="5"  id="pPlanSend">Envoyer le plan → Grid map et Vectorielle</button></div>
 
     <h2>5 · Carte de coût (navigation)</h2>
     <div class="frm">
@@ -556,7 +608,6 @@
       <label for="pFill">Cellules effacées (filtres et gomme) →</label><select id="pFill"><option value="free">libres</option><option value="unknown">inconnues</option></select>
     </div>
     <div class="row"><button id="pFApply" title="Applique les filtres au résultat affiché, sans relancer la chaîne (annulable)">Appliquer les filtres maintenant</button></div>
-    <div class="row" style="margin-top:8px"><button class="primary" id="pRun">Lancer le traitement</button><span class="help" id="pStatus"></span></div>
     <div class="info" id="pInfo">Aucun traitement.</div>
 
     <h2>Affichage</h2>
@@ -598,7 +649,7 @@
       <button id="pExpPgm">Grid map traitée (PGM + YAML)</button><button id="pExpPng">Image de la couche (PNG)</button>
       <button id="pExpVec">Carte vectorielle (.txt)</button><button id="pExpObs">Obstacles (CSV)</button>
       <button id="pExpCost">Carte de coût (PGM)</button><button id="pExpRep">Rapport (.md)</button>
-      <button id="pExpPlan">Plan (PGM + YAML)</button><button id="pExpPlanTxt">Plan (.txt, segments)</button>
+      <button data-step="6"  id="pExpPlan">Plan (PGM + YAML)</button><button id="pExpPlanTxt">Plan (.txt, segments)</button>
     </div>
   </div>
   <!-- ===================================================== ROBOT EN DIRECT -->
@@ -612,7 +663,7 @@
       <label class="btn">Grid map (.json)<input type="file" id="lvGridFile" accept=".json" hidden></label>
       <label class="btn">Vectorielle (.txt, option)<input type="file" id="lvVecFile" accept=".txt,.csv" hidden></label>
     </div>
-    <div class="row"><button class="primary" id="lvPrep">Préparer la carte</button></div>
+    <div class="row"><button data-step="8" class="primary"  id="lvPrep">Préparer la carte</button></div>
     <div class="info" id="lvMapInfo">Aucune carte.</div>
 
     <h2>2 · Scans</h2>
@@ -3648,6 +3699,121 @@
     return { poses, log };
   }
 
+
+  // ==========================================================================
+  //  Fermeture de boucle : recalage global des positions par graphe de poses
+  // ==========================================================================
+  /**
+   * Quand le robot repasse par un endroit déjà cartographié après un long trajet, sa position estimée a dérivé :
+   * les murs sont dessinés en double. Ici :
+   *  1. chaque scan est recalé sur le PRÉCÉDENT (contrainte « odométrie », dans l'ordre des scans) ;
+   *  2. chaque scan est recalé sur les scans éloignés dans le temps mais proches dans l'espace (contrainte
+   *     « boucle ») : c'est elle qui dit « je suis déjà passé ici » ;
+   *  3. toutes les positions sont ajustées ensemble (moindres carrés, Gauss-Newton) pour respecter au mieux toutes
+   *     les contraintes : l'erreur est répartie sur tout le trajet au lieu de s'accumuler ;
+   *  4. les boucles incohérentes avec les autres (faux appariements) sont rejetées et on recommence.
+   * scans : [{ a, d, pose }] dans l'ordre où ils ont été pris. Renvoie { poses, edges, loops, rejected, moved }.
+   */
+  async function globalAlign(scans, opt = {}, onProgress) {
+    const o = Object.assign({ near: 2.0, kLoop: 4, minGap: 3, seqR: [0.4, 25], loopR: [0.9, 35], minInl: 0.5, iters: 15, rejPos: 0.25, rejAng: 4, rounds: 2 }, opt);
+    const N = scans.length, poses = scans.map(s => Object.assign({}, s.pose)), orig = poses.map(p => ({ ...p }));
+    if (N < 3) return { poses, edges: [], loops: 0, rejected: 0, moved: 0 };
+    const pts = scans.map(s => LL.uniformSubsample(LL.localPoints(s), { max: 300 }));
+    // carte d'un seul scan, dans son propre repère
+    const fields = scans.map(s => {
+      const P = LC.polarToGlobal(s, { x: 0, y: 0, th: 0 }, { dMin: 0.1, dMax: 12 });
+      let x0 = 0, y0 = 0, x1 = 0, y1 = 0; for (const q of P) { x0 = Math.min(x0, q.x); y0 = Math.min(y0, q.y); x1 = Math.max(x1, q.x); y1 = Math.max(y1, q.y); }
+      const g = LC.createGrid({ xMin: x0 - 0.5, yMin: y0 - 0.5, xMax: x1 + 0.5, yMax: y1 + 0.5, res: 0.05 });
+      LC.updateGrid(g, { x: 0, y: 0 }, P, { fillBetween: true });
+      return LL.distanceField(g);
+    });
+    // recalage du scan i dans le repère du scan j, en partant de la position relative actuelle
+    // si la recherche près de la position actuelle échoue (gros saut du cartographe, robot tourné), on recommence
+    // sur toutes les orientations et plus large : deux scans voisins se recouvrent beaucoup, c'est fiable
+    const reg = (i, j, R) => { const r = reg1(i, j, R); return r.inl >= o.minInl ? r : (() => { const w = reg1(i, j, [Math.max(1.2, R[0]), 180]); return w.inl > r.inl ? w : r; })(); };
+    const reg1 = (i, j, R) => {
+      const guess = LL.relPose(poses[j], poses[i]);
+      const r1 = LL.gridMultiRes(fields[j], pts[i], guess, { rxy: R[0], rth: R[1], levels: [[0.1, 3], [0.05, 1], [0.025, 0.5]], keep: 6 });
+      const r2 = LL.gridGradient(fields[j], pts[i], r1, { dmax0: 0.3, dmaxMin: 0.1 });
+      const a = LL.inlierRatio(fields[j], pts[i], r1, 0.08), b = LL.inlierRatio(fields[j], pts[i], r2, 0.08);
+      const r = b >= a && LL.poseError(r1, r2).pos < 0.15 ? r2 : r1;
+      // réciproque : le scan j doit aussi tomber sur le scan i (sinon appariement douteux)
+      const inv = LL.relPose(r, { x: 0, y: 0, th: 0 }), c = LL.inlierRatio(fields[i], pts[j], inv, 0.08);
+      return { z: { x: r.x, y: r.y, th: r.th }, inl: Math.min(Math.max(a, b), c) };
+    };
+    const edges = [];
+    for (let i = 1; i < N; i++) {
+      if (onProgress && i % 5 === 0) await onProgress(0.4 * i / N, `contraintes entre scans successifs ${i}/${N}`);
+      const r = reg(i, i - 1, o.seqR);
+      edges.push({ i: i - 1, j: i, z: r.inl >= o.minInl * 0.6 ? r.z : LL.relPose(poses[i - 1], poses[i]), w: r.inl >= o.minInl * 0.6 ? 1 : 0.2, seq: true, inl: r.inl });
+    }
+    let loops = 0, P = poses.map(p => ({ ...p })), rejected = 0;
+    const seqEdges = edges.slice();
+    for (let pass = 0; pass < o.rounds; pass++) {
+    // 2e tour : les positions corrigées rapprochent des scans qui se voient : nouvelles boucles
+    if (pass) { for (let k = 0; k < N; k++) poses[k] = { ...P[k] }; edges.length = 0; edges.push(...seqEdges); loops = 0; rejected = 0; }
+    for (let i = 0; i < N; i++) {
+      if (onProgress && i % 5 === 0) await onProgress(0.4 + 0.4 * (pass + i / N) / o.rounds, `recherche des passages répétés ${i}/${N}` + (pass ? ' (2e tour)' : ''));
+      const cand = [];
+      for (let j = 0; j < i - o.minGap; j++) { const d = Math.hypot(poses[i].x - poses[j].x, poses[i].y - poses[j].y); if (d <= o.near) cand.push([d, j]); }
+      cand.sort((a, b) => a[0] - b[0]);
+      for (const [, j] of cand.slice(0, o.kLoop)) {
+        const r = reg(i, j, o.loopR);
+        if (r.inl >= o.minInl) { edges.push({ i: j, j: i, z: r.z, w: 1, seq: false, inl: r.inl }); loops++; }
+      }
+    }
+    // Gauss-Newton sur le graphe (pose 0 fixe)
+    const solve = (P, E) => {
+      for (let it = 0; it < o.iters; it++) {
+        const n = 3 * (N - 1), H = new Float64Array(n * n), b = new Float64Array(n);
+        for (const e of E) {
+          if (e.off) continue;
+          const A = P[e.i], B = P[e.j], ta = A.th * D2R, ca = Math.cos(ta), sa = Math.sin(ta);
+          const dx = B.x - A.x, dy = B.y - A.y;
+          // erreur : position relative prévue (z) - position relative actuelle, dans le repère de A
+          const ex = ca * dx + sa * dy - e.z.x, ey = -sa * dx + ca * dy - e.z.y, et = normDeg(B.th - A.th - e.z.th) * D2R;
+          // jacobiennes (par rapport à xA, yA, thA et xB, yB, thB)
+          const JA = [[-ca, -sa, -sa * dx + ca * dy], [sa, -ca, -ca * dx - sa * dy], [0, 0, -1]];
+          const JB = [[ca, sa, 0], [-sa, ca, 0], [0, 0, 1]];
+          const er = [ex, ey, et], wv = [e.w, e.w, e.w * 4];      // l'orientation compte davantage (1 rad ~ 0,5 m)
+          const blocks = [[e.i, JA], [e.j, JB]];
+          for (const [u, Ju] of blocks) { if (u === 0) continue; const U = 3 * (u - 1);
+            for (let r = 0; r < 3; r++) for (let c = 0; c < 3; c++) b[U + r] += Ju[c][r] * wv[c] * er[c];
+            for (const [v, Jv] of blocks) { if (v === 0) continue; const V = 3 * (v - 1);
+              for (let r = 0; r < 3; r++) for (let q = 0; q < 3; q++) { let sum = 0; for (let c = 0; c < 3; c++) sum += Ju[c][r] * wv[c] * Jv[c][q]; H[(U + r) * n + V + q] += sum; } } }
+        }
+        for (let k = 0; k < n; k++) H[k * n + k] += 1e-6;
+        // élimination de Gauss (système symétrique, petit : quelques centaines d'inconnues)
+        const x = new Float64Array(n), M = H, rhs = b.map(v => -v);
+        for (let c = 0; c < n; c++) {
+          let piv = c; for (let r = c + 1; r < n; r++) if (Math.abs(M[r * n + c]) > Math.abs(M[piv * n + c])) piv = r;
+          if (piv !== c) { for (let q = 0; q < n; q++) { const t = M[c * n + q]; M[c * n + q] = M[piv * n + q]; M[piv * n + q] = t; } const t = rhs[c]; rhs[c] = rhs[piv]; rhs[piv] = t; }
+          const d = M[c * n + c]; if (Math.abs(d) < 1e-12) continue;
+          for (let r = c + 1; r < n; r++) { const f = M[r * n + c] / d; if (!f) continue; for (let q = c; q < n; q++) M[r * n + q] -= f * M[c * n + q]; rhs[r] -= f * rhs[c]; }
+        }
+        for (let c = n - 1; c >= 0; c--) { let sum = rhs[c]; for (let q = c + 1; q < n; q++) sum -= M[c * n + q] * x[q]; x[c] = Math.abs(M[c * n + c]) > 1e-12 ? sum / M[c * n + c] : 0; }
+        let step = 0;
+        for (let u = 1; u < N; u++) { const U = 3 * (u - 1); P[u] = { x: P[u].x + x[U], y: P[u].y + x[U + 1], th: normDeg(P[u].th + x[U + 2] * R2D) }; step = Math.max(step, Math.hypot(x[U], x[U + 1])); }
+        if (step < 1e-4) break;
+      }
+      return P;
+    };
+    const resid = (P, e) => { const r = LL.relPose(P[e.i], P[e.j]); return { pos: Math.hypot(r.x - e.z.x, r.y - e.z.y), ang: Math.abs(normDeg(r.th - e.z.th)) }; };
+    if (onProgress) await onProgress(0.85, 'ajustement global des positions');
+    for (let round = 0; round < 4; round++) {
+      P = solve(poses.map(p => ({ ...p })), edges);
+      // boucles incohérentes (faux « déjà passé ici ») : écartées, puis on recommence
+      let worst = null, wr = 0;
+      for (const e of edges) { if (e.seq || e.off) continue; const r = resid(P, e), v = r.pos / o.rejPos + r.ang / o.rejAng; if (v > 1 && v > wr) { wr = v; worst = e; } }
+      if (!worst) break;
+      for (const e of edges) { if (e.seq || e.off) continue; const r = resid(P, e); if (r.pos / o.rejPos + r.ang / o.rejAng > Math.max(1, wr * 0.7)) { e.off = true; rejected++; } }
+    }
+    }
+    let moved = 0; for (let k = 0; k < N; k++) moved = Math.max(moved, Math.hypot(P[k].x - orig[k].x, P[k].y - orig[k].y));
+    if (onProgress) await onProgress(1, 'terminé');
+    return { poses: P, edges, loops: loops - rejected, rejected, moved };
+  }
+
   // ==========================================================================
   //  11 bis. Édition : gomme et filtres « distance minimum »
   // ==========================================================================
@@ -3803,15 +3969,24 @@
   async function processMap(scans, opt = {}, onProgress) {
     const o = Object.assign({}, PIPE_DEFAULTS, opt), steps = [], T = () => now();
     const prog = async (f, t) => { if (onProgress) await onProgress(f, t); };
-    let t0, poses = scans.map(s => Object.assign({}, s.pose)), refineLog = null;
+    let t0, poses = scans.map(s => Object.assign({}, s.pose)), refineLog = null, loopInfo = null;
+    // fermeture de boucle : positions recalées toutes ensemble (murs en double après un long trajet)
+    if (o.loop && scans.length > 2) {
+      t0 = T();
+      const r = await globalAlign(scans, o.loopOpt, (f, t) => prog((o.refine ? 0.35 : 0.6) * f, 'Fermeture de boucle : ' + t));
+      poses = r.poses; loopInfo = { loops: r.loops, rejected: r.rejected, moved: r.moved, weak: r.edges.filter(e => e.seq && e.w < 1).length };
+      refineLog = refineLog || [];
+      steps.push({ step: 'Fermeture de boucle (graphe de poses)', detail: `${r.loops} passages répétés reconnus` + (r.rejected ? `, ${r.rejected} faux rejetés` : '') + ` · correction max ${(r.moved * 100).toFixed(0)} cm` + (loopInfo.weak ? ` · ${loopInfo.weak} scan(s) sans lien sûr avec le précédent` : ''), ms: T() - t0 });
+    }
     if (o.refine && scans.length > 1) {
       t0 = T();
-      const r = await refinePoses(scans, o.refineOpt, (f, t) => prog(0.6 * f, 'Recalage des poses : ' + t));
-      poses = r.poses; refineLog = r.log;
+      const sc = scans.map((s, k) => Object.assign({}, s, { pose: poses[k] }));
+      const r = await refinePoses(sc, o.refineOpt, (f, t) => prog((o.loop ? 0.35 : 0) + (o.loop ? 0.25 : 0.6) * f, 'Recalage des poses : ' + t));
+      poses = r.poses; refineLog = (refineLog || []).concat(r.log);
       const acc = r.log.filter(l => l.accepted && (Math.hypot(l.dx, l.dy) > 0.005 || Math.abs(l.dth) > 0.2));
       steps.push({ step: 'Recalage global des poses', detail: `${acc.length} corrections acceptées sur ${r.log.length} essais`, ms: T() - t0 });
     }
-    const base = o.refine ? 0.6 : 0;
+    const base = o.refine || o.loop ? 0.6 : 0;
     await prog(base, 'Prétraitement des scans');
     t0 = T();
     const pre = scans.map((s, k) => Object.assign({ name: s.name }, preprocessScan(s, poses[k], Object.assign({ scale: s.scale ?? 1 }, o.pre))));
@@ -3891,7 +4066,7 @@
     const cost = costmap(grid, o.cost);
     steps.push({ step: 'Carte de coût', detail: `robot ${Math.round(o.cost.robotRadius * 100)} cm + marge ${Math.round(o.cost.inflation * 100)} cm ; ${cost.stats.navigable.toFixed(1)} m² accessibles au centre du robot`, ms: T() - t0 });
     await prog(1, 'terminé');
-    return { poses, refineLog, pre, gridRaw, grid, layers, mobile, obstacles, labels, omap, vmapRaw, vmap, regReport, cost,
+    return { poses, refineLog, loopInfo, pre, gridRaw, grid, layers, mobile, obstacles, labels, omap, vmapRaw, vmap, regReport, cost,
              quality: { raw: qRaw, clean: qClean }, steps, plan, opt: { obstacleOpt: o.obstacleOpt, cost: o.cost },
              manual: { cells: 0, segCut: 0, segRemoved: 0, circles: 0 } };
   }
@@ -3916,6 +4091,163 @@
     return s;
   }
 
+
+  /**
+   * Contour fermé de la salle à partir d'une carte vectorielle (même brute, celle de l'onglet Vectorielle) :
+   *  1. on garde les murs fiables : vus au moins minObs fois, ou longs (≥ keepLen) ; le reste (chaises, sacs,
+   *     segments vus une seule fois) est écarté ;
+   *  2. murs redressés sur les axes de la salle, alignés, et les morceaux d'un même mur réunis par-dessus les trous
+   *     jusqu'à gapMax (partie cachée par un meuble, porte) ; les trous de doorMin à gapMax sont notés « ouvertures » ;
+   *  3. coins : deux murs perpendiculaires dont les extrémités sont à moins de extMax de leur point de rencontre sont
+   *     prolongés jusqu'à ce point (coin en L ; pas de jonction en T au milieu d'un mur) ;
+   *  4. intérieur de la salle = plus grande zone fermée (remplissage sur une grille) : ce qui est dehors (vu par une
+   *     porte ouverte) est supprimé. Si la zone n'est pas fermée, on le dit et rien n'est supprimé.
+   * Renvoie { segments, openings: [{x, y, width, x1, y1, x2, y2}], closed, report }.
+   */
+  function closeOutline(segs, opt = {}) {
+    const o = Object.assign({ minObs: 2, strongObs: 5, minLen: 1.0, snapTol: 8, gapMax: 1.6, doorMin: 0.6, extMax: 2.0, tInside: 0.35, res: 0.05 }, opt);
+    const rep = { before: segs.length };
+    const obs = s => s.nObs ?? s.conf ?? 1;
+    // murs fiables : assez longs ET revus (≥ minObs), ou très souvent revus (≥ strongObs) même courts
+    let W = segs.filter(s => (LC.segLen(s) >= o.minLen && obs(s) >= o.minObs) || (obs(s) >= o.strongObs && LC.segLen(s) >= 0.3)).map(s => Object.assign({}, s));
+    { const r = snapDirections(W, { angTol: o.snapTol }); W = r.segments; rep.theta0 = r.theta0; }
+    // morceaux vus une seule fois mais posés exactement dans le prolongement d'un mur fiable : ils le confirment
+    const strong = W.slice();
+    for (const s0 of segs) {
+      if (strong.some(w => w.id !== undefined && w.id === s0.id) || LC.segLen(s0) < 0.3) continue;
+      const sn = snapDirections([Object.assign({}, s0)], { angTol: o.snapTol, theta0: rep.theta0 }).segments[0];
+      if (strong.some(w => LC.angleBetween(w, sn).lines <= 3 && LC.pointLineDist((sn.x1 + sn.x2) / 2, (sn.y1 + sn.y2) / 2, w) <= 0.1)) { W.push(sn); continue; }
+      // ... ou qui referme une forme : ses deux extrémités touchent des extrémités de murs fiables (4e côté d'un meuble)
+      const endNear = (x, y) => strong.some(w => Math.hypot(w.x1 - x, w.y1 - y) <= 0.3 || Math.hypot(w.x2 - x, w.y2 - y) <= 0.3);
+      if (LC.segLen(sn) >= 0.5 && endNear(sn.x1, sn.y1) && endNear(sn.x2, sn.y2)) W.push(sn);
+    }
+    // salle à angles droits : un « mur » qui n'est pas sur les axes de la salle n'en est pas un (objet, reflet)
+    const offAxis = w => { const a = LC.segAngle(w) * R2D; return Math.min(...[rep.theta0, rep.theta0 + 90].map(t => Math.abs(normDeg(2 * (t - a)) / 2))) > 2; };
+    W = W.filter(w => !offAxis(w));
+    // doublons : trait parallèle à moins de 35 cm d'un mur plus sûr et qui le longe -> écarté
+    W.sort((p, q) => obs(q) * LC.segLen(q) - obs(p) * LC.segLen(p));
+    W = W.filter((w, k) => !W.slice(0, k).some(v => {
+      if (LC.angleBetween(v, w).lines > 3 || LC.pointLineDist((w.x1 + w.x2) / 2, (w.y1 + w.y2) / 2, v) > 0.35) return false;
+      const a = LC.segAngle(v), ux = Math.cos(a), uy = Math.sin(a), pv = [ux * v.x1 + uy * v.y1, ux * v.x2 + uy * v.y2].sort((p, q) => p - q), pw = [ux * w.x1 + uy * w.y1, ux * w.x2 + uy * w.y2].sort((p, q) => p - q);
+      const ov = Math.min(pv[1], pw[1]) - Math.max(pv[0], pw[0]);
+      return ov >= 0.5 * (pw[1] - pw[0]) && LC.pointLineDist((w.x1 + w.x2) / 2, (w.y1 + w.y2) / 2, v) > 0.1;
+    }));
+    rep.weak = rep.before - W.length;
+    W = alignCollinear(W, { distTol: 0.1, angTol: 2 }).segments;
+    // ouvertures : trous entre deux morceaux d'un même mur
+    const openings = [];
+    for (let i = 0; i < W.length; i++) for (let j = i + 1; j < W.length; j++) {
+      const a = W[i], b = W[j]; if (LC.angleBetween(a, b).lines > 3) continue;
+      const ang = LC.segAngle(a), ux = Math.cos(ang), uy = Math.sin(ang), nx = -uy, ny = ux;
+      if (Math.abs(nx * ((a.x1 + a.x2) / 2 - (b.x1 + b.x2) / 2) + ny * ((a.y1 + a.y2) / 2 - (b.y1 + b.y2) / 2)) > 0.1) continue;
+      const pa = [ux * a.x1 + uy * a.y1, ux * a.x2 + uy * a.y2].sort((p, q) => p - q), pb = [ux * b.x1 + uy * b.y1, ux * b.x2 + uy * b.y2].sort((p, q) => p - q);
+      const [lo, hi] = pa[1] < pb[0] ? [pa[1], pb[0]] : pb[1] < pa[0] ? [pb[1], pa[0]] : [0, 0];
+      const g = hi - lo; if (g < o.doorMin || g > o.gapMax) continue;
+      // rien entre les deux (sinon ce n'est pas un trou)
+      if (W.some((c, k) => k !== i && k !== j && LC.angleBetween(a, c).lines <= 3 && (() => { const pc = [ux * c.x1 + uy * c.y1, ux * c.x2 + uy * c.y2].sort((p, q) => p - q); return pc[1] > lo + 0.05 && pc[0] < hi - 0.05; })() &&
+                    Math.abs(nx * ((a.x1 + a.x2) / 2 - (c.x1 + c.x2) / 2) + ny * ((a.y1 + a.y2) / 2 - (c.y1 + c.y2) / 2)) <= 0.1)) continue;
+      const off = nx * (a.x1 + a.x2) / 2 + ny * (a.y1 + a.y2) / 2, P = t => ({ x: ux * t + nx * off, y: uy * t + ny * off });
+      const p1 = P(lo), p2 = P(hi);
+      openings.push({ x: (p1.x + p2.x) / 2, y: (p1.y + p2.y) / 2, width: g, x1: p1.x, y1: p1.y, x2: p2.x, y2: p2.y });
+    }
+    W = mergeKeepProps(W, { angTol: 3, distTol: 0.1, gapTol: o.gapMax }).segments;
+    // coins en L : chaque extrémité est raccordée au mur le plus proche (couples triés par longueur de prolongement)
+    let joined = 0;
+    const used = new Set();
+    for (const ext of [o.extMax, 2 * o.extMax]) {      // 2e passe : extrémités restées libres, mur caché plus long
+    const cands = [];
+    for (let i = 0; i < W.length; i++) for (let j = i + 1; j < W.length; j++) {
+      const a = W[i], b = W[j]; if (LC.angleBetween(a, b).lines < 60) continue;
+      const r = LC.intersect(a, b); if (r.type !== 'point' && r.type !== 'lines') continue;
+      const near = s => { const d1 = Math.hypot(s.x1 - r.x, s.y1 - r.y), d2 = Math.hypot(s.x2 - r.x, s.y2 - r.y); return d1 <= d2 ? [1, d1] : [2, d2]; };
+      const [ea, da] = near(a), [eb, db] = near(b);
+      if (da > ext || db > ext) continue;
+      const inside = (s, d) => { const L = LC.segLen(s), d1 = Math.hypot(s.x1 - r.x, s.y1 - r.y), d2 = Math.hypot(s.x2 - r.x, s.y2 - r.y); return Math.abs(d1 + d2 - L) < 1e-6 && d > o.tInside; };
+      if (inside(a, da) || inside(b, db)) continue;          // ce serait un T au milieu d'un mur, pas un coin
+      cands.push({ i, j, ea, eb, r, cost: da + db });
+    }
+    cands.sort((p, q) => p.cost - q.cost);
+    for (const c of cands) {
+      const ka = c.i + ':' + c.ea, kb = c.j + ':' + c.eb; if (used.has(ka) || used.has(kb)) continue;
+      const a = W[c.i], b = W[c.j], a0 = LC.segAngle(a), b0 = LC.segAngle(b);
+      const ta = Object.assign({}, a), tb = Object.assign({}, b);
+      if (c.ea === 1) { ta.x1 = c.r.x; ta.y1 = c.r.y; } else { ta.x2 = c.r.x; ta.y2 = c.r.y; }
+      if (c.eb === 1) { tb.x1 = c.r.x; tb.y1 = c.r.y; } else { tb.x2 = c.r.x; tb.y2 = c.r.y; }
+      // un raccord ne doit pas pencher un mur
+      const tilt = (s0, s1) => Math.abs(normDeg((LC.segAngle(s1) - s0) * R2D * 2) / 2);
+      if (LC.segLen(ta) < 0.05 || LC.segLen(tb) < 0.05 || tilt(a0, ta) > 2 || tilt(b0, tb) > 2) continue;
+      W[c.i] = ta; W[c.j] = tb; used.add(ka); used.add(kb); if (c.cost > 1e-6) joined++;
+    }
+    }
+    // marche du contour jamais vue : deux murs parallèles dont les extrémités libres se font face (décalées de moins
+    // de 3 m, à moins de 60 cm l'une de l'autre dans le sens des murs) -> le plus court est prolongé et un mur
+    // perpendiculaire les relie (marqué « ajouté »)
+    const freeEnds = [];
+    W.forEach((w, i) => [1, 2].forEach(e => { if (!used.has(i + ':' + e)) freeEnds.push({ i, e, x: e === 1 ? w.x1 : w.x2, y: e === 1 ? w.y1 : w.y2 }); }));
+    const added = [];
+    for (let a = 0; a < freeEnds.length; a++) for (let b = a + 1; b < freeEnds.length; b++) {
+      const A = freeEnds[a], B = freeEnds[b]; if (A.i === B.i || A.done || B.done) continue;
+      const wa = W[A.i], wb = W[B.i]; if (LC.angleBetween(wa, wb).lines > 3) continue;
+      const ang = LC.segAngle(wa), ux = Math.cos(ang), uy = Math.sin(ang);
+      const along = ux * (B.x - A.x) + uy * (B.y - A.y), perp = -uy * (B.x - A.x) + ux * (B.y - A.y);
+      if (Math.abs(along) > 0.6 || Math.abs(perp) < 0.3 || Math.abs(perp) > 3) continue;
+      // marche : les extrémités libres se font face (les deux murs avancent l'un vers l'autre) ; deux murs qui
+      // s'arrêtent dans le même sens (fin de couloir, U) ne sont pas reliés
+      const dirOut = (w, E) => { const ox = E.e === 1 ? w.x2 : w.x1, oy = E.e === 1 ? w.y2 : w.y1; return Math.sign(ux * (E.x - ox) + uy * (E.y - oy)); };
+      const step = dirOut(wa, A) === -dirOut(wb, B);
+      // U (les deux s'arrêtent dans le même sens) : 4e côté jamais vu d'un meuble, ou fond d'un renfoncement ; refermé
+      // seulement si les extrémités sont bien alignées et proches (≤ 2 m), et noté comme ouverture
+      const uShape = !step && Math.abs(along) <= 0.3 && Math.abs(perp) <= 2.0;
+      if (!step && !uShape) continue;
+      if (uShape) openings.push({ x: (A.x + B.x) / 2, y: (A.y + B.y) / 2, width: Math.abs(perp), x1: A.x, y1: A.y, x2: B.x, y2: B.y, closedSide: true });
+      // on prolonge le mur le moins sûr jusqu'au niveau de l'autre, puis on ajoute la marche
+      const [P, Q, wp] = obs(wa) * LC.segLen(wa) < obs(wb) * LC.segLen(wb) ? [A, B, wa] : [B, A, wb];
+      const t = ux * (Q.x - P.x) + uy * (Q.y - P.y), nx = P.x + ux * t, ny = P.y + uy * t;
+      if (P.e === 1) { wp.x1 = nx; wp.y1 = ny; } else { wp.x2 = nx; wp.y2 = ny; }
+      added.push(Object.assign(LC.seg(nx, ny, Q.x, Q.y), { nObs: 0, conf: 0, added: true }));
+      A.done = B.done = true; joined++;
+    }
+    W = W.concat(added); rep.added = added.length;
+    rep.joined = joined;
+    // intérieur : plus grande zone fermée d'une grille où les murs sont tracés
+    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+    for (const s of W) { x0 = Math.min(x0, s.x1, s.x2); y0 = Math.min(y0, s.y1, s.y2); x1 = Math.max(x1, s.x1, s.x2); y1 = Math.max(y1, s.y1, s.y2); }
+    let closed = false, kept = W;
+    if (W.length) {
+      const res = o.res, gx0 = x0 - 0.5, gy0 = y0 - 0.5, GW = Math.ceil((x1 - x0 + 1) / res), GH = Math.ceil((y1 - y0 + 1) / res);
+      const wall = new Uint8Array(GW * GH), cell = (x, y) => [Math.floor((x - gx0) / res), Math.floor((y - gy0) / res)];
+      for (const s of W) { const [i0, j0] = cell(s.x1, s.y1), [i1, j1] = cell(s.x2, s.y2); LC.bresenham(i0, j0, i1, j1, (i, j) => { for (let dj = -1; dj <= 1; dj++) for (let di = -1; di <= 1; di++) { const a = i + di, b = j + dj; if (a >= 0 && b >= 0 && a < GW && b < GH) wall[b * GW + a] = 1; } }); }
+      const lab = new Int32Array(GW * GH).fill(-1), regs = [];
+      for (let k0 = 0; k0 < GW * GH; k0++) {
+        if (wall[k0] || lab[k0] >= 0) continue;
+        const id = regs.length, st = [k0]; lab[k0] = id; let n = 0, border = false;
+        while (st.length) { const k = st.pop(); n++; const i = k % GW, j = (k - i) / GW; if (!i || !j || i === GW - 1 || j === GH - 1) border = true;
+          for (const m of [k - 1, k + 1, k - GW, k + GW]) { if (m < 0 || m >= GW * GH || wall[m] || lab[m] >= 0) continue; if ((m === k - 1 && i === 0) || (m === k + 1 && i === GW - 1)) continue; lab[m] = id; st.push(m); } }
+        regs.push({ n, border });
+      }
+      const inner = regs.map((r, id) => ({ ...r, id })).filter(r => !r.border).sort((a, b) => b.n - a.n)[0];
+      closed = !!inner && inner.n * res * res > 4;
+      // surface : cellules intérieures + la bande cachée par le tracé des murs (1,5 cellule le long du bord)
+      let edge = 0;
+      if (closed) for (let k = 0; k < GW * GH; k++) if (lab[k] === inner.id && (wall[k - 1] || wall[k + 1] || wall[k - GW] || wall[k + GW])) edge++;
+      rep.area = closed ? (inner.n + 1.5 * edge) * res * res : 0;
+      if (closed) {
+        // un mur est gardé s'il borde l'intérieur (murs de la salle, meubles posés dedans)
+        // gardé si la majeure partie du segment borde l'intérieur (un mur vu par la porte qui touche juste le
+        // chambranle n'est pas gardé)
+        kept = W.filter(s => { let n = 0, t = 0; const [i0, j0] = cell(s.x1, s.y1), [i1, j1] = cell(s.x2, s.y2);
+          LC.bresenham(i0, j0, i1, j1, (i, j) => { n++; let touch = false; for (let dj = -2; dj <= 2 && !touch; dj++) for (let di = -2; di <= 2; di++) { const a = i + di, b = j + dj; if (a >= 0 && b >= 0 && a < GW && b < GH && lab[b * GW + a] === inner.id) { touch = true; break; } } if (touch) t++; });
+          return n && t / n >= 0.5; });
+        rep.outside = W.length - kept.length;
+      }
+    }
+    const insideOK = p => kept.some(s => LC.pointSegDist(p.x, p.y, s) < 0.15);
+    const op = [];
+    for (const q of openings.filter(insideOK)) if (!op.some(r => Math.hypot(r.x - q.x, r.y - q.y) < 0.3)) op.push(q);
+    rep.after = kept.length; rep.openings = op.length;
+    return { segments: kept, openings: op, closed, report: rep };
+  }
+
   return {
     PRE_DEFAULTS, FEAT_DEFAULTS, OM_DEFAULTS, REG_DEFAULTS, PIPE_DEFAULTS, COST,
     preprocessScan, clusterScan, fitCircle, douglasPeucker, dpSegments, ransacLines, smallObjectCircle, extractFeatures,
@@ -3923,7 +4255,7 @@
     createLayers, updateGridLayered, buildLayeredGrid, cloneGrid, cloneLayers,
     decayGrid, clearObsolete, removeMobile, labelComponents, removeSpeckles, smoothGrid, closeGaps, gridObstacles,
     dominantDirection, snapDirections, alignCollinear, mergeKeepProps, joinCorners, trimCollisions, regularizeVectorMap, sharpenWalls, maskMorph, maskFlood, fillHoles, traceLoops, regularizePolygon, roomPlan,
-    costmap, costmapToPGM, planPath, mapQuality, refinePoses,
+    costmap, costmapToPGM, planPath, mapQuality, refinePoses, closeOutline, globalAlign,
     clipSegmentDisc, eraseDisc, filterSmall, filterNearPoses, refreshDerived,
     createMapCorrector, correctorAdd, correctorDiff, correctorProposal, processMap, reportToMarkdown
   };
@@ -4992,6 +5324,23 @@
       const S = LC.seg;
       // scan synthétique : un point par degré sur un cercle de rayon r autour du lidar
       const ring = (r, extra = []) => { const a = [], d = []; for (let k = 0; k < 360; k++) { a.push(k); d.push(r * 1000); } for (const [aa, dd] of extra) { a.push(aa); d.push(dd); } return { a, d }; };
+      test('contour de la salle : trous comblés, coins raccordés, dehors et fouillis supprimés', () => {
+        const w = (x1, y1, x2, y2, n) => Object.assign(S(x1, y1, x2, y2), { nObs: n, conf: n });
+        const segs = [
+          w(0, 0, 3, 0.02, 9), w(4.2, 0.02, 6.5, 0.03, 8),        // mur du bas en 2 morceaux (trou de 1,2 m), s'arrête 0,5 m avant le coin
+          w(7, 0.5, 7.01, 5, 9),                                  // mur de droite, n'atteint pas les coins
+          w(6.8, 5.02, 0.4, 5, 10),                               // mur du haut
+          w(0, 0.3, 0.02, 4.6, 7),                                // mur de gauche
+          w(3, 7.5, 4, 7.5, 3),                                   // vu par une porte : dehors
+          w(2, 2, 2.3, 2.2, 1), w(4, 3, 4.1, 3.4, 1)              // chaises : vues une fois
+        ];
+        const R = LM.closeOutline(segs);
+        if (!R.closed) throw new Error('contour non fermé');
+        if (R.segments.length !== 4) throw new Error(R.segments.length + ' segments au lieu de 4');
+        if (Math.abs(R.report.area - 35) > 1.5) throw new Error('surface ' + R.report.area);
+        if (!R.openings.some(o => Math.abs(o.width - 1.2) < 0.05)) throw new Error('ouverture de 1,2 m non notée');
+        return true;
+      });
       test('prétraitement : portée, point isolé et point mixte retirés, le reste gardé', () => {
         const sc = { a: [], d: [] };
         for (let k = 0; k < 360; k++) { sc.a.push(k); sc.d.push(k >= 100 && k < 110 ? 1000 : 3000); }  // objet à 1 m devant un mur à 3 m
@@ -7011,10 +7360,10 @@ function fitGrid(){
 
 // ---------------------------------------------------------------- SEGMENTS
 const SEG = { list: [], A: -1, B: -1, tool: 'select', drawing: null, ghost: null, mark: null, history: [], nextId: 1 };
-function segPush(){ SEG.history.push(JSON.stringify({ list: SEG.list, A: SEG.A, B: SEG.B })); if (SEG.history.length > 100) SEG.history.shift(); }
+function segPush(){ SEG.history.push(JSON.stringify({ list: SEG.list, A: SEG.A, B: SEG.B, openings: SEG.openings || null })); if (SEG.history.length > 100) SEG.history.shift(); }
 function segUndo(){
   const h = SEG.history.pop(); if (!h) return toast('Rien à annuler');
-  const o = JSON.parse(h); SEG.list = o.list; SEG.A = o.A; SEG.B = o.B; SEG.ghost = null; SEG.mark = null; segRefresh();
+  const o = JSON.parse(h); SEG.list = o.list; SEG.A = o.A; SEG.B = o.B; SEG.openings = o.openings; SEG.ghost = null; SEG.mark = null; segRefresh();
 }
 function segAdd(s, src, color){ return Object.assign(s, { id: SEG.nextId++, src: src || 'manuel', color: color || '#e3e7ec' }); }
 const segTol = () => ({ angTol: numVal('sAng'), distTol: numVal('sLat'), gapTol: numVal('sGap') });
@@ -7101,6 +7450,11 @@ function drawSegments(){
   if (!SEG.list.length && !SEG.drawing) return;
   const dimOthers = SEG.A >= 0 || SEG.B >= 0;
   ctx.save(); ctx.lineCap = 'round';
+  if (SEG.openings) for (const o of SEG.openings){
+    const [x1, y1] = w2s(o.x1, o.y1), [x2, y2] = w2s(o.x2, o.y2);
+    ctx.strokeStyle = '#4fc3ffaa'; ctx.lineWidth = 7; ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke();
+    ctx.fillStyle = '#4fc3ff'; ctx.font = '11px system-ui'; ctx.fillText(`${o.width.toFixed(2)} m`, (x1 + x2) / 2 + 6, (y1 + y2) / 2 - 6);
+  }
   SEG.list.forEach((s, k) => {
     const sel = k === SEG.A ? 'A' : k === SEG.B ? 'B' : null;
     const [x1, y1] = w2s(s.x1, s.y1), [x2, y2] = w2s(s.x2, s.y2);
@@ -7191,6 +7545,38 @@ $('sClean').onclick = () => {
   segPush(); SEG.list = keep; SEG.A = SEG.B = -1; SEG.ghost = null; segRefresh();
   toast(`${n0 - keep.length} segment(s) de moins de ${L} m supprimé(s) (Ctrl+Z pour annuler)`);
 };
+// Contour de la salle (onglet Segments) : fiabilité = nombre de scans qui voient le segment
+function segSupport(segs, scans){
+  const W = scans.map(s => { const [X, Y] = toWorldPts(s); return { X, Y }; });
+  return segs.map(g => {
+    let n = 0; const L = LC.segLen(g);
+    const x0 = Math.min(g.x1, g.x2) - 0.05, x1 = Math.max(g.x1, g.x2) + 0.05, y0 = Math.min(g.y1, g.y2) - 0.05, y1 = Math.max(g.y1, g.y2) + 0.05;
+    for (const w of W){
+      let c = 0;
+      for (let k = 0; k < w.X.length; k++){
+        const x = w.X[k], y = w.Y[k]; if (x < x0 || x > x1 || y < y0 || y > y1) continue;
+        if (LC.pointSegDist(x, y, g) <= 0.05 && ++c >= Math.min(10, Math.max(3, L * 8))) { n++; break; }
+      }
+    }
+    return Object.assign({}, g, { nObs: n, conf: n });
+  });
+}
+$('sClose').onclick = () => {
+  if (!SEG.list.length) return toast('Aucun segment : extrais d’abord les segments des scans visibles');
+  const scans = S.scans.filter(s => s.visible);
+  const sup = segSupport(SEG.list, scans);
+  const R = LM.closeOutline(sup, { minObs: numVal('scObs'), minLen: numVal('scLen'), gapMax: numVal('scGap'), extMax: numVal('scExt'), strongObs: Math.max(5, Math.ceil(scans.length / 2)) });
+  if (!R.segments.length) return toast('Aucun mur fiable : baisse « vu par au moins » ou la longueur');
+  segPush();
+  const fin = segSupport(R.segments, scans);                 // nombre de scans qui voient chaque segment final
+  SEG.list = fin.map((g, k) => segAdd(LC.seg(g.x1, g.y1, g.x2, g.y2), R.segments[k].added ? 'contour (ajouté : jamais vu)' : `contour (vu par ${g.nObs} scan${g.nObs > 1 ? 's' : ''})`, R.segments[k].added ? '#4fc3ff' : '#ffffff'));
+  SEG.openings = R.openings; SEG.A = SEG.B = -1; SEG.ghost = null; segRefresh();
+  const r = R.report, el = $('sCloseInfo'); el.style.display = '';
+  el.innerHTML = (R.closed ? `<b style="color:#4cd97b">Contour fermé</b> · ${r.area.toFixed(1)} m² à l’intérieur` : '<b style="color:#ffb347">Contour encore ouvert</b> : augmente « combler les trous » ou « prolonger », ou ajoute un scan là où le mur manque') +
+    `<br>${r.before} segments → ${r.after} · ${r.joined} coin(s) raccordé(s)` + (r.outside ? ` · ${r.outside} hors de la salle supprimé(s)` : '') +
+    (R.openings.length ? '<br>Trous comblés : ' + R.openings.map(o => `${o.width.toFixed(2)} m en (${o.x.toFixed(1)} ; ${o.y.toFixed(1)})`).join(', ') : '') + '<br>Annuler : bouton Annuler (ou Ctrl+Z).';
+  toast(R.closed ? `Contour fermé : ${r.after} segments` : 'Contour encore ouvert');
+};
 $('sMerge').onclick = () => segOp('merge');
 $('sCutAB').onclick = () => segOp('cutAB');
 $('sCutBA').onclick = () => segOp('cutBA');
@@ -7200,7 +7586,7 @@ $('sDel').onclick = () => {
   if (SEG.A < 0) return; segPush(); SEG.list.splice(SEG.A, 1);
   if (SEG.B > SEG.A) SEG.B--; else if (SEG.B === SEG.A) SEG.B = -1; SEG.A = -1; segRefresh();
 };
-$('sClear').onclick = () => { if (!SEG.list.length) return; segPush(); SEG.list = []; SEG.A = SEG.B = -1; SEG.ghost = null; segRefresh(); };
+$('sClear').onclick = () => { if (!SEG.list.length) return; segPush(); SEG.openings = null; SEG.list = []; SEG.A = SEG.B = -1; SEG.ghost = null; segRefresh(); };
 $('sUndo').onclick = segUndo;
 $('sExp').onclick = () => { if (!SEG.list.length) return toast('Aucun segment'); download('carte_vectorielle.txt', LC.segmentsToText(SEG.list), 'text/plain'); };
 $('sFile').onchange = async e => {
@@ -7234,10 +7620,10 @@ function vecOpt(){
   };
 }
 const vecSnapshot = () => JSON.stringify(VEC.map);
-function vecPush(){ VEC.history.push({ map: vecSnapshot(), last: VEC.last, qi: VEC.qi }); if (VEC.history.length > 50) VEC.history.shift(); }
+function vecPush(){ VEC.history.push({ map: vecSnapshot(), last: VEC.last, qi: VEC.qi, openings: VEC.openings || null }); if (VEC.history.length > 50) VEC.history.shift(); }
 function vecUndo(){
   const h = VEC.history.pop(); if (!h) return toast('Rien à annuler');
-  VEC.map = JSON.parse(h.map); VEC.last = h.last; VEC.qi = h.qi; VEC.sel = -1; vecRefresh();
+  VEC.map = JSON.parse(h.map); VEC.last = h.last; VEC.qi = h.qi; VEC.sel = -1; VEC.openings = h.openings || null; vecRefresh();
 }
 function vecIntegrate(s){
   const [X, Y] = toWorldPts(s), pts = [];
@@ -7292,6 +7678,11 @@ function drawVectorMap(){
     ctx.strokeStyle = '#ff5c5c'; ctx.lineWidth = 2.5; ctx.setLineDash([6, 5]);
     ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke(); ctx.setLineDash([]);
   }
+  if (VEC.openings) for (const o of VEC.openings){
+    const [x1, y1] = w2s(o.x1, o.y1), [x2, y2] = w2s(o.x2, o.y2);
+    ctx.strokeStyle = '#4fc3ffaa'; ctx.lineWidth = 7; ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke();
+    ctx.fillStyle = '#4fc3ff'; ctx.font = '11px system-ui'; ctx.fillText(`${o.width.toFixed(2)} m`, (x1 + x2) / 2 + 6, (y1 + y2) / 2 - 6);
+  }
   const maxC = numVal('vMax');
   const minC = numVal('vMinConf');
   M.features.forEach((f, k) => {
@@ -7329,7 +7720,7 @@ function vecPointerDown(e, mx, my){
   if (best < 0) return false;
   VEC.sel = best; vecRefresh(); return true;
 }
-$('vNew').onclick = () => { vecPush(); VEC.map = LC.createVectorMap(); VEC.last = null; VEC.queue = []; VEC.qi = 0; VEC.sel = -1; vecRefresh(); toast('Carte vectorielle vide'); };
+$('vNew').onclick = () => { vecPush(); VEC.openings = null; VEC.map = LC.createVectorMap(); VEC.last = null; VEC.queue = []; VEC.qi = 0; VEC.sel = -1; vecRefresh(); toast('Carte vectorielle vide'); };
 $('vOne').onclick = () => {
   const s = needSel(); if (!s) return;
   vecPush(); const st = vecIntegrate(s); vecRefresh();
@@ -7354,6 +7745,21 @@ $('vAll').onclick = () => {
   toast(`${vis.length} scans intégrés en ${(performance.now() - t0).toFixed(0)} ms : ${VEC.map.features.length} segments, ${VEC.map.corners.length} coins`);
 };
 $('vUndo').onclick = vecUndo;
+$('vClose').onclick = () => {
+  if (!VEC.map.features.length) return toast('Carte vide');
+  const R = LM.closeOutline(VEC.map.features, { minObs: numVal('vcObs'), minLen: numVal('vcLen'), gapMax: numVal('vcGap'), extMax: numVal('vcExt') });
+  if (!R.segments.length) return toast('Aucun mur fiable : baisse « vu au moins » ou la longueur');
+  vecPush();
+  const M = LC.createVectorMap();
+  R.segments.forEach(f => M.features.push(Object.assign({}, f, { id: M.nextId++, conf: Math.max(1, f.conf ?? 1), nObs: Math.max(1, f.nObs ?? 1) })));
+  M.scans = VEC.map.scans; M.corners = LC.computeCorners(M.features, vecOpt());
+  VEC.map = M; VEC.sel = -1; VEC.last = null; VEC.openings = R.openings; vecRefresh();
+  const r = R.report, el = $('vCloseInfo'); el.style.display = '';
+  el.innerHTML = (R.closed ? `<b style="color:#4cd97b">Contour fermé</b> · ${r.area.toFixed(1)} m² à l’intérieur` : '<b style="color:#ffb347">Contour encore ouvert</b> : augmente « combler les trous » ou « prolonger », ou ajoute un scan là où le mur manque') +
+    `<br>${r.before} segments → ${r.after} · ${r.joined} coin(s) raccordé(s)` + (r.outside ? ` · ${r.outside} segment(s) hors de la salle supprimé(s)` : '') +
+    (R.openings.length ? '<br>Trous comblés : ' + R.openings.map(o => `${o.width.toFixed(2)} m en (${o.x.toFixed(1)} ; ${o.y.toFixed(1)})`).join(', ') : '') + '<br>Annuler : bouton Annuler.';
+  toast(R.closed ? `Contour fermé : ${r.after} segments, ${R.openings.length} ouverture(s)` : 'Contour encore ouvert');
+};
 $('vExp').onclick = () => { if (!VEC.map.features.length) return toast('Carte vide'); download('carte_vectorielle_proprietes.txt', LC.vectorMapToText(VEC.map), 'text/plain'); };
 $('vFile').onchange = async e => {
   const f = e.target.files[0]; e.target.value = ''; if (!f) return;
@@ -7556,7 +7962,7 @@ const PROC = { res: null, imgs: {}, scans: [], busy: false, stop: false, planMod
 function procOpt(){
   const age = Math.round(numVal('pAge'));
   return {
-    refine: $('pRefine').checked,
+    refine: $('pRefine').checked, loop: $('pLoop').checked,
     pre: { dMin: numVal('pDMin'), dMax: numVal('pDMax'), iMin: numVal('pIMin'), isolated: $('pIso').checked, mixed: $('pMixed').checked },
     res: numVal('pRes'),
     mobile: $('pMobile').checked, mobileOpt: { maxPersist: numVal('pPersist') / 100 },
@@ -7579,7 +7985,7 @@ async function procRun(){
   if (!vis.length) return toast('Aucun scan visible');
   const o = procOpt();
   PROC.busy = true; PROC.stop = false; $('pRun').disabled = true;
-  const overlay = o.refine && vis.length > 1;
+  const overlay = (o.refine || o.loop) && vis.length > 1;
   if (overlay){
     $('autoOverlay').style.display = 'flex';
     document.querySelector('#autoOverlay .ao-title').textContent = 'Traitement de la carte';
@@ -7592,13 +7998,16 @@ async function procRun(){
     await sleep(0);
   };
   try {
-    PROC.scans = vis.map(s => ({ id: s.id, name: s.name, a: s.a, d: s.d, i: s.i, scale: s.scale || 1, pose: { ...s.pose } }));
+    // dans l'ordre où les scans ont été pris (auto1_01, auto1_02… ou ordre de capture) : la fermeture de boucle s'en sert
+    const ord = vis.slice().sort((a, b) => a.name.localeCompare(b.name, 'fr', { numeric: true }) || a.id - b.id);
+    PROC.scans = ord.map(s => ({ id: s.id, name: s.name, a: s.a, d: s.d, i: s.i, scale: s.scale || 1, pose: { ...s.pose } }));
     const t0 = performance.now();
     PROC.res = await LM.processMap(PROC.scans, o, prog);
     PROC.res.ms = performance.now() - t0;
     PROC.imgs = {}; PROC.plan = { start: null, goal: null, result: null }; PROC.undo = [];
     $('pStatus').textContent = `terminé en ${(PROC.res.ms / 1000).toFixed(1)} s`;
     if (PROC.res.plan) $('pLayer').value = 'plan'; else if ($('pLayer').value === 'plan') $('pLayer').value = 'clean';
+    if ((o.loop || o.refine) && $('pAutoApply').checked) $('pApply').onclick(true);
     procInfo(); procPlanInfo(); if (typeof procEInfo === 'function') procEInfo();
   } catch (e){ $('pStatus').textContent = ''; toast(e.message === 'arrêt' ? 'Traitement arrêté' : 'Erreur : ' + e.message); console.error(e); }
   finally {
@@ -7624,6 +8033,7 @@ function procInfo(){
     row('Surface libre', q.raw.freeArea.toFixed(1) + ' m²', q.clean.freeArea.toFixed(1) + ' m²') +
     row('Netteté (cellules tranchées)', pc(q.raw.sharpness), pc(q.clean.sharpness)) +
     row('Cellules en conflit', q.raw.conflicts, q.clean.conflicts) + '</table>';
+  if (R.loopInfo && R.loopInfo.weak > 2) h += `<div class="res" style="color:#ffb347">${R.loopInfo.weak} scans n’ont pas de lien sûr avec le précédent (le robot avait trop bougé entre les deux) : vérifie ces endroits.</div>`;
   if (R.refineLog){
     const last = new Map(); R.refineLog.forEach(l => last.set(l.name, l));
     const moved = R.poses.map((p, k) => ({ n: PROC.scans[k].name, d: Math.hypot(p.x - PROC.scans[k].pose.x, p.y - PROC.scans[k].pose.y), a: Math.abs(((p.th - PROC.scans[k].pose.th + 540) % 360) - 180) }));
@@ -7780,7 +8190,7 @@ $('pPlanUnk').onchange = () => { procPlan(); procPlanInfo(); draw(); };
 const needProc = () => { if (!PROC.res){ toast('Lance d’abord le traitement'); return false; } return true; };
 $('pApply').onclick = () => {
   if (!needProc()) return;
-  if (!PROC.res.refineLog) return toast('Coche « Recaler toutes les poses » puis relance le traitement');
+  if (!PROC.res.refineLog) return toast('Coche « Fermer les boucles » ou « Affiner chaque position » puis relance le traitement');
   let n = 0;
   PROC.scans.forEach((ps, k) => {
     const s = S.scans.find(x => x.id === ps.id); if (!s) return;
@@ -7789,7 +8199,7 @@ $('pApply').onclick = () => {
     pushUndo(s); s.pose = { x: p.x, y: p.y, th: p.th }; n++;
   });
   if (typeof renderList === 'function') renderList();
-  toast(`${n} pose(s) mise(s) à jour`); draw();
+  toast(`${n} position(s) de scan corrigée(s) et gardée(s)`); draw();
 };
 $('pToGrid').onclick = () => { if (!needProc()) return; gridSet(LM.cloneGrid(PROC.res.grid), 'Grid map traitée (onglet Traitement)'); toast('Carte envoyée vers l’onglet Grid map'); };
 $('pToVec').onclick = () => {
@@ -9007,6 +9417,60 @@ document.addEventListener('keydown', e => { if (e.code === 'Space' && AM.explore
 $('amStart').onclick = () => amStart();
 $('amStop').onclick = amStop;
 $('amGrid').onclick = () => { if (!S.scans.some(s => s.visible)) return toast('Aucun scan visible'); setTab('grid'); gridFromAll(); fitGrid(); };
+
+
+// ============================================================================
+// Guide : étape par étape (en haut à gauche). Chaque étape se coche toute seule quand elle est faite ;
+// « Aller » ouvre le bon onglet et fait clignoter le bouton à utiliser (numéroté comme l'étape).
+// ============================================================================
+const GUIDE = { flags: {}, open: true };
+const GUIDE_STEPS = [
+  { t: 'Connecter le robot', h: 'USB (câble) ou WiFi « RobotESP32 », puis « Connecter le robot ».', tab: 'scans', el: 'connect',
+    done: () => isConnected() || S.scans.length > 0 },
+  { t: 'Prendre les scans', h: 'Au choix : « Capturer » à chaque endroit (le scan se pose tout seul), « ▶ Cartographier » en pilotant le robot, ou « ▶ Explorer seul ». Le premier scan est l’origine (0 ; 0 ; 0).', tab: 'scans', el: 'capture',
+    alt: [['Cartographier', 'amStart'], ['Explorer seul', 'amExplore']], done: () => S.scans.length >= 2 && !(typeof AM !== 'undefined' && AM.running) },
+  { t: 'Vérifier la superposition', h: 'Les murs des scans doivent se recouvrir. Un scan mal placé : « Tout superposer automatiquement » (ou le déplacer à la main).', tab: 'scans', el: 'autoAll',
+    done: () => S.scans.length >= 2 && S.scans.filter(s => s.visible).every(s => s.locked) },
+  { t: 'Lancer le traitement', h: 'Onglet Traitement : les positions sont recalées ensemble (plus de murs en double), puis les obstacles sont effacés : il reste le plan de la salle.', tab: 'proc', el: 'pRun',
+    done: () => !!PROC.res },
+  { t: 'Garder la carte finale', h: '« Envoyer le plan → Grid map et Vectorielle » : le plan devient la carte de référence.', tab: 'proc', el: 'pPlanSend',
+    done: () => !!GUIDE.flags.sent },
+  { t: 'Exporter la carte', h: 'Plan en PGM + YAML (format ROS) et en .txt (segments), pour le rapport.', tab: 'proc', el: 'pExpPlan', opt: true,
+    done: () => !!GUIDE.flags.exported },
+  { t: 'Valider la carte', h: 'Onglet Localisation : « Retrouver la position » d’un scan sur la carte ; l’erreur est estimée.', tab: 'loc', el: 'fdGo', opt: true,
+    done: () => !!(FIND && FIND.res) },
+  { t: 'Robot en direct', h: '« Préparer la carte », puis « ▶ Démarrer » : la carte tourne comme un GPS et le robot s’y repère.', tab: 'live', el: 'lvPrep',
+    alt: [['Démarrer', 'lvStart']], done: () => !!(LIVE.map && LIVE.stats && LIVE.stats.n > 0) }
+];
+function guideGo(tab, el){
+  setTab(tab);
+  const e = $(el); if (!e) return;
+  // élément dans une partie repliée ou cachée : on la montre
+  for (let p = e.parentElement; p; p = p.parentElement) if (p.tagName === 'DETAILS') p.open = true;
+  e.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  e.classList.remove('guide-flash'); void e.offsetWidth; e.classList.add('guide-flash');
+  setTimeout(() => e.classList.remove('guide-flash'), 2600);
+}
+function guideRefresh(){
+  const L = $('guideList'); if (!L) return;
+  let cur = -1, nDone = 0;
+  const st = GUIDE_STEPS.map((g, k) => { let d = false; try { d = !!g.done(); } catch (e) {} if (d) nDone++; return d; });
+  cur = st.findIndex((d, k) => !d && !GUIDE_STEPS[k].opt);
+  if (cur < 0) cur = st.findIndex(d => !d);
+  const html = GUIDE_STEPS.map((g, k) => `<li class="${st[k] ? 'done' : ''} ${k === cur ? 'cur' : ''} ${g.opt ? 'opt' : ''}">` +
+    `<span class="gn">${st[k] ? '✓' : k + 1}</span><span><b>${g.t}</b>${k === cur || !GUIDE.compact ? '<br>' + g.h : ''}` +
+    (g.alt && k === cur ? '<br>' + g.alt.map(([l, id]) => `<a href="#" data-go="${g.tab}|${id}">${l}</a>`).join(' · ') : '') + `</span>` +
+    `<button data-go="${g.tab}|${g.el}">Aller</button></li>`).join('');
+  if (L.__last !== html){ L.innerHTML = html; L.__last = html; }
+  $('guideProg').textContent = `${nDone}/${GUIDE_STEPS.length}` + (cur >= 0 ? ` · étape ${cur + 1}` : ' · terminé ✓');
+}
+$('guideList').addEventListener('click', e => { const g = e.target.closest('[data-go]'); if (!g) return; e.preventDefault(); const [t, id] = g.dataset.go.split('|'); guideGo(t, id); });
+$('guideHead').onclick = () => { GUIDE.open = !GUIDE.open; $('guide').classList.toggle('closed', !GUIDE.open); try { localStorage.setItem('ld06_guide_open', GUIDE.open ? '1' : '0'); } catch (e) {} };
+try { if (localStorage.getItem('ld06_guide_open') === '0'){ GUIDE.open = false; $('guide').classList.add('closed'); } } catch (e) {}
+GUIDE.compact = true;     // seule l'étape en cours montre son explication
+$('pPlanSend').addEventListener('click', () => { GUIDE.flags.sent = true; guideRefresh(); });
+['pExpPlan', 'pExpPlanTxt', 'gExpPgm', 'gExpJson', 'vExp'].forEach(id => { const b = $(id); if (b) b.addEventListener('click', () => { GUIDE.flags.exported = true; guideRefresh(); }); });
+setInterval(guideRefresh, 1000); guideRefresh();
 
 // MAPS-UI:END
 syncOptUI(); renderList(); resize();

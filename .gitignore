@@ -1,0 +1,11 @@
+# Telechargements incomplets
+*.crdownload
+# Fichiers systeme
+Thumbs.db
+desktop.ini
+.DS_Store
+# Python
+__pycache__/
+*.pyc
+# Editeurs
+.vscode/
