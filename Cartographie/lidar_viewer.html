@@ -345,6 +345,17 @@
       <input type="number" id="sCleanLen" value="0.5" step="0.1" min="0" style="width:70px"><span class="help">m</span>
     </div>
 
+    <h2>Contour de la salle</h2>
+    <div class="help">Chaque segment est d’abord compté : par combien de scans il est vu (au moins 10 points à moins de 5 cm). Seuls les murs vus par plusieurs scans servent au contour : redressés, trous comblés (porte, mur caché), coins raccordés, meuble refermé ; le reste (chaises, sacs, ce qui est vu par la porte) est supprimé.</div>
+    <div class="frm">
+      <label for="scObs">Mur fiable : vu par au moins (scans)</label><input type="number" id="scObs" value="2" step="1" min="1">
+      <label for="scLen">… et long d’au moins (m)</label><input type="number" id="scLen" value="1.0" step="0.1" min="0.2">
+      <label for="scGap">Combler les trous jusqu’à (m)</label><input type="number" id="scGap" value="1.6" step="0.1" min="0">
+      <label for="scExt">Prolonger jusqu’aux coins sur (m)</label><input type="number" id="scExt" value="2.0" step="0.1" min="0">
+    </div>
+    <div class="row"><button id="sClose" class="primary">Fermer le contour</button></div>
+    <div class="info" id="sCloseInfo" style="display:none"></div>
+
     <h2>Opérations sur deux segments</h2>
     <div class="help" style="margin-bottom:6px">Clic sur un segment = <b style="color:var(--accent)">A</b>, Shift + clic = <b style="color:#ffb347">B</b>. Le premier point (x1, y1) est le disque plein. En mode <i>Tracer</i>, glisser sur la carte pour dessiner un segment (utile pour tester les cas limites).</div>
     <div class="seg-tools">
@@ -3957,6 +3968,17 @@
       const endNear = (x, y) => strong.some(w => Math.hypot(w.x1 - x, w.y1 - y) <= 0.3 || Math.hypot(w.x2 - x, w.y2 - y) <= 0.3);
       if (LC.segLen(sn) >= 0.5 && endNear(sn.x1, sn.y1) && endNear(sn.x2, sn.y2)) W.push(sn);
     }
+    // salle à angles droits : un « mur » qui n'est pas sur les axes de la salle n'en est pas un (objet, reflet)
+    const offAxis = w => { const a = LC.segAngle(w) * R2D; return Math.min(...[rep.theta0, rep.theta0 + 90].map(t => Math.abs(normDeg(2 * (t - a)) / 2))) > 2; };
+    W = W.filter(w => !offAxis(w));
+    // doublons : trait parallèle à moins de 35 cm d'un mur plus sûr et qui le longe -> écarté
+    W.sort((p, q) => obs(q) * LC.segLen(q) - obs(p) * LC.segLen(p));
+    W = W.filter((w, k) => !W.slice(0, k).some(v => {
+      if (LC.angleBetween(v, w).lines > 3 || LC.pointLineDist((w.x1 + w.x2) / 2, (w.y1 + w.y2) / 2, v) > 0.35) return false;
+      const a = LC.segAngle(v), ux = Math.cos(a), uy = Math.sin(a), pv = [ux * v.x1 + uy * v.y1, ux * v.x2 + uy * v.y2].sort((p, q) => p - q), pw = [ux * w.x1 + uy * w.y1, ux * w.x2 + uy * w.y2].sort((p, q) => p - q);
+      const ov = Math.min(pv[1], pw[1]) - Math.max(pv[0], pw[0]);
+      return ov >= 0.5 * (pw[1] - pw[0]) && LC.pointLineDist((w.x1 + w.x2) / 2, (w.y1 + w.y2) / 2, v) > 0.1;
+    }));
     rep.weak = rep.before - W.length;
     W = alignCollinear(W, { distTol: 0.1, angTol: 2 }).segments;
     // ouvertures : trous entre deux morceaux d'un même mur
@@ -4004,6 +4026,35 @@
       W[c.i] = ta; W[c.j] = tb; used.add(ka); used.add(kb); if (c.cost > 1e-6) joined++;
     }
     }
+    // marche du contour jamais vue : deux murs parallèles dont les extrémités libres se font face (décalées de moins
+    // de 3 m, à moins de 60 cm l'une de l'autre dans le sens des murs) -> le plus court est prolongé et un mur
+    // perpendiculaire les relie (marqué « ajouté »)
+    const freeEnds = [];
+    W.forEach((w, i) => [1, 2].forEach(e => { if (!used.has(i + ':' + e)) freeEnds.push({ i, e, x: e === 1 ? w.x1 : w.x2, y: e === 1 ? w.y1 : w.y2 }); }));
+    const added = [];
+    for (let a = 0; a < freeEnds.length; a++) for (let b = a + 1; b < freeEnds.length; b++) {
+      const A = freeEnds[a], B = freeEnds[b]; if (A.i === B.i || A.done || B.done) continue;
+      const wa = W[A.i], wb = W[B.i]; if (LC.angleBetween(wa, wb).lines > 3) continue;
+      const ang = LC.segAngle(wa), ux = Math.cos(ang), uy = Math.sin(ang);
+      const along = ux * (B.x - A.x) + uy * (B.y - A.y), perp = -uy * (B.x - A.x) + ux * (B.y - A.y);
+      if (Math.abs(along) > 0.6 || Math.abs(perp) < 0.3 || Math.abs(perp) > 3) continue;
+      // marche : les extrémités libres se font face (les deux murs avancent l'un vers l'autre) ; deux murs qui
+      // s'arrêtent dans le même sens (fin de couloir, U) ne sont pas reliés
+      const dirOut = (w, E) => { const ox = E.e === 1 ? w.x2 : w.x1, oy = E.e === 1 ? w.y2 : w.y1; return Math.sign(ux * (E.x - ox) + uy * (E.y - oy)); };
+      const step = dirOut(wa, A) === -dirOut(wb, B);
+      // U (les deux s'arrêtent dans le même sens) : 4e côté jamais vu d'un meuble, ou fond d'un renfoncement ; refermé
+      // seulement si les extrémités sont bien alignées et proches (≤ 2 m), et noté comme ouverture
+      const uShape = !step && Math.abs(along) <= 0.3 && Math.abs(perp) <= 2.0;
+      if (!step && !uShape) continue;
+      if (uShape) openings.push({ x: (A.x + B.x) / 2, y: (A.y + B.y) / 2, width: Math.abs(perp), x1: A.x, y1: A.y, x2: B.x, y2: B.y, closedSide: true });
+      // on prolonge le mur le moins sûr jusqu'au niveau de l'autre, puis on ajoute la marche
+      const [P, Q, wp] = obs(wa) * LC.segLen(wa) < obs(wb) * LC.segLen(wb) ? [A, B, wa] : [B, A, wb];
+      const t = ux * (Q.x - P.x) + uy * (Q.y - P.y), nx = P.x + ux * t, ny = P.y + uy * t;
+      if (P.e === 1) { wp.x1 = nx; wp.y1 = ny; } else { wp.x2 = nx; wp.y2 = ny; }
+      added.push(Object.assign(LC.seg(nx, ny, Q.x, Q.y), { nObs: 0, conf: 0, added: true }));
+      A.done = B.done = true; joined++;
+    }
+    W = W.concat(added); rep.added = added.length;
     rep.joined = joined;
     // intérieur : plus grande zone fermée d'une grille où les murs sont tracés
     let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
@@ -4029,9 +4080,11 @@
       rep.area = closed ? (inner.n + 1.5 * edge) * res * res : 0;
       if (closed) {
         // un mur est gardé s'il borde l'intérieur (murs de la salle, meubles posés dedans)
-        kept = W.filter(s => { let touch = false; const [i0, j0] = cell(s.x1, s.y1), [i1, j1] = cell(s.x2, s.y2);
-          LC.bresenham(i0, j0, i1, j1, (i, j) => { for (let dj = -3; dj <= 3 && !touch; dj++) for (let di = -3; di <= 3; di++) { const a = i + di, b = j + dj; if (a >= 0 && b >= 0 && a < GW && b < GH && lab[b * GW + a] === inner.id) { touch = true; break; } } });
-          return touch; });
+        // gardé si la majeure partie du segment borde l'intérieur (un mur vu par la porte qui touche juste le
+        // chambranle n'est pas gardé)
+        kept = W.filter(s => { let n = 0, t = 0; const [i0, j0] = cell(s.x1, s.y1), [i1, j1] = cell(s.x2, s.y2);
+          LC.bresenham(i0, j0, i1, j1, (i, j) => { n++; let touch = false; for (let dj = -2; dj <= 2 && !touch; dj++) for (let di = -2; di <= 2; di++) { const a = i + di, b = j + dj; if (a >= 0 && b >= 0 && a < GW && b < GH && lab[b * GW + a] === inner.id) { touch = true; break; } } if (touch) t++; });
+          return n && t / n >= 0.5; });
         rep.outside = W.length - kept.length;
       }
     }
@@ -7154,10 +7207,10 @@ function fitGrid(){
 
 // ---------------------------------------------------------------- SEGMENTS
 const SEG = { list: [], A: -1, B: -1, tool: 'select', drawing: null, ghost: null, mark: null, history: [], nextId: 1 };
-function segPush(){ SEG.history.push(JSON.stringify({ list: SEG.list, A: SEG.A, B: SEG.B })); if (SEG.history.length > 100) SEG.history.shift(); }
+function segPush(){ SEG.history.push(JSON.stringify({ list: SEG.list, A: SEG.A, B: SEG.B, openings: SEG.openings || null })); if (SEG.history.length > 100) SEG.history.shift(); }
 function segUndo(){
   const h = SEG.history.pop(); if (!h) return toast('Rien à annuler');
-  const o = JSON.parse(h); SEG.list = o.list; SEG.A = o.A; SEG.B = o.B; SEG.ghost = null; SEG.mark = null; segRefresh();
+  const o = JSON.parse(h); SEG.list = o.list; SEG.A = o.A; SEG.B = o.B; SEG.openings = o.openings; SEG.ghost = null; SEG.mark = null; segRefresh();
 }
 function segAdd(s, src, color){ return Object.assign(s, { id: SEG.nextId++, src: src || 'manuel', color: color || '#e3e7ec' }); }
 const segTol = () => ({ angTol: numVal('sAng'), distTol: numVal('sLat'), gapTol: numVal('sGap') });
@@ -7244,6 +7297,11 @@ function drawSegments(){
   if (!SEG.list.length && !SEG.drawing) return;
   const dimOthers = SEG.A >= 0 || SEG.B >= 0;
   ctx.save(); ctx.lineCap = 'round';
+  if (SEG.openings) for (const o of SEG.openings){
+    const [x1, y1] = w2s(o.x1, o.y1), [x2, y2] = w2s(o.x2, o.y2);
+    ctx.strokeStyle = '#4fc3ffaa'; ctx.lineWidth = 7; ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke();
+    ctx.fillStyle = '#4fc3ff'; ctx.font = '11px system-ui'; ctx.fillText(`${o.width.toFixed(2)} m`, (x1 + x2) / 2 + 6, (y1 + y2) / 2 - 6);
+  }
   SEG.list.forEach((s, k) => {
     const sel = k === SEG.A ? 'A' : k === SEG.B ? 'B' : null;
     const [x1, y1] = w2s(s.x1, s.y1), [x2, y2] = w2s(s.x2, s.y2);
@@ -7334,6 +7392,38 @@ $('sClean').onclick = () => {
   segPush(); SEG.list = keep; SEG.A = SEG.B = -1; SEG.ghost = null; segRefresh();
   toast(`${n0 - keep.length} segment(s) de moins de ${L} m supprimé(s) (Ctrl+Z pour annuler)`);
 };
+// Contour de la salle (onglet Segments) : fiabilité = nombre de scans qui voient le segment
+function segSupport(segs, scans){
+  const W = scans.map(s => { const [X, Y] = toWorldPts(s); return { X, Y }; });
+  return segs.map(g => {
+    let n = 0; const L = LC.segLen(g);
+    const x0 = Math.min(g.x1, g.x2) - 0.05, x1 = Math.max(g.x1, g.x2) + 0.05, y0 = Math.min(g.y1, g.y2) - 0.05, y1 = Math.max(g.y1, g.y2) + 0.05;
+    for (const w of W){
+      let c = 0;
+      for (let k = 0; k < w.X.length; k++){
+        const x = w.X[k], y = w.Y[k]; if (x < x0 || x > x1 || y < y0 || y > y1) continue;
+        if (LC.pointSegDist(x, y, g) <= 0.05 && ++c >= Math.min(10, Math.max(3, L * 8))) { n++; break; }
+      }
+    }
+    return Object.assign({}, g, { nObs: n, conf: n });
+  });
+}
+$('sClose').onclick = () => {
+  if (!SEG.list.length) return toast('Aucun segment : extrais d’abord les segments des scans visibles');
+  const scans = S.scans.filter(s => s.visible);
+  const sup = segSupport(SEG.list, scans);
+  const R = LM.closeOutline(sup, { minObs: numVal('scObs'), minLen: numVal('scLen'), gapMax: numVal('scGap'), extMax: numVal('scExt'), strongObs: Math.max(5, Math.ceil(scans.length / 2)) });
+  if (!R.segments.length) return toast('Aucun mur fiable : baisse « vu par au moins » ou la longueur');
+  segPush();
+  const fin = segSupport(R.segments, scans);                 // nombre de scans qui voient chaque segment final
+  SEG.list = fin.map((g, k) => segAdd(LC.seg(g.x1, g.y1, g.x2, g.y2), R.segments[k].added ? 'contour (ajouté : jamais vu)' : `contour (vu par ${g.nObs} scan${g.nObs > 1 ? 's' : ''})`, R.segments[k].added ? '#4fc3ff' : '#ffffff'));
+  SEG.openings = R.openings; SEG.A = SEG.B = -1; SEG.ghost = null; segRefresh();
+  const r = R.report, el = $('sCloseInfo'); el.style.display = '';
+  el.innerHTML = (R.closed ? `<b style="color:#4cd97b">Contour fermé</b> · ${r.area.toFixed(1)} m² à l’intérieur` : '<b style="color:#ffb347">Contour encore ouvert</b> : augmente « combler les trous » ou « prolonger », ou ajoute un scan là où le mur manque') +
+    `<br>${r.before} segments → ${r.after} · ${r.joined} coin(s) raccordé(s)` + (r.outside ? ` · ${r.outside} hors de la salle supprimé(s)` : '') +
+    (R.openings.length ? '<br>Trous comblés : ' + R.openings.map(o => `${o.width.toFixed(2)} m en (${o.x.toFixed(1)} ; ${o.y.toFixed(1)})`).join(', ') : '') + '<br>Annuler : bouton Annuler (ou Ctrl+Z).';
+  toast(R.closed ? `Contour fermé : ${r.after} segments` : 'Contour encore ouvert');
+};
 $('sMerge').onclick = () => segOp('merge');
 $('sCutAB').onclick = () => segOp('cutAB');
 $('sCutBA').onclick = () => segOp('cutBA');
@@ -7343,7 +7433,7 @@ $('sDel').onclick = () => {
   if (SEG.A < 0) return; segPush(); SEG.list.splice(SEG.A, 1);
   if (SEG.B > SEG.A) SEG.B--; else if (SEG.B === SEG.A) SEG.B = -1; SEG.A = -1; segRefresh();
 };
-$('sClear').onclick = () => { if (!SEG.list.length) return; segPush(); SEG.list = []; SEG.A = SEG.B = -1; SEG.ghost = null; segRefresh(); };
+$('sClear').onclick = () => { if (!SEG.list.length) return; segPush(); SEG.openings = null; SEG.list = []; SEG.A = SEG.B = -1; SEG.ghost = null; segRefresh(); };
 $('sUndo').onclick = segUndo;
 $('sExp').onclick = () => { if (!SEG.list.length) return toast('Aucun segment'); download('carte_vectorielle.txt', LC.segmentsToText(SEG.list), 'text/plain'); };
 $('sFile').onchange = async e => {
@@ -7508,7 +7598,7 @@ $('vClose').onclick = () => {
   if (!R.segments.length) return toast('Aucun mur fiable : baisse « vu au moins » ou la longueur');
   vecPush();
   const M = LC.createVectorMap();
-  R.segments.forEach(f => M.features.push(Object.assign({}, f, { id: M.nextId++ })));
+  R.segments.forEach(f => M.features.push(Object.assign({}, f, { id: M.nextId++, conf: Math.max(1, f.conf ?? 1), nObs: Math.max(1, f.nObs ?? 1) })));
   M.scans = VEC.map.scans; M.corners = LC.computeCorners(M.features, vecOpt());
   VEC.map = M; VEC.sel = -1; VEC.last = null; VEC.openings = R.openings; vecRefresh();
   const r = R.report, el = $('vCloseInfo'); el.style.display = '';

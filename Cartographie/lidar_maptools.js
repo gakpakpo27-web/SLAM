@@ -1188,6 +1188,49 @@
   }
 
   // ==========================================================================
+  //  11 ter. Correction de la carte pendant le suivi (robot en direct)
+  // ==========================================================================
+  /**
+   * Couche de correction : même géométrie que la carte de référence. Chaque scan pris à une pose SÛRE y est
+   * intégré (impacts, observations). On compare ensuite à la référence :
+   *  - à ajouter : case vue occupée dans au moins minHits scans et dans au moins addPersist de ses
+   *    observations, alors que la référence n'a aucun obstacle à moins d'une case (pieds vus au sol,
+   *    objet apporté) ;
+   *  - à retirer : case occupée sur la référence, observée au moins minSeen fois, occupée dans au plus
+   *    remPersist des observations, et aucun impact dans les 8 cases voisines (meuble déplacé, plateau de
+   *    table vu robot soulevé mais traversé au sol). La règle des voisines évite d'effacer un mur frôlé.
+   */
+  function createMapCorrector(ref) {
+    const g = Object.assign({}, ref, { data: new Uint8Array(ref.W * ref.H).fill(UNKNOWN) });
+    return { ref, g, L: createLayers(g), n: 0 };
+  }
+  function correctorAdd(C, pose, local) {
+    const c = Math.cos(pose.th * D2R), s = Math.sin(pose.th * D2R);
+    const pts = local.map(p => ({ x: pose.x + c * p.x - s * p.y, y: pose.y + s * p.x + c * p.y }));
+    updateGridLayered(C.g, C.L, { x: pose.x, y: pose.y }, pts, { fillBetween: true, occFree: 15 });
+    C.n++;
+  }
+  function correctorDiff(C, opt = {}) {
+    const o = Object.assign({ minHits: 2, addPersist: 0.5, minSeen: 3, remPersist: 0.1 }, opt);
+    const { ref, L } = C, W = ref.W, H = ref.H, add = new Uint8Array(W * H), rem = new Uint8Array(W * H);
+    const around = (i, j, f) => { for (let dj = -1; dj <= 1; dj++) for (let di = -1; di <= 1; di++) { const a = i + di, b = j + dj; if (a >= 0 && b >= 0 && a < W && b < H && f(b * W + a)) return true; } return false; };
+    let nAdd = 0, nRem = 0;
+    for (let j = 0; j < H; j++) for (let i = 0; i < W; i++) {
+      const k = j * W + i, h = L.hits[k], sn = L.seen[k];
+      if (ref.data[k] < OCC_T) {
+        if (h >= o.minHits && h / sn >= o.addPersist && !around(i, j, m => ref.data[m] >= OCC_T)) { add[k] = 1; nAdd++; }
+      } else if (sn >= o.minSeen && h / sn <= o.remPersist && !around(i, j, m => L.hits[m] > 0)) { rem[k] = 1; nRem++; }
+    }
+    return { add, rem, nAdd, nRem, scans: C.n };
+  }
+  /** Carte proposée : la référence, plus les ajouts (occupés), moins les retraits (libres). */
+  function correctorProposal(C, diff) {
+    const P = Object.assign({}, C.ref, { data: C.ref.data.slice() });
+    for (let k = 0; k < P.data.length; k++) { if (diff.add[k]) P.data[k] = OCC_T + 60; else if (diff.rem[k]) P.data[k] = FREE_T - 25; }
+    return P;
+  }
+
+  // ==========================================================================
   //  12. Chaîne complète
   // ==========================================================================
   const PIPE_DEFAULTS = {
@@ -1325,6 +1368,163 @@
     return s;
   }
 
+
+  /**
+   * Contour fermé de la salle à partir d'une carte vectorielle (même brute, celle de l'onglet Vectorielle) :
+   *  1. on garde les murs fiables : vus au moins minObs fois, ou longs (≥ keepLen) ; le reste (chaises, sacs,
+   *     segments vus une seule fois) est écarté ;
+   *  2. murs redressés sur les axes de la salle, alignés, et les morceaux d'un même mur réunis par-dessus les trous
+   *     jusqu'à gapMax (partie cachée par un meuble, porte) ; les trous de doorMin à gapMax sont notés « ouvertures » ;
+   *  3. coins : deux murs perpendiculaires dont les extrémités sont à moins de extMax de leur point de rencontre sont
+   *     prolongés jusqu'à ce point (coin en L ; pas de jonction en T au milieu d'un mur) ;
+   *  4. intérieur de la salle = plus grande zone fermée (remplissage sur une grille) : ce qui est dehors (vu par une
+   *     porte ouverte) est supprimé. Si la zone n'est pas fermée, on le dit et rien n'est supprimé.
+   * Renvoie { segments, openings: [{x, y, width, x1, y1, x2, y2}], closed, report }.
+   */
+  function closeOutline(segs, opt = {}) {
+    const o = Object.assign({ minObs: 2, strongObs: 5, minLen: 1.0, snapTol: 8, gapMax: 1.6, doorMin: 0.6, extMax: 2.0, tInside: 0.35, res: 0.05 }, opt);
+    const rep = { before: segs.length };
+    const obs = s => s.nObs ?? s.conf ?? 1;
+    // murs fiables : assez longs ET revus (≥ minObs), ou très souvent revus (≥ strongObs) même courts
+    let W = segs.filter(s => (LC.segLen(s) >= o.minLen && obs(s) >= o.minObs) || (obs(s) >= o.strongObs && LC.segLen(s) >= 0.3)).map(s => Object.assign({}, s));
+    { const r = snapDirections(W, { angTol: o.snapTol }); W = r.segments; rep.theta0 = r.theta0; }
+    // morceaux vus une seule fois mais posés exactement dans le prolongement d'un mur fiable : ils le confirment
+    const strong = W.slice();
+    for (const s0 of segs) {
+      if (strong.some(w => w.id !== undefined && w.id === s0.id) || LC.segLen(s0) < 0.3) continue;
+      const sn = snapDirections([Object.assign({}, s0)], { angTol: o.snapTol, theta0: rep.theta0 }).segments[0];
+      if (strong.some(w => LC.angleBetween(w, sn).lines <= 3 && LC.pointLineDist((sn.x1 + sn.x2) / 2, (sn.y1 + sn.y2) / 2, w) <= 0.1)) { W.push(sn); continue; }
+      // ... ou qui referme une forme : ses deux extrémités touchent des extrémités de murs fiables (4e côté d'un meuble)
+      const endNear = (x, y) => strong.some(w => Math.hypot(w.x1 - x, w.y1 - y) <= 0.3 || Math.hypot(w.x2 - x, w.y2 - y) <= 0.3);
+      if (LC.segLen(sn) >= 0.5 && endNear(sn.x1, sn.y1) && endNear(sn.x2, sn.y2)) W.push(sn);
+    }
+    // salle à angles droits : un « mur » qui n'est pas sur les axes de la salle n'en est pas un (objet, reflet)
+    const offAxis = w => { const a = LC.segAngle(w) * R2D; return Math.min(...[rep.theta0, rep.theta0 + 90].map(t => Math.abs(normDeg(2 * (t - a)) / 2))) > 2; };
+    W = W.filter(w => !offAxis(w));
+    // doublons : trait parallèle à moins de 35 cm d'un mur plus sûr et qui le longe -> écarté
+    W.sort((p, q) => obs(q) * LC.segLen(q) - obs(p) * LC.segLen(p));
+    W = W.filter((w, k) => !W.slice(0, k).some(v => {
+      if (LC.angleBetween(v, w).lines > 3 || LC.pointLineDist((w.x1 + w.x2) / 2, (w.y1 + w.y2) / 2, v) > 0.35) return false;
+      const a = LC.segAngle(v), ux = Math.cos(a), uy = Math.sin(a), pv = [ux * v.x1 + uy * v.y1, ux * v.x2 + uy * v.y2].sort((p, q) => p - q), pw = [ux * w.x1 + uy * w.y1, ux * w.x2 + uy * w.y2].sort((p, q) => p - q);
+      const ov = Math.min(pv[1], pw[1]) - Math.max(pv[0], pw[0]);
+      return ov >= 0.5 * (pw[1] - pw[0]) && LC.pointLineDist((w.x1 + w.x2) / 2, (w.y1 + w.y2) / 2, v) > 0.1;
+    }));
+    rep.weak = rep.before - W.length;
+    W = alignCollinear(W, { distTol: 0.1, angTol: 2 }).segments;
+    // ouvertures : trous entre deux morceaux d'un même mur
+    const openings = [];
+    for (let i = 0; i < W.length; i++) for (let j = i + 1; j < W.length; j++) {
+      const a = W[i], b = W[j]; if (LC.angleBetween(a, b).lines > 3) continue;
+      const ang = LC.segAngle(a), ux = Math.cos(ang), uy = Math.sin(ang), nx = -uy, ny = ux;
+      if (Math.abs(nx * ((a.x1 + a.x2) / 2 - (b.x1 + b.x2) / 2) + ny * ((a.y1 + a.y2) / 2 - (b.y1 + b.y2) / 2)) > 0.1) continue;
+      const pa = [ux * a.x1 + uy * a.y1, ux * a.x2 + uy * a.y2].sort((p, q) => p - q), pb = [ux * b.x1 + uy * b.y1, ux * b.x2 + uy * b.y2].sort((p, q) => p - q);
+      const [lo, hi] = pa[1] < pb[0] ? [pa[1], pb[0]] : pb[1] < pa[0] ? [pb[1], pa[0]] : [0, 0];
+      const g = hi - lo; if (g < o.doorMin || g > o.gapMax) continue;
+      // rien entre les deux (sinon ce n'est pas un trou)
+      if (W.some((c, k) => k !== i && k !== j && LC.angleBetween(a, c).lines <= 3 && (() => { const pc = [ux * c.x1 + uy * c.y1, ux * c.x2 + uy * c.y2].sort((p, q) => p - q); return pc[1] > lo + 0.05 && pc[0] < hi - 0.05; })() &&
+                    Math.abs(nx * ((a.x1 + a.x2) / 2 - (c.x1 + c.x2) / 2) + ny * ((a.y1 + a.y2) / 2 - (c.y1 + c.y2) / 2)) <= 0.1)) continue;
+      const off = nx * (a.x1 + a.x2) / 2 + ny * (a.y1 + a.y2) / 2, P = t => ({ x: ux * t + nx * off, y: uy * t + ny * off });
+      const p1 = P(lo), p2 = P(hi);
+      openings.push({ x: (p1.x + p2.x) / 2, y: (p1.y + p2.y) / 2, width: g, x1: p1.x, y1: p1.y, x2: p2.x, y2: p2.y });
+    }
+    W = mergeKeepProps(W, { angTol: 3, distTol: 0.1, gapTol: o.gapMax }).segments;
+    // coins en L : chaque extrémité est raccordée au mur le plus proche (couples triés par longueur de prolongement)
+    let joined = 0;
+    const used = new Set();
+    for (const ext of [o.extMax, 2 * o.extMax]) {      // 2e passe : extrémités restées libres, mur caché plus long
+    const cands = [];
+    for (let i = 0; i < W.length; i++) for (let j = i + 1; j < W.length; j++) {
+      const a = W[i], b = W[j]; if (LC.angleBetween(a, b).lines < 60) continue;
+      const r = LC.intersect(a, b); if (r.type !== 'point' && r.type !== 'lines') continue;
+      const near = s => { const d1 = Math.hypot(s.x1 - r.x, s.y1 - r.y), d2 = Math.hypot(s.x2 - r.x, s.y2 - r.y); return d1 <= d2 ? [1, d1] : [2, d2]; };
+      const [ea, da] = near(a), [eb, db] = near(b);
+      if (da > ext || db > ext) continue;
+      const inside = (s, d) => { const L = LC.segLen(s), d1 = Math.hypot(s.x1 - r.x, s.y1 - r.y), d2 = Math.hypot(s.x2 - r.x, s.y2 - r.y); return Math.abs(d1 + d2 - L) < 1e-6 && d > o.tInside; };
+      if (inside(a, da) || inside(b, db)) continue;          // ce serait un T au milieu d'un mur, pas un coin
+      cands.push({ i, j, ea, eb, r, cost: da + db });
+    }
+    cands.sort((p, q) => p.cost - q.cost);
+    for (const c of cands) {
+      const ka = c.i + ':' + c.ea, kb = c.j + ':' + c.eb; if (used.has(ka) || used.has(kb)) continue;
+      const a = W[c.i], b = W[c.j], a0 = LC.segAngle(a), b0 = LC.segAngle(b);
+      const ta = Object.assign({}, a), tb = Object.assign({}, b);
+      if (c.ea === 1) { ta.x1 = c.r.x; ta.y1 = c.r.y; } else { ta.x2 = c.r.x; ta.y2 = c.r.y; }
+      if (c.eb === 1) { tb.x1 = c.r.x; tb.y1 = c.r.y; } else { tb.x2 = c.r.x; tb.y2 = c.r.y; }
+      // un raccord ne doit pas pencher un mur
+      const tilt = (s0, s1) => Math.abs(normDeg((LC.segAngle(s1) - s0) * R2D * 2) / 2);
+      if (LC.segLen(ta) < 0.05 || LC.segLen(tb) < 0.05 || tilt(a0, ta) > 2 || tilt(b0, tb) > 2) continue;
+      W[c.i] = ta; W[c.j] = tb; used.add(ka); used.add(kb); if (c.cost > 1e-6) joined++;
+    }
+    }
+    // marche du contour jamais vue : deux murs parallèles dont les extrémités libres se font face (décalées de moins
+    // de 3 m, à moins de 60 cm l'une de l'autre dans le sens des murs) -> le plus court est prolongé et un mur
+    // perpendiculaire les relie (marqué « ajouté »)
+    const freeEnds = [];
+    W.forEach((w, i) => [1, 2].forEach(e => { if (!used.has(i + ':' + e)) freeEnds.push({ i, e, x: e === 1 ? w.x1 : w.x2, y: e === 1 ? w.y1 : w.y2 }); }));
+    const added = [];
+    for (let a = 0; a < freeEnds.length; a++) for (let b = a + 1; b < freeEnds.length; b++) {
+      const A = freeEnds[a], B = freeEnds[b]; if (A.i === B.i || A.done || B.done) continue;
+      const wa = W[A.i], wb = W[B.i]; if (LC.angleBetween(wa, wb).lines > 3) continue;
+      const ang = LC.segAngle(wa), ux = Math.cos(ang), uy = Math.sin(ang);
+      const along = ux * (B.x - A.x) + uy * (B.y - A.y), perp = -uy * (B.x - A.x) + ux * (B.y - A.y);
+      if (Math.abs(along) > 0.6 || Math.abs(perp) < 0.3 || Math.abs(perp) > 3) continue;
+      // marche : les extrémités libres se font face (les deux murs avancent l'un vers l'autre) ; deux murs qui
+      // s'arrêtent dans le même sens (fin de couloir, U) ne sont pas reliés
+      const dirOut = (w, E) => { const ox = E.e === 1 ? w.x2 : w.x1, oy = E.e === 1 ? w.y2 : w.y1; return Math.sign(ux * (E.x - ox) + uy * (E.y - oy)); };
+      const step = dirOut(wa, A) === -dirOut(wb, B);
+      // U (les deux s'arrêtent dans le même sens) : 4e côté jamais vu d'un meuble, ou fond d'un renfoncement ; refermé
+      // seulement si les extrémités sont bien alignées et proches (≤ 2 m), et noté comme ouverture
+      const uShape = !step && Math.abs(along) <= 0.3 && Math.abs(perp) <= 2.0;
+      if (!step && !uShape) continue;
+      if (uShape) openings.push({ x: (A.x + B.x) / 2, y: (A.y + B.y) / 2, width: Math.abs(perp), x1: A.x, y1: A.y, x2: B.x, y2: B.y, closedSide: true });
+      // on prolonge le mur le moins sûr jusqu'au niveau de l'autre, puis on ajoute la marche
+      const [P, Q, wp] = obs(wa) * LC.segLen(wa) < obs(wb) * LC.segLen(wb) ? [A, B, wa] : [B, A, wb];
+      const t = ux * (Q.x - P.x) + uy * (Q.y - P.y), nx = P.x + ux * t, ny = P.y + uy * t;
+      if (P.e === 1) { wp.x1 = nx; wp.y1 = ny; } else { wp.x2 = nx; wp.y2 = ny; }
+      added.push(Object.assign(LC.seg(nx, ny, Q.x, Q.y), { nObs: 0, conf: 0, added: true }));
+      A.done = B.done = true; joined++;
+    }
+    W = W.concat(added); rep.added = added.length;
+    rep.joined = joined;
+    // intérieur : plus grande zone fermée d'une grille où les murs sont tracés
+    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+    for (const s of W) { x0 = Math.min(x0, s.x1, s.x2); y0 = Math.min(y0, s.y1, s.y2); x1 = Math.max(x1, s.x1, s.x2); y1 = Math.max(y1, s.y1, s.y2); }
+    let closed = false, kept = W;
+    if (W.length) {
+      const res = o.res, gx0 = x0 - 0.5, gy0 = y0 - 0.5, GW = Math.ceil((x1 - x0 + 1) / res), GH = Math.ceil((y1 - y0 + 1) / res);
+      const wall = new Uint8Array(GW * GH), cell = (x, y) => [Math.floor((x - gx0) / res), Math.floor((y - gy0) / res)];
+      for (const s of W) { const [i0, j0] = cell(s.x1, s.y1), [i1, j1] = cell(s.x2, s.y2); LC.bresenham(i0, j0, i1, j1, (i, j) => { for (let dj = -1; dj <= 1; dj++) for (let di = -1; di <= 1; di++) { const a = i + di, b = j + dj; if (a >= 0 && b >= 0 && a < GW && b < GH) wall[b * GW + a] = 1; } }); }
+      const lab = new Int32Array(GW * GH).fill(-1), regs = [];
+      for (let k0 = 0; k0 < GW * GH; k0++) {
+        if (wall[k0] || lab[k0] >= 0) continue;
+        const id = regs.length, st = [k0]; lab[k0] = id; let n = 0, border = false;
+        while (st.length) { const k = st.pop(); n++; const i = k % GW, j = (k - i) / GW; if (!i || !j || i === GW - 1 || j === GH - 1) border = true;
+          for (const m of [k - 1, k + 1, k - GW, k + GW]) { if (m < 0 || m >= GW * GH || wall[m] || lab[m] >= 0) continue; if ((m === k - 1 && i === 0) || (m === k + 1 && i === GW - 1)) continue; lab[m] = id; st.push(m); } }
+        regs.push({ n, border });
+      }
+      const inner = regs.map((r, id) => ({ ...r, id })).filter(r => !r.border).sort((a, b) => b.n - a.n)[0];
+      closed = !!inner && inner.n * res * res > 4;
+      // surface : cellules intérieures + la bande cachée par le tracé des murs (1,5 cellule le long du bord)
+      let edge = 0;
+      if (closed) for (let k = 0; k < GW * GH; k++) if (lab[k] === inner.id && (wall[k - 1] || wall[k + 1] || wall[k - GW] || wall[k + GW])) edge++;
+      rep.area = closed ? (inner.n + 1.5 * edge) * res * res : 0;
+      if (closed) {
+        // un mur est gardé s'il borde l'intérieur (murs de la salle, meubles posés dedans)
+        // gardé si la majeure partie du segment borde l'intérieur (un mur vu par la porte qui touche juste le
+        // chambranle n'est pas gardé)
+        kept = W.filter(s => { let n = 0, t = 0; const [i0, j0] = cell(s.x1, s.y1), [i1, j1] = cell(s.x2, s.y2);
+          LC.bresenham(i0, j0, i1, j1, (i, j) => { n++; let touch = false; for (let dj = -2; dj <= 2 && !touch; dj++) for (let di = -2; di <= 2; di++) { const a = i + di, b = j + dj; if (a >= 0 && b >= 0 && a < GW && b < GH && lab[b * GW + a] === inner.id) { touch = true; break; } } if (touch) t++; });
+          return n && t / n >= 0.5; });
+        rep.outside = W.length - kept.length;
+      }
+    }
+    const insideOK = p => kept.some(s => LC.pointSegDist(p.x, p.y, s) < 0.15);
+    const op = [];
+    for (const q of openings.filter(insideOK)) if (!op.some(r => Math.hypot(r.x - q.x, r.y - q.y) < 0.3)) op.push(q);
+    rep.after = kept.length; rep.openings = op.length;
+    return { segments: kept, openings: op, closed, report: rep };
+  }
+
   return {
     PRE_DEFAULTS, FEAT_DEFAULTS, OM_DEFAULTS, REG_DEFAULTS, PIPE_DEFAULTS, COST,
     preprocessScan, clusterScan, fitCircle, douglasPeucker, dpSegments, ransacLines, smallObjectCircle, extractFeatures,
@@ -1332,7 +1532,8 @@
     createLayers, updateGridLayered, buildLayeredGrid, cloneGrid, cloneLayers,
     decayGrid, clearObsolete, removeMobile, labelComponents, removeSpeckles, smoothGrid, closeGaps, gridObstacles,
     dominantDirection, snapDirections, alignCollinear, mergeKeepProps, joinCorners, trimCollisions, regularizeVectorMap, sharpenWalls, maskMorph, maskFlood, fillHoles, traceLoops, regularizePolygon, roomPlan,
-    costmap, costmapToPGM, planPath, mapQuality, refinePoses,
-    clipSegmentDisc, eraseDisc, filterSmall, filterNearPoses, refreshDerived, processMap, reportToMarkdown
+    costmap, costmapToPGM, planPath, mapQuality, refinePoses, closeOutline,
+    clipSegmentDisc, eraseDisc, filterSmall, filterNearPoses, refreshDerived,
+    createMapCorrector, correctorAdd, correctorDiff, correctorProposal, processMap, reportToMarkdown
   };
 });

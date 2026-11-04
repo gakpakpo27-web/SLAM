@@ -234,6 +234,21 @@ Ils s'appliquent en fin de chaîne, ou au résultat affiché avec *Appliquer les
 
 Test unitaire : salle de 7 × 5 m avec un trou de 1,2 m, des coins non raccordés, un segment dehors et deux chaises. Résultat : 4 murs, 35 m², ouverture de 1,2 m notée.
 
+**Règles ajoutées après l'essai sur l'onglet Segments** (les 14 scans réels) :
+- **Murs sur les axes uniquement.** Un segment penché de plus de 2° par rapport aux axes de la salle n'est pas un mur. Sans cette règle, un segment penché de 8° avait été raccroché au meuble.
+- **Doublons.** Un trait parallèle à moins de 35 cm d'un mur plus sûr, et qui le longe, est écarté. C'était le cas d'une deuxième ligne 20 cm sous le mur du bas.
+- **Marche jamais vue.** Deux murs parallèles dont les extrémités libres se font face (décalées de 0,3 à 3 m, à moins de 60 cm l'une de l'autre dans le sens des murs) : le moins sûr est prolongé et un mur perpendiculaire les relie. Il est marqué « ajouté : jamais vu » et dessiné en bleu. Cela a refermé le décroché du haut de la salle, que personne n'avait vu.
+- **Côté manquant d'un meuble.** Deux côtés parallèles qui s'arrêtent au même niveau, à moins de 2 m l'un de l'autre, sont refermés et notés comme ouverture (le 4e côté du meuble central, 1,59 m).
+- **Dehors.** Un segment n'est gardé que si au moins la moitié de sa longueur borde l'intérieur. Ainsi, le chambranle et le mur du couloir vus par la porte sont supprimés.
+
+**Onglet Segments** : même bouton « Fermer le contour ». La fiabilité d'un segment y est le nombre de scans qui le voient, c'est-à-dire qui ont des points à moins de 5 cm de lui. Sur les 14 scans réels :
+- 70 segments deviennent 12 ;
+- contour fermé, 108 m², la même surface que par la carte vectorielle ;
+- marche du haut et 4e côté du meuble ajoutés ;
+- 2 segments vus par la porte supprimés.
+
+Il reste un petit objet en L près de la position `pos1`, vu par 6 ou 7 scans : un objet réel, ou le pied d'un meuble, à vérifier sur place.
+
 ## 3. Résultats
 
 ### 3.1 Chaîne complète sur les 14 scans réels (sans recalage, 0,5 s)

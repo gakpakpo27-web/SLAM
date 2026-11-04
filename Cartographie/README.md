@@ -20,6 +20,7 @@
 | `resultats_rotation_coupure.md` | Résultats de `bench_rotation_coupure.js` |
 | `carte_vectorielle_contour.txt` | Carte vectorielle réelle après « Fermer le contour » (onglet Vectorielle) |
 | `contour_ferme_avant_apres.png` | Carte vectorielle réelle avant / après « Fermer le contour » |
+| `contour_segments_resultat.png` | Onglet Segments, 14 scans réels, après « Fermer le contour » |
 | `bench_suivi.js` | Banc du robot en direct : localisation globale sur les scans réels, suivi simulé (`node bench_suivi.js --real session.json`) |
 | `resultats_suivi.md` | Résultats de `bench_suivi.js` |
 | `lidar_maptools.js` | Traitement des cartes et des obstacles : prétraitement, clusters, cercles / RANSAC / Douglas-Peucker, grid map enrichie et nettoyée, obstacles, régularisation de la carte vectorielle, carte de coût, trajet A*, recalage global des poses |

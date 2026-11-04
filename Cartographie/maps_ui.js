@@ -156,10 +156,10 @@ function fitGrid(){
 
 // ---------------------------------------------------------------- SEGMENTS
 const SEG = { list: [], A: -1, B: -1, tool: 'select', drawing: null, ghost: null, mark: null, history: [], nextId: 1 };
-function segPush(){ SEG.history.push(JSON.stringify({ list: SEG.list, A: SEG.A, B: SEG.B })); if (SEG.history.length > 100) SEG.history.shift(); }
+function segPush(){ SEG.history.push(JSON.stringify({ list: SEG.list, A: SEG.A, B: SEG.B, openings: SEG.openings || null })); if (SEG.history.length > 100) SEG.history.shift(); }
 function segUndo(){
   const h = SEG.history.pop(); if (!h) return toast('Rien à annuler');
-  const o = JSON.parse(h); SEG.list = o.list; SEG.A = o.A; SEG.B = o.B; SEG.ghost = null; SEG.mark = null; segRefresh();
+  const o = JSON.parse(h); SEG.list = o.list; SEG.A = o.A; SEG.B = o.B; SEG.openings = o.openings; SEG.ghost = null; SEG.mark = null; segRefresh();
 }
 function segAdd(s, src, color){ return Object.assign(s, { id: SEG.nextId++, src: src || 'manuel', color: color || '#e3e7ec' }); }
 const segTol = () => ({ angTol: numVal('sAng'), distTol: numVal('sLat'), gapTol: numVal('sGap') });
@@ -246,6 +246,11 @@ function drawSegments(){
   if (!SEG.list.length && !SEG.drawing) return;
   const dimOthers = SEG.A >= 0 || SEG.B >= 0;
   ctx.save(); ctx.lineCap = 'round';
+  if (SEG.openings) for (const o of SEG.openings){
+    const [x1, y1] = w2s(o.x1, o.y1), [x2, y2] = w2s(o.x2, o.y2);
+    ctx.strokeStyle = '#4fc3ffaa'; ctx.lineWidth = 7; ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke();
+    ctx.fillStyle = '#4fc3ff'; ctx.font = '11px system-ui'; ctx.fillText(`${o.width.toFixed(2)} m`, (x1 + x2) / 2 + 6, (y1 + y2) / 2 - 6);
+  }
   SEG.list.forEach((s, k) => {
     const sel = k === SEG.A ? 'A' : k === SEG.B ? 'B' : null;
     const [x1, y1] = w2s(s.x1, s.y1), [x2, y2] = w2s(s.x2, s.y2);
@@ -336,6 +341,38 @@ $('sClean').onclick = () => {
   segPush(); SEG.list = keep; SEG.A = SEG.B = -1; SEG.ghost = null; segRefresh();
   toast(`${n0 - keep.length} segment(s) de moins de ${L} m supprimé(s) (Ctrl+Z pour annuler)`);
 };
+// Contour de la salle (onglet Segments) : fiabilité = nombre de scans qui voient le segment
+function segSupport(segs, scans){
+  const W = scans.map(s => { const [X, Y] = toWorldPts(s); return { X, Y }; });
+  return segs.map(g => {
+    let n = 0; const L = LC.segLen(g);
+    const x0 = Math.min(g.x1, g.x2) - 0.05, x1 = Math.max(g.x1, g.x2) + 0.05, y0 = Math.min(g.y1, g.y2) - 0.05, y1 = Math.max(g.y1, g.y2) + 0.05;
+    for (const w of W){
+      let c = 0;
+      for (let k = 0; k < w.X.length; k++){
+        const x = w.X[k], y = w.Y[k]; if (x < x0 || x > x1 || y < y0 || y > y1) continue;
+        if (LC.pointSegDist(x, y, g) <= 0.05 && ++c >= Math.min(10, Math.max(3, L * 8))) { n++; break; }
+      }
+    }
+    return Object.assign({}, g, { nObs: n, conf: n });
+  });
+}
+$('sClose').onclick = () => {
+  if (!SEG.list.length) return toast('Aucun segment : extrais d’abord les segments des scans visibles');
+  const scans = S.scans.filter(s => s.visible);
+  const sup = segSupport(SEG.list, scans);
+  const R = LM.closeOutline(sup, { minObs: numVal('scObs'), minLen: numVal('scLen'), gapMax: numVal('scGap'), extMax: numVal('scExt'), strongObs: Math.max(5, Math.ceil(scans.length / 2)) });
+  if (!R.segments.length) return toast('Aucun mur fiable : baisse « vu par au moins » ou la longueur');
+  segPush();
+  const fin = segSupport(R.segments, scans);                 // nombre de scans qui voient chaque segment final
+  SEG.list = fin.map((g, k) => segAdd(LC.seg(g.x1, g.y1, g.x2, g.y2), R.segments[k].added ? 'contour (ajouté : jamais vu)' : `contour (vu par ${g.nObs} scan${g.nObs > 1 ? 's' : ''})`, R.segments[k].added ? '#4fc3ff' : '#ffffff'));
+  SEG.openings = R.openings; SEG.A = SEG.B = -1; SEG.ghost = null; segRefresh();
+  const r = R.report, el = $('sCloseInfo'); el.style.display = '';
+  el.innerHTML = (R.closed ? `<b style="color:#4cd97b">Contour fermé</b> · ${r.area.toFixed(1)} m² à l’intérieur` : '<b style="color:#ffb347">Contour encore ouvert</b> : augmente « combler les trous » ou « prolonger », ou ajoute un scan là où le mur manque') +
+    `<br>${r.before} segments → ${r.after} · ${r.joined} coin(s) raccordé(s)` + (r.outside ? ` · ${r.outside} hors de la salle supprimé(s)` : '') +
+    (R.openings.length ? '<br>Trous comblés : ' + R.openings.map(o => `${o.width.toFixed(2)} m en (${o.x.toFixed(1)} ; ${o.y.toFixed(1)})`).join(', ') : '') + '<br>Annuler : bouton Annuler (ou Ctrl+Z).';
+  toast(R.closed ? `Contour fermé : ${r.after} segments` : 'Contour encore ouvert');
+};
 $('sMerge').onclick = () => segOp('merge');
 $('sCutAB').onclick = () => segOp('cutAB');
 $('sCutBA').onclick = () => segOp('cutBA');
@@ -345,7 +382,7 @@ $('sDel').onclick = () => {
   if (SEG.A < 0) return; segPush(); SEG.list.splice(SEG.A, 1);
   if (SEG.B > SEG.A) SEG.B--; else if (SEG.B === SEG.A) SEG.B = -1; SEG.A = -1; segRefresh();
 };
-$('sClear').onclick = () => { if (!SEG.list.length) return; segPush(); SEG.list = []; SEG.A = SEG.B = -1; SEG.ghost = null; segRefresh(); };
+$('sClear').onclick = () => { if (!SEG.list.length) return; segPush(); SEG.openings = null; SEG.list = []; SEG.A = SEG.B = -1; SEG.ghost = null; segRefresh(); };
 $('sUndo').onclick = segUndo;
 $('sExp').onclick = () => { if (!SEG.list.length) return toast('Aucun segment'); download('carte_vectorielle.txt', LC.segmentsToText(SEG.list), 'text/plain'); };
 $('sFile').onchange = async e => {
@@ -510,7 +547,7 @@ $('vClose').onclick = () => {
   if (!R.segments.length) return toast('Aucun mur fiable : baisse « vu au moins » ou la longueur');
   vecPush();
   const M = LC.createVectorMap();
-  R.segments.forEach(f => M.features.push(Object.assign({}, f, { id: M.nextId++ })));
+  R.segments.forEach(f => M.features.push(Object.assign({}, f, { id: M.nextId++, conf: Math.max(1, f.conf ?? 1), nObs: Math.max(1, f.nObs ?? 1) })));
   M.scans = VEC.map.scans; M.corners = LC.computeCorners(M.features, vecOpt());
   VEC.map = M; VEC.sel = -1; VEC.last = null; VEC.openings = R.openings; vecRefresh();
   const r = R.report, el = $('vCloseInfo'); el.style.display = '';
