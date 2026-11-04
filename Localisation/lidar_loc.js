@@ -992,7 +992,7 @@
     const local = localPoints(scan), pts = uniformSubsample(local, { max: 350 });
     const out = r => Object.assign({ pose: { ...Mp.pose }, status: Mp.status, keyframe: null, ms: now() - t0, kfs: Mp.kfs.length }, r);
     if (!Mp.kfs.length && !Mp.pending) {                     // tout premier scan : origine de la carte
-      Mp.pose = { x: 0, y: 0, th: 0 }; Mp.status = 'carte démarrée';
+      Mp.pose = o.start ? { ...o.start } : { x: 0, y: 0, th: 0 }; Mp.status = 'carte démarrée';      // o.start : position de départ donnée
       Mp.pending = { a: Array.from(scan.a), d: Array.from(scan.d), i: Array.from(scan.i || scan.a.map(() => 200)), pose: { ...Mp.pose }, count: 1, meta: scan.meta };
       return out({ keyframe: o.tours <= 1 ? mapperCommit(Mp) : null, inliers: 1 });
     }

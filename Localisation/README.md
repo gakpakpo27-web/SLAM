@@ -12,6 +12,10 @@
 | `bench_cartographie.js` | Banc de la cartographie automatique au sol (`node bench_cartographie.js`) |
 | `DEMARCHE_cartographie_auto.md` | Démarche et résultats de la cartographie automatique |
 | `resultats_cartographie.md` | Résultats de `bench_cartographie.js` |
+| `lidar_explore.js` | Exploration autonome : frontières, trajet sûr, pare-chocs lidar, contrôle du montage du lidar, retour au départ |
+| `bench_exploration.js` | Banc de l'exploration autonome en simulation (`node bench_exploration.js`) |
+| `DEMARCHE_exploration_autonome.md` | Démarche et résultats de l'exploration autonome |
+| `resultats_exploration.md` | Résultats de `bench_exploration.js` |
 | `bench_suivi.js` | Banc du robot en direct : localisation globale sur les scans réels, suivi simulé (`node bench_suivi.js --real session.json`) |
 | `resultats_suivi.md` | Résultats de `bench_suivi.js` |
 | `lidar_maptools.js` | Traitement des cartes et des obstacles : prétraitement, clusters, cercles / RANSAC / Douglas-Peucker, grid map enrichie et nettoyée, obstacles, régularisation de la carte vectorielle, carte de coût, trajet A*, recalage global des poses |
