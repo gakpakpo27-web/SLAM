@@ -49,3 +49,34 @@ Dans la page, avec le robot simulé, la carte se construit toute seule : 87 posi
 - **Repère.** Le repère de la nouvelle carte est celui du premier scan : la carte peut être un peu tournée. L'onglet Traitement (plan, murs nets) se cale de toute façon sur les axes de la salle.
 - **Vitesses de la prédiction** (onglet Robot en direct : 0,25 m/s, 90°/s) : elles sont à mesurer sur ton robot. Une erreur n'est pas grave, le recalage tolère ±50 cm et ±25°.
 - **Ensuite :** *Construire la grid map*, puis l'onglet **Traitement** pour nettoyer et obtenir le plan, et l'onglet **Robot en direct** pour se localiser sur cette nouvelle carte, faite à la bonne hauteur.
+
+
+## Scans bien calés quand le robot tourne, doute, coupures, doublons
+
+**Constat.** Sur un vrai essai, la carte se remplit de scans tournés les uns par rapport aux autres, une « étoile » autour du centre. La cause : le robot a tourné plus que prévu entre deux scans (tourné à la main, rotation sans commande connue, vitesse de rotation mal calibrée). Le recalage ne cherchait qu'à ±25° de l'orientation prévue : il se raccrochait à une mauvaise orientation, et le scan était posé quand même.
+
+Ce qui a changé dans le cartographe (`mapperUpdate`, `lidar_loc.js`) :
+
+1. **Le scan tourne avec le robot.** En plus de la recherche près de la prédiction, on cherche sur **toutes les orientations**, autour de la position prévue. Cela se fait quand il n'y a pas de commande connue, quand la rotation commandée dépasse 15°, ou quand le scan colle mal (moins de 60 % des points sur la carte). Une autre orientation n'est retenue que si elle colle nettement mieux (+8 points).
+2. **Dans le doute, on s'abstient.** Un scan dont moins de 50 % des points tombent sur la carte déjà vue n'est pas posé. Le robot reste suivi, mais rien n'est ajouté à la carte.
+3. **Coupure de liaison.** Si plus aucun scan n'arrive pendant 1,5 s (WiFi, câble), le robot a pu bouger. Le scan suivant est cherché plus largement (±1,2 m, toutes orientations), et **aucun scan n'est posé** tant que le robot ne s'est pas retrouvé : il faut 2 scans de suite qui collent bien (au moins 55 %) au même endroit. Pendant ce temps, le panneau affiche « reprise : se retrouve ».
+4. **Pas de doublon.** Une nouvelle position n'est enregistrée que loin (40 cm) de **toutes** les positions déjà enregistrées, et plus seulement de la dernière. Tourner sur place ne crée plus de position : le lidar voit déjà à 360°. Revenir au même endroit n'en crée pas non plus.
+5. **Position 0.** Le premier scan est l'origine (0 ; 0 ; 0) de la carte : l'endroit et le sens où le robot est posé au lancement. On peut aussi donner une autre position de départ.
+
+**Résultats** (`node bench_rotation_coupure.js`, détail dans `resultats_rotation_coupure.md`) :
+
+| Cas | Positions mal superposées (> 10 cm ou 3°) |
+|---|---|
+| Robot tourné à la main de 30 à 120° entre deux scans, avant | 36 sur 63 (pire : 2,8 m) |
+| Même cas, maintenant | 1 sur 57 (pire : 15 cm) |
+| Coupure de 2 s, robot déplacé pendant la coupure, coupure ignorée | 17 sur 96 |
+| Même cas, coupure détectée | 0 sur 84 (pire : 3 cm) |
+
+Le banc de cartographie au sol (`bench_cartographie.js`) donne la même erreur médiane qu'avant (1,8 à 3,4 cm). Le pire écart passe de 14 à 6 cm, et il y a 74 positions au lieu de 87, grâce à la suppression des doublons.
+
+**Cartographie manuelle (bouton Capturer).** Chaque scan capturé est désormais posé tout seul sur les scans déjà posés (verrouillés 🔒). La recherche porte sur toute la carte et sur toutes les orientations (`globalMatch`).
+- Le tout premier scan est l'origine (0 ; 0 ; 0).
+- **En cas de doute**, le scan n'est pas posé : il est masqué et renommé « (à vérifier) ». C'est le cas si moins de 35 % de ses points tombent sur la carte, ou si une autre position obtient plus de 60 % de ce score.
+- **Doublon** : un scan pris à moins de 25 cm d'un scan déjà posé est masqué et renommé « (doublon) ».
+
+Option : case « Poser chaque scan capturé sur les précédents » sous le bouton Capturer.

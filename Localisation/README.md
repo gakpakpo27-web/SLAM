@@ -16,6 +16,8 @@
 | `bench_exploration.js` | Banc de l'exploration autonome en simulation (`node bench_exploration.js`) |
 | `DEMARCHE_exploration_autonome.md` | Démarche et résultats de l'exploration autonome |
 | `resultats_exploration.md` | Résultats de `bench_exploration.js` |
+| `bench_rotation_coupure.js` | Banc : superposition quand le robot tourne plus que prévu et après une coupure de liaison |
+| `resultats_rotation_coupure.md` | Résultats de `bench_rotation_coupure.js` |
 | `bench_suivi.js` | Banc du robot en direct : localisation globale sur les scans réels, suivi simulé (`node bench_suivi.js --real session.json`) |
 | `resultats_suivi.md` | Résultats de `bench_suivi.js` |
 | `lidar_maptools.js` | Traitement des cartes et des obstacles : prétraitement, clusters, cercles / RANSAC / Douglas-Peucker, grid map enrichie et nettoyée, obstacles, régularisation de la carte vectorielle, carte de coût, trajet A*, recalage global des poses |
@@ -69,6 +71,8 @@ plus nécessaire : les moteurs sont pilotés directement par l'ESP32.
 | 4 | GPIO18 / GPIO19 | arrière gauche |
 
 Lidar : RX → GPIO33, PWM → GPIO32.
+
+Ultrason avant sur servo (HC-SR04) : TRIG → GPIO13, ECHO → GPIO14 (pont diviseur si le capteur est en 5 V), servo → GPIO25. **Ce sont des valeurs par défaut à vérifier** (`US_TRIG`, `US_ECHO`, `US_SERVO` en tête du firmware ; `USE_ULTRASON 0` pour s'en passer). Le firmware balaie 180° en continu, arrête seul une marche avant si un obstacle est à moins de 15 cm, et donne les mesures sur `/us` (touche `u` sur l'USB).
 
 **Réglage des roues.** Il se fait une fois, robot soulevé, dans l'interface du robot (`http://192.168.4.1/`, onglet *Moteurs*) :
 1. Pour chaque moteur, appuyer sur « Avant ▶ » : la roue doit tourner dans le sens qui fait avancer le robot. Sinon, cocher « Inverser ».

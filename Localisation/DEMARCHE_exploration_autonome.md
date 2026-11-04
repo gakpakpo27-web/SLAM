@@ -50,6 +50,43 @@ Le robot évite les obstacles à trois niveaux.
 
 3. **Plan de secours.** Si rien n'est atteignable, on refait le plan sans les obstacles vus en route, qui ont pu partir ou être mal placés. Ensuite, on le refait avec un rayon du robot réduit de 3 cm, pour un passage étroit. Un obstacle vu en route est de toute façon oublié après 25 ordres.
 
+### 4 ter. Passer au plus près, longer les murs, sortir d'un coin
+
+Ces réglages viennent des premiers essais réels :
+- **Obstacles proches seulement.** Le robot passe entre deux obstacles dès qu'il y a la place.
+  - Couloir de sécurité à 3 cm de chaque côté du robot, au lieu de 6.
+  - 8 cm gardés devant, au lieu de 12.
+  - Les obstacles vus en route sont gonflés juste du rayon du robot.
+
+  En simulation, il franchit un passage de 50 cm ; il faut au moins 2 × 17 cm, plus une cellule.
+- **Anticipation sur 1 m.** À chaque arrêt, les points du scan (lidar et ultrason) sont comparés au trajet prévu sur le prochain mètre. Un obstacle nouveau qui le barre est noté tout de suite, et le trajet est recalculé avant d'arriver dessus. À moins de 1 m d'un obstacle devant, les pas passent de 35 à 20 cm.
+- **Crabe (roues mecanum).** Si la cible est sur le côté (65° à 115°), le robot fait un pas de côté au lieu de tourner, ce qui lui permet de longer un mur. Face à une impasse, il essaie dans l'ordre :
+  1. longer l'obstacle en crabe, du côté du but ;
+  2. reculer ;
+  3. tourner vers la direction la plus dégagée.
+
+  La vitesse en crabe se corrige seule, comme les autres.
+- **Départ dans un coin.** Avant, le contrôle du cap exigeait de la place devant et derrière : dans un coin, le robot enchaînait des rotations de 20° à gauche puis à droite, et semblait tourner tout seul. Maintenant, il tourne **une seule fois** vers la direction la plus dégagée (jusqu'à 180°), puis avance. S'il manque encore de place, le contrôle se fait en route, sur les mouvements suivants. Le verdict « lidar mal monté » n'est rendu que sur au moins 3 mesures concordantes.
+- **Anti-toupie.** Après 4 rotations de suite sans avancer, le robot change de manœuvre (avance, crabe ou recul, vers le plus dégagé) et change de but.
+- **Le robot n'avance plus** (obstacle invisible, roue qui patine) : il note l'obstacle, abandonne le but, recule ou tourne de 90°, et continue ailleurs. Il ne s'arrête qu'après 3 fois.
+
+En simulation, avec 5 départs dans des coins, face au mur : 1 à 2 rotations avant de bouger, au plus 3 rotations de suite pendant toute l'exploration, aucun choc, 100 % de couverture.
+
+### 4 bis. Capteur ultrason avant sur servo
+
+Le robot porte à l'avant un HC-SR04 monté sur un servo, qui balaie 180°. Il complète le lidar là où celui-ci est aveugle : une vitre (l'ultrason rebondit dessus) ou un objet plus bas que la nappe du lidar (sac, carton, marche, pied de chaise à roulettes).
+
+**Dans le firmware** (`ESP32_LD06_WiFi.ino`) :
+- **Balayage continu** de 0 à 180° par pas de 15°, soit 13 directions et environ 1,3 s pour un aller. Pendant une marche avant, le balayage se réduit à 60–120°, pour voir devant plus souvent.
+- **Pare-chocs autonome.** Pendant une marche avant, si une mesure récente (moins de 0,4 s) place un obstacle dans le couloir du robot à moins de 15 cm du capteur, les moteurs s'arrêtent tout de suite. Il n'y a ni aller-retour WiFi ni attente du PC : c'est le dernier filet de sécurité.
+- **Route `/us`** : dernières mesures, au format `[angle, mm, âge en ms]`. `/us?on=0` coupe le balayage, `/us?on=1` le relance. La touche `u` sur l'USB affiche les mesures.
+
+**Dans l'exploration**, les mesures prises robot arrêté deviennent des points dans le repère du robot (angle, distance, position du capteur devant le centre). Ces points s'ajoutent à ceux du lidar pour le pare-chocs logiciel du § 4 : un obstacle vu seulement par l'ultrason arrête l'avance, est noté sur la carte de coût et fait recalculer le trajet. Ils ne vont **pas** dans la carte : l'ultrason est trop imprécis (cône d'environ 15° à 30°) pour dessiner des murs.
+
+**Résultat en simulation** (8 salles, 8 cartons bas invisibles au lidar) : avec le lidar seul, 24 chocs et 3 explorations terminées sur 8 ; avec le lidar et l'ultrason, 0 choc et 8 sur 8 (`resultats_exploration.md`).
+
+**Broches à vérifier.** Elles sont réglées par défaut sur TRIG GPIO13, ECHO GPIO14 et servo GPIO25 (`#define US_TRIG`, `US_ECHO`, `US_SERVO`). Si le capteur est alimenté en 5 V, sa broche ECHO sort 5 V : il faut un pont diviseur (par exemple 1 kΩ et 2 kΩ) avant l'ESP32. Si un objet à gauche apparaît à droite, mettre `US_SERVO_INV` à 1, ou cocher « gauche et droite inversées » dans l'outil.
+
 **Perdu.** Si le scan ne colle plus à la carte, le robot ne bouge plus. Au bout de 6 scans, il annule son dernier mouvement. Au bout de 24, il s'arrête et le signale.
 
 ## 5. Contrôle du montage et des vitesses, aux premiers mouvements
@@ -100,7 +137,7 @@ Le même code a aussi été testé dans `lidar_viewer.html` :
 
 ## 8. Limites (à surveiller en vrai)
 
-- **Ce que le lidar ne voit pas.** C'est une nappe horizontale à la hauteur du lidar : une vitre, une marche, un sac posé au sol plus bas que la nappe ou une table plus haute (plateau au-dessus, pieds fins) peuvent échapper au pare-chocs. Il faut rester à côté, avec le bouton **STOP** ou la touche Espace.
+- **Ce que le lidar ne voit pas.** C'est une nappe horizontale à la hauteur du lidar. Vers l'avant, l'ultrason couvre les vitres et les objets bas, mais il voit mal les objets fins ou mous (tissu) et ce qui le frappe en biais. Un plateau de table au-dessus des deux capteurs reste invisible, et **rien ne surveille l'arrière** pendant un recul (au plus 15 cm, et seulement si le lidar voit libre derrière). Il faut rester à côté, avec le bouton **STOP** ou la touche Espace.
 - **Robot sans encodeurs.** Il avance « au temps ». La prédiction peut être fausse de 30 % : le recalage la corrige, mais sur un sol glissant ou un tapis, réduire la vitesse (onglet Moteurs du robot).
 - **Pieds de chaises serrés.** Deux pieds espacés de moins de 2 × 17 cm sont infranchissables pour le planificateur. Une rangée de chaises fait donc mur, ce qui est voulu.
 - **Salle qui bouge.** Une personne qui passe est vue comme un obstacle. Elle peut laisser une trace sur la carte : nettoyer ensuite avec l'onglet Traitement (objets mobiles, gomme).

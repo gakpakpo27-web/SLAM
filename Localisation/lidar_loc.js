@@ -969,7 +969,7 @@
     return n >= 20 ? k / n : 0;
   }
   function createMapper(opt = {}) {
-    return { o: { kfDist: 0.4, kfRot: 25, tours: 3, res: 0.05, stillPos: 0.03, stillAng: 1.5, lostInl: 0.25, rxy: 0.5, rth: 25, jumpMargin: 0.1, ...opt },
+    return { o: { kfDist: 0.4, kfRot: 25, tours: 3, res: 0.05, stillPos: 0.03, stillAng: 1.5, lostInl: 0.25, rxy: 0.5, rth: 25, jumpMargin: 0.1, rotSearch: true, rotMargin: 0.08, kfInl: 0.5, kfRotOnly: false, recoverInl: 0.55, ...opt },
              grid: null, field: null, M: null, kfs: [], pose: { x: 0, y: 0, th: 0 }, lastKF: null, pending: null, status: 'démarrage', n: 0, lost: 0 };
   }
   function mapperIntegrate(Mp, kf) {
@@ -987,8 +987,11 @@
     return kf;
   }
   /** Un scan reçu ({ a, d, i }) -> { pose, inliers, status, keyframe (ou null), ms } */
-  function mapperUpdate(Mp, scan, motion) {
+  function mapperUpdate(Mp, scan, motion, ev = {}) {
     const t0 = now(), o = Mp.o; Mp.n++;
+    // coupure (WiFi, câble) : le robot a pu bouger sans qu'on le sache. On le cherche plus largement, et AUCUN scan
+    // n'est ajouté à la carte tant qu'il ne s'est pas retrouvé (2 scans de suite qui collent bien, au même endroit)
+    if (ev.gap && Mp.field) { Mp.recover = 2; Mp.recPrev = null; motion = null; }
     const local = localPoints(scan), pts = uniformSubsample(local, { max: 350 });
     const out = r => Object.assign({ pose: { ...Mp.pose }, status: Mp.status, keyframe: null, ms: now() - t0, kfs: Mp.kfs.length }, r);
     if (!Mp.kfs.length && !Mp.pending) {                     // tout premier scan : origine de la carte
@@ -1003,7 +1006,8 @@
     }
     const pred = motion ? compose(Mp.pose, motion) : Mp.pose;
     const mv = motion ? Math.hypot(motion.x, motion.y) : 0, mr = motion ? Math.abs(motion.th) : 0;
-    const r1 = gridMultiRes(Mp.field, pts, pred, { rxy: o.rxy + 0.3 * mv, rth: o.rth + 0.3 * mr, levels: [[0.1, 3], [0.05, 1], [0.025, 0.5]], keep: 4 });
+    const wide = Mp.recover ? 0.7 : 0;
+    const r1 = gridMultiRes(Mp.field, pts, pred, { rxy: o.rxy + 0.3 * mv + wide, rth: o.rth + 0.3 * mr, levels: [[0.1, 3], [0.05, 1], [0.025, 0.5]], keep: 4 });
     const r2 = gridGradient(Mp.field, pts, r1, { dmax0: 0.3, dmaxMin: 0.1 });
     const IN = q => inlierKnown(Mp.grid, Mp.field, pts, q);
     const i1 = IN(r1), i2 = IN(r2);
@@ -1015,6 +1019,16 @@
     const nr = gridMultiRes(Mp.field, pts, pred, { rxy: 0.12 + 0.2 * mv, rth: 5 + 0.2 * mr, levels: [[0.05, 1], [0.025, 0.5]], keep: 2 });
     const ni = IN(nr);
     if (poseError(nr, r).pos > 0.05 || poseError(nr, r).ang > 2) { if (inl < ni + o.jumpMargin) { r = nr; inl = ni; } }
+    // Le robot a pu TOURNER plus que prévu (tourné à la main, rotation sans commande connue, ordre de rotation mal
+    // calibré) : la recherche ci-dessus ne regarde qu'à ±25° de la prédiction et se raccroche alors à une mauvaise
+    // orientation -> scan mal superposé. On cherche donc aussi sur TOUTES les orientations, autour de la position
+    // prévue. Une autre orientation n'est retenue que si elle colle nettement mieux.
+    if (o.rotSearch && (!motion || mr > 15 || inl < 0.6 || Mp.recover)) {
+      const rw0 = gridMultiRes(Mp.field, pts, pred, { rxy: 0.25 + 0.3 * mv + wide, rth: 180, levels: [[0.1, 4], [0.05, 1], [0.025, 0.5]], keep: 6 });
+      const rw = gridGradient(Mp.field, pts, rw0, { dmax0: 0.3, dmaxMin: 0.1 });
+      const wi = Math.max(IN(rw0), IN(rw)), best = IN(rw) >= IN(rw0) && poseError(rw, rw0).pos <= 0.15 ? rw : rw0;
+      if (Math.abs(normDeg(best.th - r.th)) > 3 && wi > inl + o.rotMargin) { r = best; inl = wi; Mp.rotFix = (Mp.rotFix || 0) + 1; }
+    }
     if (inl < o.lostInl) {
       Mp.lost++; Mp.status = 'perdu';
       if (Mp.pending) mapperCommit(Mp);                      // on garde ce qui était acquis avant de se perdre
@@ -1030,6 +1044,15 @@
       return out({ inliers: inl });
     }
     Mp.lost = 0; Mp.pose = { x: r.x, y: r.y, th: normDeg(r.th) }; Mp.status = 'cartographie';
+    if (Mp.recover) {
+      const ok = inl >= o.recoverInl && (!Mp.recPrev || poseError(Mp.pose, Mp.recPrev).pos < 0.1);
+      Mp.recPrev = { ...Mp.pose };
+      Mp.recover = ok ? Mp.recover - 1 : 2;
+      if (Mp.pending) Mp.pending = null;                     // rien d'acquis pendant le doute
+      if (Mp.recover) { Mp.status = 'reprise : se retrouve'; return out({ inliers: inl }); }
+      Mp.status = 'retrouvé';
+    }
+    Mp.doubt = inl < o.kfInl;
     let keyframe = null;
     if (Mp.pending) {                                        // accumulation de tours tant que le robot est arrêté
       const e = poseError(Mp.pose, Mp.pending.pose);
@@ -1038,9 +1061,12 @@
         if (P.count >= o.tours) keyframe = mapperCommit(Mp);
       } else keyframe = mapperCommit(Mp);                    // le robot repart : on garde les tours déjà acquis
     }
-    if (!Mp.pending && !keyframe) {
+    if (!Mp.pending && !keyframe && inl >= o.kfInl) {          // un scan douteux ne rentre pas dans la carte
+      // pas de doublon : nouvelle position seulement loin de TOUTES les positions déjà enregistrées (le lidar voit à
+      // 360° : tourner sur place n'apporte rien, revenir au même endroit non plus)
+      let dmin = Infinity; for (const k of Mp.kfs) dmin = Math.min(dmin, Math.hypot(k.pose.x - Mp.pose.x, k.pose.y - Mp.pose.y));
       const e = poseError(Mp.pose, Mp.lastKF);
-      if (e.pos >= o.kfDist || e.ang >= o.kfRot) {
+      if (dmin >= o.kfDist || (o.kfRotOnly && e.ang >= o.kfRot)) {
         Mp.pending = { a: Array.from(scan.a), d: Array.from(scan.d), i: Array.from(scan.i || scan.a.map(() => 200)), pose: { ...Mp.pose }, count: 1, meta: scan.meta };
         if (o.tours <= 1) keyframe = mapperCommit(Mp);
       }

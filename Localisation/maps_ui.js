@@ -1886,7 +1886,7 @@ function amStart(){
   if (AM.src === 'robot' && !isConnected()){ toast('Connecte d’abord le robot (USB ou WiFi), ou choisis « Robot simulé »'); return false; }
   AM.mp = LL.createMapper({ kfDist: numVal('amDist'), kfRot: numVal('amRot'), tours: Math.max(1, Math.round(numVal('amTours'))), start: AM.explore ? AM.start : undefined });
   let k = 1; while (S.scans.some(s => s.name.startsWith(`auto${k}_`))) k++;
-  AM.prefix = `auto${k}_`; AM.added = 0; AM.n = 0; AM.t0 = performance.now(); AM.running = true; AM.motion = null; AM.cur = null;
+  AM.prefix = `auto${k}_`; AM.added = 0; AM.n = 0; AM.t0 = performance.now(); AM.running = true; AM.motion = null; AM.cur = null; AM.lastArrive = 0; AM.gap = false; AM.gaps = 0;
   if (S.scans.length) toast('Les nouvelles positions ont leur propre repère (la première est à l’origine) : masque les anciens scans pour ne voir que la nouvelle carte');
   $('amStart').disabled = true; $('amSrc').disabled = true;
   if (AM.src === 'robot'){ if (!SER.live){ $('live').checked = true; $('live').onchange({ target: $('live') }); } }
@@ -1911,13 +1911,18 @@ function amAddKeyframe(kf){
 }
 function amFeed(b, truth){
   if (!AM.running) return;
+  // coupure : plus de scan depuis 1,5 s (WiFi, câble) -> le robot a pu bouger : le cartographe doit se retrouver
+  // avant de reposer un scan sur la carte (en exploration, l'attente pendant les mouvements n'est pas une coupure)
+  const tNow = performance.now();
+  if (AM.lastArrive && tNow - AM.lastArrive > 1500 && !(AM.explore && AM.exWait > AM.lastArrive)) AM.gap = true;
+  AM.lastArrive = tNow;
   // exploration : les scans pris pendant que le robot roule sont ignorés (« stop and go »)
   if (AM.explore && performance.now() < AM.exWait) return;
   if (AM.busy){ AM.pending = [b, truth]; return; }
   AM.busy = true;
   try {
     const raw = lvRaw(b), motion = AM.motion; AM.motion = null; AM.n++;
-    const r = LL.mapperUpdate(AM.mp, raw, motion);
+    const r = LL.mapperUpdate(AM.mp, raw, motion, { gap: AM.gap }); if (AM.gap){ AM.gap = false; AM.gaps = (AM.gaps || 0) + 1; }
     if (r.keyframe) amAddKeyframe(r.keyframe);
     AM.cur = { local: LL.localPoints(raw), r, truth };
     if (AM.explore && ++AM.exGot >= AM.exNeed){ AM.exGot = 0; amExDecide(AM.cur.local); }
@@ -1956,6 +1961,10 @@ function amInfo(done){
   let h = `${done ? '<b>Terminé</b>' : `<span style="color:${col};font-weight:700">● ${r ? r.status : 'en attente du premier scan'}</span>`} · <b>${AM.added}</b> positions enregistrées · ${AM.n} scans reçus en ${dur.toFixed(0)} s`;
   if (r && !done) h += `<br>robot : x ${r.pose.x.toFixed(2)} m · y ${r.pose.y.toFixed(2)} m · cap ${r.pose.th.toFixed(0)}° · ${(r.inliers * 100).toFixed(0)} % des points sur la carte · ${r.ms.toFixed(0)} ms`;
   if (r && r.status === 'perdu' && !done) h += '<br><span style="color:#ff6b6b">Le scan ne colle plus à la carte : reviens doucement vers une zone déjà cartographiée (aucune position n’est enregistrée tant qu’il est perdu).</span>';
+  if (r && /reprise/.test(r.status) && !done) h += '<br><span style="color:#ffb347">Coupure de la liaison : le robot a pu bouger. Aucun scan n’est posé tant qu’il ne s’est pas retrouvé sur la carte (2 scans de suite qui collent bien).</span>';
+  if (r && !done && AM.mp && AM.mp.doubt && r.status === 'cartographie') h += '<br><span class="help">Scan douteux (moins de 50 % des points sur la carte) : il n’est pas posé.</span>';
+  if (AM.gaps) h += `<br><span class="help">${AM.gaps} coupure(s) de la liaison rattrapée(s)</span>`;
+  if (AM.mp && AM.mp.rotFix) h += `<br><span class="help">${AM.mp.rotFix} rotation(s) du robot plus grande(s) que prévu, rattrapée(s)</span>`;
   if (AM.cur && AM.cur.truth && !done){ const e = LL.poseError(r.pose, AM.cur.truth); h += `<br>écart à la vraie pose (simulation) : ${(e.pos * 100).toFixed(1)} cm, ${e.ang.toFixed(2)}°`; }
   if (done && AM.added) h += '<br>Ensuite : <b>Construire la grid map</b>, puis l’onglet Traitement (plan, murs nets) et Robot en direct.';
   el.innerHTML = h;
@@ -1992,10 +2001,14 @@ async function amExploreStart(){
     const sc = AM.sim.scene;
     if (!sc.free(start.x, start.y, 0.25)){ start.x = 1.5; start.y = 1.5; toast('Robot simulé : départ placé en (1,5 ; 1,5), la salle simulée commence en (0 ; 0)'); }
     AM.exTruth = { ...start }; AM.exHits = 0; AM.exRng = LL.mulberry32(Date.now() & 0xffff);
+    AM.exLow = $('amLow').checked ? LX.lowBoxes(sc, 8, AM.exRng, start) : [];
+    AM.exWalls = sc.walls.concat(AM.exLow);
   }
   AM.explore = true; AM.start = start;
-  AM.ex = LX.createExplorer({ start, vLin: numVal('amV'), vRot: numVal('amW'), robotRadius: numVal('amRad'), maxRadius: numVal('amMaxR'), returnHome: $('amHome').checked });
+  AM.ex = LX.createExplorer({ start, vLin: numVal('amV'), vRot: numVal('amW'), vSide: numVal('amVs'), robotRadius: numVal('amRad'), maxRadius: numVal('amMaxR'), returnHome: $('amHome').checked });
   AM.exWait = 0; AM.exGot = 0; AM.exNeed = Math.max(1, Math.round(numVal('amTours'))); AM.exDone = null; AM.exT0 = performance.now();
+  AM.exMoveEnd = 0; US.pts = []; US.ok = null; US.stops0 = null;
+  if (src === 'robot' && $('amUS').checked) usPoll();
   $('amExplore').disabled = true;
   if (!amStart()){ AM.explore = false; $('amExplore').disabled = false; return; }
   amExInfo();
@@ -2003,7 +2016,9 @@ async function amExploreStart(){
 function amExDecide(local){
   const X = AM.ex; if (!X || !AM.explore) return;
   let c;
-  try { c = LX.explorerStep(X, AM.mp, local); } catch (e){ console.error(e); return amExFinish('erreur : ' + e.message, true); }
+  const usPts = $('amUS').checked ? usPoints() : [];
+  US.pts = usPts;
+  try { c = LX.explorerStep(X, AM.mp, usPts.length ? local.concat(usPts) : local); } catch (e){ console.error(e); return amExFinish('erreur : ' + e.message, true); }
   if (c.done) return amExFinish(c.reason, /^arrêt/.test(c.reason));
   if (c.wait){ AM.exNeed = 1; amExInfo(); return; }
   AM.exNeed = AM.mp.o.tours;
@@ -2014,13 +2029,43 @@ function amExDecide(local){
     robotCmd(`/${c.mv}?time=${t}`, true).then(ok => {
       if (!AM.explore) return;
       if (!ok) return amExFinish('arrêt : le robot a refusé l’ordre (moteurs verrouillés ou robot injoignable)', true);
-      AM.exWait = performance.now() + c.ms + 450;              // durée du mouvement + arrêt complet + un tour de lidar
+      AM.exMoveEnd = performance.now() + c.ms;
+      AM.exWait = AM.exMoveEnd + 450;                          // durée du mouvement + arrêt complet + un tour de lidar
     });
   } else {
-    const m = LX.simMove(AM.sim.scene, AM.exTruth, c.motion, AM.exRng, X.o, 1); AM.exTruth = m.pose; if (m.hit) AM.exHits++;
+    const usSim = $('amUS').checked ? { walls: AM.exWalls, usX: numVal('amUSx') } : null;
+    const m = LX.simMove({ walls: AM.exWalls }, AM.exTruth, c.motion, AM.exRng, X.o, 1, usSim); AM.exTruth = m.pose; if (m.hit) AM.exHits++;
+    if (usSim && usSim.stops) US.simStops = (US.simStops || 0) + usSim.stops;
     AM.exWait = 0;
   }
   amExInfo();
+}
+// --- capteur ultrason avant (firmware : route /us) ---------------------------
+const US = { ok: null, raw: null, tAt: 0, pts: [], stops: 0, stops0: null, timer: null };
+async function usPoll(){
+  clearTimeout(US.timer);
+  if (!AM.explore || AM.src !== 'robot' || !$('amUS').checked || !SER.wifi) return;
+  try {
+    const r = await fetch(SER.base + '/us', { cache: 'no-store' });
+    if (r.status === 404){ US.ok = false; amExInfo(); return; }          // firmware sans ultrason
+    const j = await r.json(); US.raw = j; US.tAt = performance.now(); US.ok = !!j.on;
+    if (US.stops0 === null) US.stops0 = j.stops; US.stops = j.stops - US.stops0;
+  } catch (e){ /* robot momentanément injoignable : on réessaie */ }
+  US.timer = setTimeout(usPoll, 250);
+}
+// mesures ultrason -> points dans le repère du robot (seulement celles prises robot arrêté, après le dernier mouvement)
+function usPoints(){
+  const usX = numVal('amUSx'), sg = $('amUSinv').checked ? -1 : 1;
+  if (AM.src === 'sim') return AM.exTruth ? LX.simUltrasound(AM.exWalls, AM.exTruth, { usX }, AM.exRng) : [];
+  const j = US.raw; if (!j || !US.ok) return [];
+  const out = [];
+  for (const [a0, mm, age] of j.r){
+    if (!mm || age > 3000) continue;
+    const taken = US.tAt - age; if (taken < AM.exMoveEnd + 150) continue;    // mesure prise pendant le mouvement : ignorée
+    const a = sg * a0 * D2R, d = mm / 1000;
+    out.push({ x: usX + d * Math.cos(a), y: d * Math.sin(a), us: true, a: sg * a0, d });
+  }
+  return out;
 }
 function amExSimTick(){
   if (!AM.running || !AM.explore) return;
@@ -2058,8 +2103,16 @@ function amExInfo(){
   if (X.goal) h += ` · but (${X.goal.x.toFixed(1)} ; ${X.goal.y.toFixed(1)})`;
   if (X.last) h += `<br>dernier ordre : ${X.last.mv} ${X.last.ms} ms`;
   if (X.calib.msg) h += `<br><span class="help">${X.calib.msg}</span>`;
-  if (X.stats.blocked) h += `<br><span class="help">${X.stats.blocked} arrêt(s) devant un obstacle imprévu, contourné(s)</span>`;
+  if (X.stats.blocked || X.stats.avoided) h += `<br><span class="help">obstacles imprévus : ${X.stats.avoided || 0} contourné(s) à l’avance, ${X.stats.blocked} arrêt(s) devant</span>`;
+  if (X.stats.side) h += `<br><span class="help">${X.stats.side} pas de côté en crabe</span>`;
+  if (AM.mp && AM.mp.rotFix) h += `<br><span class="help">${AM.mp.rotFix} rotation(s) plus grande(s) que prévu, rattrapée(s) au recalage</span>`;
   if (AM.src === 'sim' && AM.exHits) h += `<br><span style="color:#ff6b6b">chocs (simulation) : ${AM.exHits}</span>`;
+  if ($('amUS').checked){
+    if (AM.src === 'robot' && US.ok === false) h += '<br><span class="help">ultrason : indisponible (firmware sans route /us, ou capteur coupé)</span>';
+    else if (US.pts.length){ const n = US.pts.reduce((b, q) => q.d < b.d ? q : b); h += `<br><span class="help">ultrason : ${US.pts.length} mesures · plus proche ${n.d.toFixed(2)} m à ${n.a > 0 ? '+' : ''}${n.a}°</span>`; }
+    const st = AM.src === 'robot' ? US.stops : (US.simStops || 0);
+    if (st) h += `<br><span style="color:#ffb347">pare-chocs ultrason : ${st} arrêt(s) d’urgence en marche avant</span>`;
+  }
   el.innerHTML = h;
 }
 function drawExplore(){
@@ -2076,6 +2129,20 @@ function drawExplore(){
   for (const v of X.virt){ const [x, y] = w2s(v.x, v.y); ctx.fillStyle = '#ff6b6b'; ctx.fillRect(x - 3, y - 3, 6, 6); }
   const [sx, sy] = w2s(X.start.x, X.start.y); ctx.strokeStyle = '#4cd97b'; ctx.lineWidth = 2; ctx.strokeRect(sx - 7, sy - 7, 14, 14);
   ctx.fillStyle = '#4cd97b'; ctx.font = '11px system-ui'; ctx.fillText('départ', sx + 9, sy - 9);
+  if (US.pts.length && AM.mp){
+    const p = AM.mp.pose, c = Math.cos(p.th * D2R), s = Math.sin(p.th * D2R), usX = numVal('amUSx');
+    const [ox, oy] = w2s(p.x + c * usX, p.y + s * usX);
+    ctx.strokeStyle = '#ffb34766'; ctx.lineWidth = 1;
+    for (const q of US.pts){
+      const [x, y] = w2s(p.x + c * q.x - s * q.y, p.y + s * q.x + c * q.y);
+      ctx.beginPath(); ctx.moveTo(ox, oy); ctx.lineTo(x, y); ctx.stroke();
+      ctx.fillStyle = '#ffb347'; ctx.beginPath(); ctx.arc(x, y, 3.5, 0, 2 * Math.PI); ctx.fill();
+    }
+  }
+  if (AM.src === 'sim' && AM.exLow && AM.exLow.length){
+    ctx.strokeStyle = '#c07bff'; ctx.lineWidth = 2;
+    for (const w of AM.exLow){ const [a1, b1] = w2s(w.x1, w.y1), [a2, b2] = w2s(w.x2, w.y2); ctx.beginPath(); ctx.moveTo(a1, b1); ctx.lineTo(a2, b2); ctx.stroke(); }
+  }
   if (AM.src === 'sim' && AM.exTruth){ const [x, y] = w2s(AM.exTruth.x, AM.exTruth.y); ctx.strokeStyle = '#ffffff88'; ctx.beginPath(); ctx.arc(x, y, 5, 0, 2 * Math.PI); ctx.stroke(); }
   ctx.restore();
 }
